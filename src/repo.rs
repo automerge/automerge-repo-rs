@@ -72,12 +72,10 @@ pub(crate) struct Repo {
     network_receiver: Receiver<(CollectionId, NetworkEvent)>,
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
-    runtime: Runtime,
 }
 
 impl Repo {
     pub fn new() -> Self {
-        let runtime = Runtime::new().expect("Failed to start runtime.");
         let (network_sender, network_receiver) = channel(1);
         let (collection_sender, collection_receiver) = channel(1);
         Repo {
@@ -86,7 +84,6 @@ impl Repo {
             network_receiver,
             collection_sender,
             collection_receiver,
-            runtime,
         }
     }
 
@@ -115,77 +112,53 @@ impl Repo {
     /// The event-loop of the repo.
     /// Handles events from collections and adapters.
     /// Returns a `std::thread::JoinHandle` for optional clean shutdown.
-    pub async fn run(mut self) -> JoinHandle<()> {
-        // Run within a thread,
-        // so that the runtime can be dropped.
-        thread::spawn(move || {
-            // Drop the repo's clone of the collection sender,
-            // ensuring the below loop stops when all collections have been dropped.
-            drop(self.collection_sender);
+    pub async fn run(mut self) {
+        // Drop the repo's clone of the collection sender,
+        // ensuring the below loop stops when all collections have been dropped.
+        drop(self.collection_sender);
 
-            // Signal shutdown of repo event-loop.
-            let (tx, rx) = mpsc::channel();
-
-            // Run the repo's event-loop in a task.
-            let runtime_handle = self.runtime.handle().clone();
-            let _join_handle = self.runtime.spawn(async move {
-                loop {
-                    println!("Start loop");
-                    tokio::select! {
-                        collection_event = self.collection_receiver.recv() => {
-                            match collection_event {
-                                None => break,
-                                Some((collection_id, CollectionEvent::NewDoc(id, handle))) => {
-                                    println!("Got new doc");
-                                    // Handle new document.
-                                    let mut collection = self
-                                        .collections
-                                        .get_mut(&collection_id)
-                                        .expect("Unexpected collection event.");
-                                    // Set the doc as ready
-                                    handle.set_ready().await;
-                                    collection.documents.insert(id, handle);
-                                    println!("DOne new doc");
-                                },
-                                Some((collection_id, CollectionEvent::DocChange(_id))) => {
-                                    // Handle doc changes.
-                                    let mut collection = self
-                                        .collections
-                                        .get_mut(&collection_id)
-                                        .expect("Unexpected collection event.");
-                                        println!("Start saving document");
-                                    collection.storage_adapter.save_document(()).await;
-                                    println!("Done saving document");
-                                },
-                            }
-                        },
-                        network_event = self.network_receiver.recv() => {
-                            if network_event.is_none() {
-                                println!("Network event is none");
-                                break;
-                            }
-                        },
-                    }
+        // Run the repo's event-loop in a task.
+        let _join_handle = tokio::spawn(async move {
+            loop {
+                println!("Start loop");
+                tokio::select! {
+                    collection_event = self.collection_receiver.recv() => {
+                        match collection_event {
+                            None => break,
+                            Some((collection_id, CollectionEvent::NewDoc(id, handle))) => {
+                                println!("Got new doc");
+                                // Handle new document.
+                                let mut collection = self
+                                    .collections
+                                    .get_mut(&collection_id)
+                                    .expect("Unexpected collection event.");
+                                // Set the doc as ready
+                                handle.set_ready().await;
+                                collection.documents.insert(id, handle);
+                                println!("DOne new doc");
+                            },
+                            Some((collection_id, CollectionEvent::DocChange(_id))) => {
+                                // Handle doc changes.
+                                let mut collection = self
+                                    .collections
+                                    .get_mut(&collection_id)
+                                    .expect("Unexpected collection event.");
+                                    println!("Start saving document");
+                                collection.storage_adapter.save_document(()).await;
+                                println!("Done saving document");
+                            },
+                        }
+                    },
+                    network_event = self.network_receiver.recv() => {
+                        if network_event.is_none() {
+                            println!("Network event is none");
+                            break;
+                        }
+                    },
                 }
-                
-                println!("Done loop");
-
-                // Start a blocking task, signalling the end of the repo's event-loop.
-                runtime_handle.spawn_blocking(move || {
-                    println!("Send");
-                    tx.send(()).unwrap();
-                    println!("Done Send");
-                });
-            });
-
-            // Run a blocking task, waiting for the repo's event-loop to have stopped.
-            self.runtime.spawn_blocking(move || {
-                rx.recv().unwrap();
-            });
-
-            // Will block until all blocking tasks finished,
-            // ensuring clean shutdown after the end of the repo's event-loop.
-            drop(self.runtime);
-        })
+            }
+            
+            println!("Done loop");
+        });
     }
 }

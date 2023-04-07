@@ -67,6 +67,5 @@ async fn main() {
     // Wait for the `save_document` call, which happens in response to the change call above.
     assert!(receiver.recv().await.is_some());
     
-    repo_join_handle.join().unwrap();
     println!("Stopped");
 }
