@@ -50,6 +50,7 @@ impl DocCollection {
 pub(crate) enum CollectionEvent {
     NewDoc(DocumentId, DocumentInfo),
     DocChange(DocumentId),
+    DocClosed(DocumentId),
 }
 
 /// Events sent by the network adapter.
@@ -170,6 +171,14 @@ impl Repo {
                                     .expect("Unexpected collection event.");
                                 collection.storage_adapter.save_document(());
                             },
+                            Ok((collection_id, CollectionEvent::DocClosed(id))) => {
+                                // Handle doc closed.
+                                let mut collection = self
+                                    .collections
+                                    .get_mut(&collection_id)
+                                    .expect("Unexpected collection event.");
+                                    collection.documents.remove(&id);
+                            }
                         }
                     },
                     recv(self.network_receiver) -> _event => {

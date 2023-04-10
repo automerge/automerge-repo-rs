@@ -20,6 +20,18 @@ pub struct DocHandle {
     collection_id: CollectionId,
 }
 
+impl Drop for DocHandle {
+    fn drop(&mut self) {
+        self.collection_sender
+            .send((
+                self.collection_id.clone(),
+                CollectionEvent::DocClosed(self.document_id.clone()),
+            ))
+            .expect("Failed to send doc close event.");
+    }
+}
+
+
 impl DocHandle {
     pub(crate) fn new(
         collection_sender: Sender<(CollectionId, CollectionEvent)>,
