@@ -4,33 +4,33 @@ Project goal: add an integration layer between automerge and client code, compat
 
 ## Iteration 1
 
-What: use an async public interface, and use async internally(but hidden from view).
+**What:** use an async public interface, and use async internally(but hidden from view).
 
-How: traits for network and storage adapters are async, document handle method are async as well. Use a tokio runtime internally.
+**How:** traits for network and storage adapters are async, document handle method are async as well. Use a tokio runtime internally.
 
-Notes: Need to run library inside a native thread, because tokio runtime cannot be dropped in an async context.
+**Notes:** Need to run library inside a native thread, because tokio runtime cannot be dropped in an async context.
 
-Problems: intermittent panics, mostly about channels being disconnected apparently without reason. 
+**Problems:** intermittent panics, mostly about channels being disconnected apparently without reason. 
 Occured around use of document handles in client code that ran on a different tokio runtime. 
 
-Hypothesis: panics arise from sharing synchronizaiton primitives between different runtime contexts. 
+**Hypothesis:** panics arise from sharing synchronizaiton primitives between different runtime contexts. 
 
 ## Iteration 2
 
-What: test above hypothesis.
+**What:** test above hypothesis.
 
-How: run everything, client and library code, in the context of a single tokio runtime. 
+**How:** run everything, client and library code, in the context of a single tokio runtime. 
 
-Notes: panics go away, but we now have a tokio demo app, which is not the goal of the project. 
+**Notes:** panics go away, but we now have a tokio demo app, which is not the goal of the project. 
 
-Hypothesis: as a way of integrating with any runtime, use native threading internally, 
+**Hypothesis:** as a way of integrating with any runtime, use native threading internally, 
 and offer a "normal" interface with guarantees about blocking. 
 
 ## Iteration 3
 
-What: test above hypothesis.
+**What:** test above hypothesis.
 
-How: Use a native thread to run event-loop of library. Offer a public interface that is not async, 
+**How:** Use a native thread to run event-loop of library. Offer a public interface that is not async, 
 but guarantee non-blocking operation by using a pull-based workflow signalling backpressure(see [`sink_wants_events`](https://github.com/gterzian/automerge-repo-demo/blob/55ae8ad59b47db78305b0f3b81bf097952c003ea/src/interfaces.rs#L48). 
 
 Alternatively, document methods as blocking, 
