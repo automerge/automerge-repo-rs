@@ -1,5 +1,5 @@
+use crate::interfaces::{CollectionId, DocumentId};
 use crate::repo::CollectionEvent;
-use crate::repo::{CollectionId, DocumentId};
 use crossbeam_channel::Sender;
 use parking_lot::{Condvar, Mutex};
 use std::sync::Arc;
@@ -31,7 +31,6 @@ impl Drop for DocHandle {
     }
 }
 
-
 impl DocHandle {
     pub(crate) fn new(
         collection_sender: Sender<(CollectionId, CollectionEvent)>,
@@ -47,6 +46,10 @@ impl DocHandle {
         }
     }
 
+    pub fn get_document_id(&self) -> DocumentId {
+        self.document_id.clone()
+    }
+
     pub fn change(&self) {
         self.collection_sender
             .send((
@@ -56,7 +59,7 @@ impl DocHandle {
             .expect("Failed to send doc change event.");
     }
 
-    /// Wait for the document to be ready. 
+    /// Wait for the document to be ready.
     /// Note: blocks, should be called only from within a blocking task or thread.
     pub fn wait_ready(&self) {
         let (lock, cvar) = &*self.state;

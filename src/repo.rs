@@ -1,17 +1,12 @@
 use crate::dochandle::{DocHandle, DocState};
-use crate::interfaces::{NetworkAdapter, RepoNetworkSink, StorageAdapter};
+use crate::interfaces::{CollectionId, DocumentId};
+use crate::interfaces::{NetworkAdapter, NetworkEvent, RepoNetworkSink, StorageAdapter};
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
-
-#[derive(Debug, Eq, Hash, PartialEq, Clone)]
-pub(crate) struct DocumentId(Uuid);
-
-#[derive(Debug, Eq, Hash, PartialEq, Clone)]
-pub(crate) struct CollectionId(Uuid);
 
 /// The public interface of the repo,
 /// through which new docs can be created,
@@ -53,12 +48,6 @@ pub(crate) enum CollectionEvent {
     DocClosed(DocumentId),
 }
 
-/// Events sent by the network adapter.
-#[derive(Debug)]
-pub(crate) enum NetworkEvent {
-    NewMessage(Vec<u8>),
-}
-
 /// Information on a doc collection held by the repo.
 /// Each collection can be configured with different adapters.
 struct CollectionInfo {
@@ -88,16 +77,16 @@ impl DocumentInfo {
 pub(crate) struct Repo {
     /// A map of collections to their info.
     collections: HashMap<CollectionId, CollectionInfo>,
-    
+
     /// Sender and receiver of network events.
     /// A sender is kept around to clone for multiple calls to `new_collection`.
     network_sender: Sender<(CollectionId, NetworkEvent)>,
     network_receiver: Receiver<(CollectionId, NetworkEvent)>,
-    
+
     /// Sender and receiver of collection events.
     /// A sender is kept around to clone for multiple calls to `new_collection`,
     /// the sender is dropped at the start of the repo's event-loop,
-    /// to ensure that the event-loop stops 
+    /// to ensure that the event-loop stops
     /// once all collections and doc handles have been dropped.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
@@ -177,11 +166,24 @@ impl Repo {
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
-                                    collection.documents.remove(&id);
+                                collection.documents.remove(&id);
                             }
                         }
                     },
-                    recv(self.network_receiver) -> _event => {
+                    recv(self.network_receiver) -> event => {
+                        match event {
+                            Err(_) => break,
+                            Ok((collection_id, NetworkEvent::DocFullData(doc_id))) => {
+                                let mut collection = self
+                                    .collections
+                                    .get_mut(&collection_id)
+                                    .expect("Unexpected collection event.");
+                                if let Some(document) = collection.documents.get(&doc_id) {
+                                    // Set the doc as ready
+                                    document.set_ready();
+                                }
+                            }
+                        }
                     },
                 }
             }
