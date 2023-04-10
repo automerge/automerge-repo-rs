@@ -13,6 +13,8 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 fn main() {
+    
+    // Events used internally by the network adapter.
     #[derive(Debug)]
     enum NetworkMessage {
         SinkWantsEvents,
@@ -27,6 +29,9 @@ fn main() {
         fn send_message(&self) {}
 
         fn sink_wants_events(&self) {
+            // Note use of blocking send, 
+            // an easy way for the adapter to integrate 
+            // with an async backend(see tasks below).
             self.network_sender
                 .blocking_send(NetworkMessage::SinkWantsEvents);
         }
@@ -62,25 +67,30 @@ fn main() {
     // Run the repo in the background.
     let repo_join_handle = repo.run();
 
+    // A channel used to model another peer over the network.
     let (other_peer_sender, mut other_peer_receiver) = channel(1);
 
-    // Pretend the client uses tokio.
+    // The client code uses tokio.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
+        
+    // A channel used to block the main function until the async system here has shut down.
     let (done_sender, mut done_receiver) = channel(1);
     
+    // Spawn the backend for the client code.
     rt.spawn(async move {
         // Create a new document.
         let handle = collection.new_document();
         let document_id = handle.get_document_id();
         let handle_clone = handle.clone();
 
-        // Simulating another peer sending data over the network.   
+        // Simulate another peer sending data over the network.   
         other_peer_sender.send(document_id).await;
 
         // The state of the network sink.
+        // Changed in response to the `sink_wants_events` method call of the NetworkAdapter.
         #[derive(Debug)]
         enum SinkState {
             None,
@@ -88,9 +98,10 @@ fn main() {
             Wait(RepoNetworkSink),
         }
 
-        // Spawn a task to await for notification that the sinks wants event,
-        // and send some when it does.
+        // Spawn a task that receives data from the "other peer",
+        // and buffers it until the repo sink is ready to receive event.
         Handle::current().spawn(async move {
+            // Start in the None state.
             let mut sink_state = SinkState::None;
             let mut buffer = VecDeque::new();
             let mut should_stop = false;
@@ -99,9 +110,12 @@ fn main() {
                         msg = network_receiver.recv() => {
                             match msg {
                                 Some(NetworkMessage::NewSink(new_sink)) => {
+                                    // We have now received the sink,
+                                    // via the `plug_into_sink` method of the NetworkAdapter.
                                     sink_state = SinkState::Wait(new_sink);
                                 },
                                 Some(NetworkMessage::SinkWantsEvents) =>  {
+                                    // The repo tells it is ready to receive an event(could be a batch instead).
                                     match sink_state {
                                         SinkState::Wait(new_sink) => {
                                             sink_state = SinkState::WantsEvents(new_sink)
@@ -116,6 +130,8 @@ fn main() {
                             }
                         }
                         data = other_peer_receiver.recv() => {
+                            // The "other peer" sends a message,
+                            // assumed here to be the data for a document.
                             if data.is_some() {
                                 buffer.push_back(data.unwrap());
                             } else {
@@ -127,6 +143,9 @@ fn main() {
                 sink_state = match (sink_state, buffer.is_empty()) {
                     (SinkState::WantsEvents(sink), false) => {
                         let data = buffer.pop_front().unwrap();
+                        // Pretend the peer sent us the data of a document,
+                        // the repo will mark the document as ready, via the handle,
+                        // upon receiving that event.
                         sink.send_event(NetworkEvent::DocFullData(data));
                         SinkState::Wait(sink)
                     },
@@ -155,7 +174,7 @@ fn main() {
     });
     done_receiver.blocking_recv().unwrap();
 
-    // Wait for the `save_document` call, which happens in response to the change call above.
+    // Wait for the `save_document` call, which happens in response to the change call in the task above.
     receiver.blocking_recv().unwrap();
 
     repo_join_handle.join().unwrap();
