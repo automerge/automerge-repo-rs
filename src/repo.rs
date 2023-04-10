@@ -120,13 +120,11 @@ impl Repo {
         // Run the repo's event-loop in a task.
         let _join_handle = tokio::spawn(async move {
             loop {
-                println!("Start loop");
                 tokio::select! {
                     collection_event = self.collection_receiver.recv() => {
                         match collection_event {
                             None => break,
                             Some((collection_id, CollectionEvent::NewDoc(id, handle))) => {
-                                println!("Got new doc");
                                 // Handle new document.
                                 let mut collection = self
                                     .collections
@@ -135,7 +133,6 @@ impl Repo {
                                 // Set the doc as ready
                                 handle.set_ready().await;
                                 collection.documents.insert(id, handle);
-                                println!("DOne new doc");
                             },
                             Some((collection_id, CollectionEvent::DocChange(_id))) => {
                                 // Handle doc changes.
@@ -143,22 +140,14 @@ impl Repo {
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
-                                    println!("Start saving document");
                                 collection.storage_adapter.save_document(()).await;
-                                println!("Done saving document");
                             },
                         }
                     },
-                    network_event = self.network_receiver.recv() => {
-                        if network_event.is_none() {
-                            println!("Network event is none");
-                            break;
-                        }
+                    _network_event = self.network_receiver.recv() => {
                     },
                 }
             }
-            
-            println!("Done loop");
         });
     }
 }

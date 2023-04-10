@@ -38,10 +38,10 @@ impl DocHandle {
 
     pub async fn change(&self) {
         self.collection_sender
-            .send(
-                (self.collection_id.clone(),
-                CollectionEvent::DocChange(self.document_id.clone()))
-            )
+            .send((
+                self.collection_id.clone(),
+                CollectionEvent::DocChange(self.document_id.clone()),
+            ))
             .await
             .expect("Failed to send doc change event.");
     }
