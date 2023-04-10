@@ -13,6 +13,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 fn main() {
+    #[derive(Debug)]
     enum NetworkMessage {
         SinkWantsEvents,
         NewSink(RepoNetworkSink),
@@ -53,7 +54,7 @@ fn main() {
     let mut network = Network { network_sender };
 
     // Create the repo.
-    let mut repo = Repo::new();
+    let mut repo = Repo::new(1);
 
     // Create a new collection with a network and a storage adapters.
     let collection = repo.new_collection(Box::new(storage), Box::new(network));
@@ -69,18 +70,18 @@ fn main() {
         .build()
         .unwrap();
     let (done_sender, mut done_receiver) = channel(1);
+    
     rt.spawn(async move {
         // Create a new document.
         let handle = collection.new_document();
         let document_id = handle.get_document_id();
         let handle_clone = handle.clone();
 
-        // Spawn a task simulating another peer sending data over the network.   
-        Handle::current().spawn(async move {
-            other_peer_sender.send(document_id).await;
-        });
+        // Simulating another peer sending data over the network.   
+        other_peer_sender.send(document_id).await;
 
         // The state of the network sink.
+        #[derive(Debug)]
         enum SinkState {
             None,
             WantsEvents(RepoNetworkSink),
@@ -92,6 +93,7 @@ fn main() {
         Handle::current().spawn(async move {
             let mut sink_state = SinkState::None;
             let mut buffer = VecDeque::new();
+            let mut should_stop = false;
             loop {
                 tokio::select! {
                         msg = network_receiver.recv() => {
@@ -108,16 +110,19 @@ fn main() {
                                         SinkState::None => panic!("Unepxected NetworkMessage::SinkWantsEvents"),
                                     }
                                 },
-                                None => break,
+                                None => {
+                                    should_stop = true;
+                                },
                             }
                         }
                         data = other_peer_receiver.recv() => {
                             if data.is_some() {
                                 buffer.push_back(data.unwrap());
+                            } else {
+                                should_stop = true;
                             }
                         }
                 };
-
                 // Send events if possible.
                 sink_state = match (sink_state, buffer.is_empty()) {
                     (SinkState::WantsEvents(sink), false) => {
@@ -126,6 +131,9 @@ fn main() {
                         SinkState::Wait(sink)
                     },
                     (sink_state, _) => sink_state,
+                };
+                if should_stop {
+                    break;
                 }
             }
         });

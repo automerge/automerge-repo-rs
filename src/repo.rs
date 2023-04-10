@@ -1,9 +1,9 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{CollectionId, DocumentId};
 use crate::interfaces::{NetworkAdapter, NetworkEvent, RepoNetworkSink, StorageAdapter};
-use crossbeam_channel::{select, unbounded, Receiver, Sender};
+use crossbeam_channel::{select, bounded, unbounded, Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
@@ -54,6 +54,9 @@ struct CollectionInfo {
     network_adapter: Box<dyn NetworkAdapter>,
     storage_adapter: Box<dyn StorageAdapter>,
     documents: HashMap<DocumentId, DocumentInfo>,
+    
+    // Data recived over the network, but doc no local handle yet.
+    data_received: HashSet<DocumentId>,
 }
 
 /// Info about a document, held by the repo(via CollectionInfo).
@@ -90,11 +93,15 @@ pub(crate) struct Repo {
     /// once all collections and doc handles have been dropped.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
+    
+    /// Max number of collections that be created for this repo,
+    /// used to configure the buffer of the network channels. 
+    max_number_collections: usize,
 }
 
 impl Repo {
-    pub fn new() -> Self {
-        let (network_sender, network_receiver) = unbounded();
+    pub fn new(max_number_collections: usize) -> Self {
+        let (network_sender, network_receiver) = bounded(max_number_collections);
         let (collection_sender, collection_receiver) = unbounded();
         Repo {
             collections: Default::default(),
@@ -102,6 +109,7 @@ impl Repo {
             network_receiver,
             collection_sender,
             collection_receiver,
+            max_number_collections,
         }
     }
 
@@ -122,6 +130,7 @@ impl Repo {
             network_adapter,
             storage_adapter,
             documents: Default::default(),
+            data_received: Default::default(),
         };
         self.collections.insert(collection_id, collection_info);
         collection
@@ -131,12 +140,19 @@ impl Repo {
     /// Handles events from collections and adapters.
     /// Returns a `std::thread::JoinHandle` for optional clean shutdown.
     pub fn run(mut self) -> JoinHandle<()> {
-        // Drop the repo's clone of the collection sender,
-        // ensuring the below loop stops when all collections have been dropped.
-        drop(self.collection_sender);
-
         // Run the repo's event-loop in a thread.
         thread::spawn(move || {
+            // Drop the repo's clone of the collection sender,
+            // ensuring the below loop stops when all collections have been dropped.
+            drop(self.collection_sender);
+            
+            // Mark the sink as ready to receive for all collections,
+            // since the network channel is bounded by the nunber of collections,
+            // even if all collection send on it now, the operation will not block.
+            for (_, info) in self.collections.iter() {
+                info.network_adapter.sink_wants_events();
+            }
+            
             loop {
                 select! {
                     recv(self.collection_receiver) -> collection_event => {
@@ -148,9 +164,12 @@ impl Repo {
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
-                                // Set the doc as ready
-                                info.set_ready();
+                                if collection.data_received.contains(&id) {
+                                    // Set the doc as ready
+                                    info.set_ready();
+                                }
                                 collection.documents.insert(id, info);
+                                
                             },
                             Ok((collection_id, CollectionEvent::DocChange(_id))) => {
                                 // Handle doc changes.
@@ -181,7 +200,13 @@ impl Repo {
                                 if let Some(document) = collection.documents.get(&doc_id) {
                                     // Set the doc as ready
                                     document.set_ready();
+                                } else {
+                                    // keep the data for now
+                                    collection.data_received.insert(doc_id);
                                 }
+                                
+                                // Mark the sink as ready to receive another event.
+                                collection.network_adapter.sink_wants_events();
                             }
                         }
                     },

@@ -14,6 +14,7 @@ pub(crate) enum DocState {
 #[derive(Clone, Debug)]
 /// A handle to a document, held by the client.
 pub struct DocHandle {
+    /// Doc info in repo owns the same state, and sets it to ready.
     state: Arc<(Mutex<DocState>, Condvar)>,
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     document_id: DocumentId,
