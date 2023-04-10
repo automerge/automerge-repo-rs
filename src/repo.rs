@@ -1,11 +1,10 @@
-use crate::dochandle::DocHandle;
+use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{NetworkAdapter, RepoNetworkSink, StorageAdapter};
+use crossbeam_channel::{select, unbounded, Receiver, Sender};
+use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use tokio::runtime::{Handle, Runtime};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::task::spawn;
 use uuid::Uuid;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
@@ -14,7 +13,7 @@ pub(crate) struct DocumentId(Uuid);
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub(crate) struct CollectionId(Uuid);
 
-/// The public interface,
+/// The public interface of the repo,
 /// through which new docs can be created,
 /// and doc handles acquired.
 pub struct DocCollection {
@@ -24,21 +23,23 @@ pub struct DocCollection {
 
 impl DocCollection {
     /// Create a new document,
-    /// send a handle to the repo,
+    /// send the info to the repo,
     /// return a handle.
-    pub async fn new_document(&self) -> DocHandle {
+    pub fn new_document(&self) -> DocHandle {
         let document_id = DocumentId(Uuid::new_v4());
+        let state = Arc::new((Mutex::new(DocState::Start), Condvar::new()));
         let handle = DocHandle::new(
             self.collection_sender.clone(),
             document_id.clone(),
             self.collection_id.clone(),
+            state.clone(),
         );
+        let doc_info = DocumentInfo { state };
         self.collection_sender
             .send((
                 self.collection_id.clone(),
-                CollectionEvent::NewDoc(document_id, handle.clone()),
+                CollectionEvent::NewDoc(document_id, doc_info),
             ))
-            .await
             .expect("Failed to send collection event.");
         handle
     }
@@ -47,11 +48,11 @@ impl DocCollection {
 /// Events sent by doc collections to the repo.
 #[derive(Debug)]
 pub(crate) enum CollectionEvent {
-    NewDoc(DocumentId, DocHandle),
+    NewDoc(DocumentId, DocumentInfo),
     DocChange(DocumentId),
 }
 
-/// Evnts sent by the network adapter.
+/// Events sent by the network adapter.
 #[derive(Debug)]
 pub(crate) enum NetworkEvent {
     NewMessage(Vec<u8>),
@@ -62,22 +63,49 @@ pub(crate) enum NetworkEvent {
 struct CollectionInfo {
     network_adapter: Box<dyn NetworkAdapter>,
     storage_adapter: Box<dyn StorageAdapter>,
-    documents: HashMap<DocumentId, DocHandle>,
+    documents: HashMap<DocumentId, DocumentInfo>,
 }
 
-/// The backend of doc collections: the repo runs an event-loop in a background task.
+/// Info about a document, held by the repo(via CollectionInfo).
+#[derive(Debug)]
+pub(crate) struct DocumentInfo {
+    state: Arc<(Mutex<DocState>, Condvar)>,
+}
+
+impl DocumentInfo {
+    /// Set the document to a ready state,
+    /// wakes-up the doc handle if inside `wait_ready`.
+    pub fn set_ready(&self) {
+        let (lock, cvar) = &*self.state;
+        let mut state = lock.lock();
+        *state = DocState::Ready;
+        cvar.notify_one();
+    }
+}
+
+/// The backend of doc collections: the repo runs an event-loop in a background thread.
 pub(crate) struct Repo {
+    /// A map of collections to their info.
     collections: HashMap<CollectionId, CollectionInfo>,
+    
+    /// Sender and receiver of network events.
+    /// A sender is kept around to clone for multiple calls to `new_collection`.
     network_sender: Sender<(CollectionId, NetworkEvent)>,
     network_receiver: Receiver<(CollectionId, NetworkEvent)>,
+    
+    /// Sender and receiver of collection events.
+    /// A sender is kept around to clone for multiple calls to `new_collection`,
+    /// the sender is dropped at the start of the repo's event-loop,
+    /// to ensure that the event-loop stops 
+    /// once all collections and doc handles have been dropped.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
 }
 
 impl Repo {
     pub fn new() -> Self {
-        let (network_sender, network_receiver) = channel(1);
-        let (collection_sender, collection_receiver) = channel(1);
+        let (network_sender, network_receiver) = unbounded();
+        let (collection_sender, collection_receiver) = unbounded();
         Repo {
             collections: Default::default(),
             network_sender,
@@ -88,14 +116,14 @@ impl Repo {
     }
 
     /// Create a new doc collection, with a storage and a network adapter.
-    pub async fn new_collection(
+    pub fn new_collection(
         &mut self,
         storage_adapter: Box<dyn StorageAdapter>,
         network_adapter: Box<dyn NetworkAdapter>,
     ) -> DocCollection {
         let collection_id = CollectionId(Uuid::new_v4());
         let sink = RepoNetworkSink::new(self.network_sender.clone(), collection_id.clone());
-        network_adapter.plug_into_sink(sink).await;
+        network_adapter.plug_into_sink(sink);
         let collection = DocCollection {
             collection_sender: self.collection_sender.clone(),
             collection_id: collection_id.clone(),
@@ -112,42 +140,42 @@ impl Repo {
     /// The event-loop of the repo.
     /// Handles events from collections and adapters.
     /// Returns a `std::thread::JoinHandle` for optional clean shutdown.
-    pub async fn run(mut self) {
+    pub fn run(mut self) -> JoinHandle<()> {
         // Drop the repo's clone of the collection sender,
         // ensuring the below loop stops when all collections have been dropped.
         drop(self.collection_sender);
 
-        // Run the repo's event-loop in a task.
-        let _join_handle = tokio::spawn(async move {
+        // Run the repo's event-loop in a thread.
+        thread::spawn(move || {
             loop {
-                tokio::select! {
-                    collection_event = self.collection_receiver.recv() => {
+                select! {
+                    recv(self.collection_receiver) -> collection_event => {
                         match collection_event {
-                            None => break,
-                            Some((collection_id, CollectionEvent::NewDoc(id, handle))) => {
+                            Err(_) => break,
+                            Ok((collection_id, CollectionEvent::NewDoc(id, info))) => {
                                 // Handle new document.
                                 let mut collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
                                 // Set the doc as ready
-                                handle.set_ready().await;
-                                collection.documents.insert(id, handle);
+                                info.set_ready();
+                                collection.documents.insert(id, info);
                             },
-                            Some((collection_id, CollectionEvent::DocChange(_id))) => {
+                            Ok((collection_id, CollectionEvent::DocChange(_id))) => {
                                 // Handle doc changes.
                                 let mut collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
-                                collection.storage_adapter.save_document(()).await;
+                                collection.storage_adapter.save_document(());
                             },
                         }
                     },
-                    _network_event = self.network_receiver.recv() => {
+                    recv(self.network_receiver) -> _event => {
                     },
                 }
             }
-        });
+        })
     }
 }

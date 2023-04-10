@@ -6,23 +6,21 @@ mod repo;
 
 use crate::interfaces::{NetworkAdapter, RepoNetworkSink, StorageAdapter};
 use crate::repo::Repo;
-use async_trait::async_trait;
+use parking_lot::Mutex;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::sync::Mutex;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     struct Network {
         sink: Arc<Mutex<Option<RepoNetworkSink>>>,
     }
 
-    #[async_trait]
     impl NetworkAdapter for Network {
-        async fn send_message(&self) {}
+        fn send_message(&self) {}
 
-        async fn plug_into_sink(&self, sink: RepoNetworkSink) {
-            *self.sink.lock().await = Some(sink);
+        fn plug_into_sink(&self, sink: RepoNetworkSink) {
+            *self.sink.lock() = Some(sink);
         }
     }
 
@@ -30,10 +28,9 @@ async fn main() {
         sender: Sender<()>,
     }
 
-    #[async_trait]
     impl StorageAdapter for Storage {
-        async fn save_document(&self, document: ()) {
-            self.sender.send(()).await.unwrap();
+        fn save_document(&self, document: ()) {
+            self.sender.blocking_send(()).unwrap();
         }
     }
 
@@ -48,24 +45,43 @@ async fn main() {
     let mut repo = Repo::new();
 
     // Create a new collection with a network and a storage adapters.
-    let collection = repo
-        .new_collection(Box::new(storage), Box::new(network))
-        .await;
+    let collection = repo.new_collection(Box::new(storage), Box::new(network));
 
     // Run the repo in the background.
-    let repo_join_handle = repo.run().await;
+    let repo_join_handle = repo.run();
 
-    // Create a new document.
-    let handle = collection.new_document().await;
+    // Pretend the client uses tokio.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (done_sender, mut done_receiver) = channel(1);
+    rt.spawn(async move {
+        // Create a new document.
+        let handle = collection.new_document();
+        let handle_clone = handle.clone();
 
-    // Wait for the document to get into the `ready` state.
-    handle.wait_ready().await;
+        // Spawn, and await, a blocking task to wait for the document to be ready.
+        Handle::current()
+            .spawn_blocking(move || {
+                // Wait for the document to get into the `ready` state.
+                handle_clone.wait_ready();
+            })
+            .await
+            .unwrap();
 
-    // Change the document.
-    handle.change().await;
+        // Change the document.
+        handle.change();
+
+        // Signal task being done to main.
+        done_sender.send(()).await.unwrap();
+    });
+    done_receiver.blocking_recv().unwrap();
 
     // Wait for the `save_document` call, which happens in response to the change call above.
-    assert!(receiver.recv().await.is_some());
+    receiver.blocking_recv().unwrap();
+
+    repo_join_handle.join().unwrap();
 
     println!("Stopped");
 }
