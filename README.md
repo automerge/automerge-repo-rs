@@ -2,7 +2,7 @@
 
 Project goal: add an integration layer between automerge and client code, compatible with any async runtime.
 
-Iteration 1
+## Iteration 1
 
 What: use an async public interface, and use async internally(but hidden from view).
 
@@ -15,7 +15,7 @@ Occured around use of document handles in client code that ran on a different to
 
 Hypothesis: panics arise from sharing synchronizaiton primitives between different runtime contexts. 
 
-Iteration 2
+## Iteration 2
 
 What: test above hypothesis.
 
@@ -26,7 +26,7 @@ Notes: panics go away, but we now have a tokio demo app, which is not the goal o
 Hypothesis: as a way of integrating with any runtime, use native threading internally, 
 and offer a "normal" interface with guarantees about blocking. 
 
-Iteration 3
+## Iteration 3
 
 What: test above hypothesis.
 
