@@ -52,7 +52,7 @@ fn main() {
         }
     }
 
-    let (sender, mut receiver) = channel(1);
+    let (sender, mut storage_receiver) = channel(1);
     let storage = Storage { sender };
 
     let (network_sender, mut network_receiver) = channel(1);
@@ -76,7 +76,8 @@ fn main() {
         .build()
         .unwrap();
         
-    // A channel used to block the main function until the async system here has shut down.
+    // A channel used to block the main function 
+    // until the async system here has shut down.
     let (done_sender, mut done_receiver) = channel(1);
     
     // Spawn the backend for the client code.
@@ -90,7 +91,8 @@ fn main() {
         other_peer_sender.send(document_id).await;
 
         // The state of the network sink.
-        // Changed in response to the `sink_wants_events` method call of the NetworkAdapter.
+        // Changed in response to the `sink_wants_events` 
+        // method call of the NetworkAdapter.
         #[derive(Debug)]
         enum SinkState {
             None,
@@ -99,7 +101,7 @@ fn main() {
         }
 
         // Spawn a task that receives data from the "other peer",
-        // and buffers it until the repo sink is ready to receive event.
+        // and buffers it until the repo sink is ready to receive events.
         Handle::current().spawn(async move {
             // Start in the None state.
             let mut sink_state = SinkState::None;
@@ -111,17 +113,19 @@ fn main() {
                             match msg {
                                 Some(NetworkMessage::NewSink(new_sink)) => {
                                     // We have now received the sink,
-                                    // via the `plug_into_sink` method of the NetworkAdapter.
+                                    // via the `plug_into_sink` 
+                                    // method of the NetworkAdapter.
                                     sink_state = SinkState::Wait(new_sink);
                                 },
                                 Some(NetworkMessage::SinkWantsEvents) =>  {
-                                    // The repo tells it is ready to receive an event(could be a batch instead).
+                                    // The repo tells it is ready 
+                                    // to receive an event(could be a batch instead).
                                     match sink_state {
                                         SinkState::Wait(new_sink) => {
                                             sink_state = SinkState::WantsEvents(new_sink)
                                         },
                                         SinkState::WantsEvents(_) => {},
-                                        SinkState::None => panic!("Unepxected NetworkMessage::SinkWantsEvents"),
+                                        SinkState::None => panic!("Unepxected NetworkMessage"),
                                     }
                                 },
                                 None => {
@@ -147,6 +151,8 @@ fn main() {
                         // the repo will mark the document as ready, via the handle,
                         // upon receiving that event.
                         sink.send_event(NetworkEvent::DocFullData(data));
+                        
+                        // Set the sink back to waiting mode.
                         SinkState::Wait(sink)
                     },
                     (sink_state, _) => sink_state,
@@ -157,10 +163,12 @@ fn main() {
             }
         });
 
-        // Spawn, and await, a blocking task to wait for the document to be ready.
+        // Spawn, and await, 
+        // a blocking task to wait for the document to be ready.
         Handle::current()
             .spawn_blocking(move || {
-                // Wait for the document to get into the `ready` state.
+                // Wait for the document 
+                // to get into the `ready` state.
                 handle_clone.wait_ready();
             })
             .await
@@ -174,9 +182,12 @@ fn main() {
     });
     done_receiver.blocking_recv().unwrap();
 
-    // Wait for the `save_document` call, which happens in response to the change call in the task above.
-    receiver.blocking_recv().unwrap();
+    // Wait for the `save_document` call, 
+    // which happens in response to the change call in the task above.
+    storage_receiver.blocking_recv().unwrap();
 
+    // All collections and doc handles have been dropped,
+    // repo should stop running.
     repo_join_handle.join().unwrap();
 
     println!("Stopped");
