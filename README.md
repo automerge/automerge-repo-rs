@@ -38,6 +38,6 @@ but guarantee non-blocking operation by using a pull-based workflow signalling b
 Alternatively, document methods as blocking, 
 and let client code deal with those using a `spawn_blocking`-like API for the runtime of their choice(see [`wait_ready`](https://github.com/gterzian/automerge-repo-demo/blob/55ae8ad59b47db78305b0f3b81bf097952c003ea/src/dochandle.rs#L65)). 
 
-[main.rs](https://github.com/gterzian/automerge-repo-demo/blob/master/src/main.rs)contains the example "client code". 
+[main.rs](https://github.com/gterzian/automerge-repo-demo/blob/master/src/main.rs) contains the example "client code". 
 
 Current state works pretty well, good basis for further discussion. 
