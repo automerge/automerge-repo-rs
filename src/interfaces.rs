@@ -10,6 +10,8 @@ pub struct CollectionId(pub Uuid);
 /// Events sent by the network adapter.
 #[derive(Debug)]
 pub enum NetworkEvent {
+    /// A peer sent us the "full data" for the doc,
+    /// which will set the doc handle state to ready.
     DocFullData(DocumentId),
 }
 
@@ -33,7 +35,7 @@ impl RepoNetworkSink {
 
     /// Guaranteed not to block if called after having received,
     /// a `sink_wants_events` call on the adapter.
-    /// Could be done with batches instad
+    /// Could be done with batches instead
     pub fn send_event(&self, event: NetworkEvent) {
         self.network_sender
             .send((self.collection_id.clone(), event))
@@ -47,6 +49,8 @@ pub trait NetworkAdapter: Send {
     /// Called by the repo whenever the sink is ready to receive events.
     fn sink_wants_events(&self);
 
+    /// Called by the repo when the collection is created,
+    /// client code should hook up the sink so that events can be sent on it.
     fn plug_into_sink(&self, sink: RepoNetworkSink);
 }
 

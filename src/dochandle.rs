@@ -16,6 +16,7 @@ pub(crate) enum DocState {
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
     state: Arc<(Mutex<DocState>, Condvar)>,
+    /// Channel used to send events back to the repo.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     document_id: DocumentId,
     collection_id: CollectionId,
@@ -23,6 +24,7 @@ pub struct DocHandle {
 
 impl Drop for DocHandle {
     fn drop(&mut self) {
+        // Close the document when the handle drops.
         self.collection_sender
             .send((
                 self.collection_id.clone(),
@@ -51,6 +53,8 @@ impl DocHandle {
         self.document_id.clone()
     }
 
+    /// Send the "doc changed" event to the repo,
+    /// which will trigger the `save` call on the StorageAdapter.
     pub fn change(&self) {
         self.collection_sender
             .send((

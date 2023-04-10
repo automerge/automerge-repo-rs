@@ -12,11 +12,14 @@ use uuid::Uuid;
 /// through which new docs can be created,
 /// and doc handles acquired.
 pub struct DocCollection {
+    /// Channel used to send events back to the repo,
+    /// such as when a doc is created, and a doc handle acquired.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_id: CollectionId,
 }
 
 impl DocCollection {
+    /// Public method used in the client context.
     /// Create a new document,
     /// send the info to the repo,
     /// return a handle.
@@ -40,11 +43,14 @@ impl DocCollection {
     }
 }
 
-/// Events sent by doc collections to the repo.
+/// Events sent by doc collections or doc handles to the repo.
 #[derive(Debug)]
 pub(crate) enum CollectionEvent {
+    /// A doc was created.
     NewDoc(DocumentId, DocumentInfo),
+    /// A document changed.
     DocChange(DocumentId),
+    /// A document was closed(the doc handle dropped).
     DocClosed(DocumentId),
 }
 
@@ -55,7 +61,7 @@ struct CollectionInfo {
     storage_adapter: Box<dyn StorageAdapter>,
     documents: HashMap<DocumentId, DocumentInfo>,
     
-    // Data recived over the network, but doc no local handle yet.
+    // Document data received over the network, but doc no local handle yet.
     data_received: HashSet<DocumentId>,
 }
 
@@ -114,6 +120,7 @@ impl Repo {
     }
 
     /// Create a new doc collection, with a storage and a network adapter.
+    /// Calls `plug_into_sink` on the network adapter.
     pub fn new_collection(
         &mut self,
         storage_adapter: Box<dyn StorageAdapter>,
@@ -146,9 +153,9 @@ impl Repo {
             // ensuring the below loop stops when all collections have been dropped.
             drop(self.collection_sender);
             
-            // Mark the sink as ready to receive for all collections,
-            // since the network channel is bounded by the nunber of collections,
-            // even if all collection send on it now, the operation will not block.
+            // Mark the sink as ready to receive for all collections.
+            // Since the network channel is bounded by the nunber of collections,
+            // even if all collection send on it now, the operations will not block.
             for (_, info) in self.collections.iter() {
                 info.network_adapter.sink_wants_events();
             }
@@ -172,7 +179,7 @@ impl Repo {
                                 
                             },
                             Ok((collection_id, CollectionEvent::DocChange(_id))) => {
-                                // Handle doc changes.
+                                // Handle doc changes: save the document.
                                 let mut collection = self
                                     .collections
                                     .get_mut(&collection_id)
@@ -180,7 +187,7 @@ impl Repo {
                                 collection.storage_adapter.save_document(());
                             },
                             Ok((collection_id, CollectionEvent::DocClosed(id))) => {
-                                // Handle doc closed.
+                                // Handle doc closed: remove the document info.
                                 let mut collection = self
                                     .collections
                                     .get_mut(&collection_id)
