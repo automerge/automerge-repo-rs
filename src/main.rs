@@ -6,14 +6,11 @@ mod repo;
 
 use crate::interfaces::{NetworkAdapter, NetworkEvent, RepoNetworkSink, StorageAdapter};
 use crate::repo::Repo;
-use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, Sender};
 
 fn main() {
-    
     // Events used internally by the network adapter.
     #[derive(Debug)]
     enum NetworkMessage {
@@ -29,16 +26,18 @@ fn main() {
         fn send_message(&self) {}
 
         fn sink_wants_events(&self) {
-            // Note use of blocking send, 
-            // an easy way for the adapter to integrate 
+            // Note use of blocking send,
+            // an easy way for the adapter to integrate
             // with an async backend(see tasks below).
             self.network_sender
-                .blocking_send(NetworkMessage::SinkWantsEvents);
+                .blocking_send(NetworkMessage::SinkWantsEvents)
+                .unwrap();
         }
 
         fn plug_into_sink(&self, sink: RepoNetworkSink) {
             self.network_sender
-                .blocking_send(NetworkMessage::NewSink(sink));
+                .blocking_send(NetworkMessage::NewSink(sink))
+                .unwrap();
         }
     }
 
@@ -48,7 +47,7 @@ fn main() {
 
     impl StorageAdapter for Storage {
         fn save_document(&self, document: ()) {
-            self.sender.blocking_send(()).unwrap();
+            self.sender.blocking_send(document).unwrap();
         }
     }
 
@@ -56,7 +55,7 @@ fn main() {
     let storage = Storage { sender };
 
     let (network_sender, mut network_receiver) = channel(1);
-    let mut network = Network { network_sender };
+    let network = Network { network_sender };
 
     // Create the repo.
     let mut repo = Repo::new(1);
@@ -75,26 +74,26 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
-        
-    // A channel used to block the main function 
+
+    // A channel used to block the main function
     // until the async system here has shut down.
     let (done_sender, mut done_receiver) = channel(1);
-    
+
     // Spawn the backend for the client code.
     rt.spawn(async move {
         // Create a new document
-        // (or rather acquire a handle to an existing doc 
+        // (or rather acquire a handle to an existing doc
         // to be synced over the network).
         let handle = collection.new_document();
         let document_id = handle.get_document_id();
         let handle_clone = handle.clone();
 
         // Simulate another peer sending data over the network.
-        // The peer magically knows the document id.  
-        other_peer_sender.send(document_id).await;
+        // The peer magically knows the document id.
+        other_peer_sender.send(document_id).await.unwrap();
 
         // The state of the network sink.
-        // Changed in response to the `sink_wants_events` 
+        // Changed in response to the `sink_wants_events`
         // method call of the NetworkAdapter.
         #[derive(Debug)]
         enum SinkState {
@@ -116,12 +115,12 @@ fn main() {
                             match msg {
                                 Some(NetworkMessage::NewSink(new_sink)) => {
                                     // We have now received the sink,
-                                    // via the `plug_into_sink` 
+                                    // via the `plug_into_sink`
                                     // method of the NetworkAdapter.
                                     sink_state = SinkState::Wait(new_sink);
                                 },
                                 Some(NetworkMessage::SinkWantsEvents) =>  {
-                                    // The repo tells it is ready 
+                                    // The repo tells it is ready
                                     // to receive an event(could be a batch instead).
                                     match sink_state {
                                         SinkState::Wait(new_sink) => {
@@ -154,10 +153,10 @@ fn main() {
                         // the repo will mark the document as ready, via the handle,
                         // upon receiving that event.
                         sink.send_event(NetworkEvent::DocFullData(data));
-                        
+
                         // Set the sink back to waiting mode.
                         SinkState::Wait(sink)
-                    },
+                    }
                     (sink_state, _) => sink_state,
                 };
                 if should_stop {
@@ -166,11 +165,11 @@ fn main() {
             }
         });
 
-        // Spawn, and await, 
+        // Spawn, and await,
         // a blocking task to wait for the document to be ready.
         Handle::current()
             .spawn_blocking(move || {
-                // Wait for the document 
+                // Wait for the document
                 // to get into the `ready` state.
                 handle_clone.wait_ready();
             })
@@ -185,7 +184,7 @@ fn main() {
     });
     done_receiver.blocking_recv().unwrap();
 
-    // Wait for the `save_document` call, 
+    // Wait for the `save_document` call,
     // which happens in response to the change call in the task above.
     storage_receiver.blocking_recv().unwrap();
 

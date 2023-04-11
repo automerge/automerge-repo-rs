@@ -1,7 +1,7 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{CollectionId, DocumentId};
 use crate::interfaces::{NetworkAdapter, NetworkEvent, RepoNetworkSink, StorageAdapter};
-use crossbeam_channel::{select, bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -60,7 +60,7 @@ struct CollectionInfo {
     network_adapter: Box<dyn NetworkAdapter>,
     storage_adapter: Box<dyn StorageAdapter>,
     documents: HashMap<DocumentId, DocumentInfo>,
-    
+
     // Document data received over the network, but doc no local handle yet.
     data_received: HashSet<DocumentId>,
 }
@@ -99,9 +99,9 @@ pub(crate) struct Repo {
     /// once all collections and doc handles have been dropped.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
-    
+
     /// Max number of collections that be created for this repo,
-    /// used to configure the buffer of the network channels. 
+    /// used to configure the buffer of the network channels.
     max_number_collections: usize,
 }
 
@@ -152,14 +152,14 @@ impl Repo {
             // Drop the repo's clone of the collection sender,
             // ensuring the below loop stops when all collections have been dropped.
             drop(self.collection_sender);
-            
+
             // Mark the sink as ready to receive for all collections.
             // Since the network channel is bounded by the nunber of collections,
             // even if all collection send on it now, the operations will not block.
             for (_, info) in self.collections.iter() {
                 info.network_adapter.sink_wants_events();
             }
-            
+
             loop {
                 select! {
                     recv(self.collection_receiver) -> collection_event => {
@@ -168,11 +168,11 @@ impl Repo {
                             Ok((collection_id, CollectionEvent::NewDoc(id, info))) => {
                                 // Handle new document
                                 // (or rather, a new handle for a doc to be synced).
-                                let mut collection = self
+                                let collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
-                                    
+
                                 // We will either already have received the data for this doc,
                                 // or will eventually receive it
                                 // (see handling of NetworkEvent below).
@@ -181,11 +181,11 @@ impl Repo {
                                     info.set_ready();
                                 }
                                 collection.documents.insert(id, info);
-                                
+
                             },
                             Ok((collection_id, CollectionEvent::DocChange(_id))) => {
                                 // Handle doc changes: save the document.
-                                let mut collection = self
+                                let collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
@@ -193,7 +193,7 @@ impl Repo {
                             },
                             Ok((collection_id, CollectionEvent::DocClosed(id))) => {
                                 // Handle doc closed: remove the document info.
-                                let mut collection = self
+                                let collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
@@ -205,7 +205,7 @@ impl Repo {
                         match event {
                             Err(_) => break,
                             Ok((collection_id, NetworkEvent::DocFullData(doc_id))) => {
-                                let mut collection = self
+                                let collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
@@ -217,7 +217,7 @@ impl Repo {
                                     // we haven't received the CollectionEvent::NewDoc yet.
                                     collection.data_received.insert(doc_id);
                                 }
-                                
+
                                 // Mark the sink as ready to receive another event.
                                 collection.network_adapter.sink_wants_events();
                             }

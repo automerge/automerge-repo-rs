@@ -1,4 +1,4 @@
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Sender;
 use uuid::Uuid;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]

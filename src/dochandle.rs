@@ -71,9 +71,8 @@ impl DocHandle {
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
         loop {
-            match *state {
-                DocState::Ready => return,
-                _ => {}
+            if let DocState::Ready = *state {
+                return;
             }
             cvar.wait(&mut state);
         }
