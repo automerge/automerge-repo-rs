@@ -50,7 +50,7 @@ pub(crate) enum CollectionEvent {
     NewDoc(DocumentId, DocumentInfo),
     /// A document changed.
     DocChange(DocumentId),
-    /// A document was closed(the doc handle dropped).
+    /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
 }
 
@@ -166,11 +166,16 @@ impl Repo {
                         match collection_event {
                             Err(_) => break,
                             Ok((collection_id, CollectionEvent::NewDoc(id, info))) => {
-                                // Handle new document.
+                                // Handle new document
+                                // (or rather, a new handle for a doc to be synced).
                                 let mut collection = self
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
+                                    
+                                // We will either already have received the data for this doc,
+                                // or will eventually receive it
+                                // (see handling of NetworkEvent below).
                                 if collection.data_received.contains(&id) {
                                     // Set the doc as ready
                                     info.set_ready();
@@ -208,7 +213,8 @@ impl Repo {
                                     // Set the doc as ready
                                     document.set_ready();
                                 } else {
-                                    // keep the data for now
+                                    // keep the data for now,
+                                    // we haven't received the CollectionEvent::NewDoc yet.
                                     collection.data_received.insert(doc_id);
                                 }
                                 

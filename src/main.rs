@@ -82,12 +82,15 @@ fn main() {
     
     // Spawn the backend for the client code.
     rt.spawn(async move {
-        // Create a new document.
+        // Create a new document
+        // (or rather acquire a handle to an existing doc 
+        // to be synced over the network).
         let handle = collection.new_document();
         let document_id = handle.get_document_id();
         let handle_clone = handle.clone();
 
-        // Simulate another peer sending data over the network.   
+        // Simulate another peer sending data over the network.
+        // The peer magically knows the document id.  
         other_peer_sender.send(document_id).await;
 
         // The state of the network sink.
