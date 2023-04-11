@@ -176,7 +176,7 @@ impl Repo {
                                 // We will either already have received the data for this doc,
                                 // or will eventually receive it
                                 // (see handling of NetworkEvent below).
-                                if collection.data_received.contains(&id) {
+                                if collection.data_received.remove(&id) {
                                     // Set the doc as ready
                                     info.set_ready();
                                 }
