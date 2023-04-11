@@ -25,6 +25,7 @@ pub struct DocHandle {
 impl Drop for DocHandle {
     fn drop(&mut self) {
         // Close the document when the handle drops.
+        // FIXME: this doesn't work as expected, because handles are cloneable.
         self.collection_sender
             .send((
                 self.collection_id.clone(),
