@@ -4,6 +4,7 @@ use crate::interfaces::{NetworkAdapter, NetworkEvent, RepoNetworkSink, StorageAd
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
@@ -26,13 +27,18 @@ impl DocCollection {
     pub fn new_document(&self) -> DocHandle {
         let document_id = DocumentId(Uuid::new_v4());
         let state = Arc::new((Mutex::new(DocState::Start), Condvar::new()));
+        let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.collection_sender.clone(),
             document_id.clone(),
             self.collection_id.clone(),
             state.clone(),
+            handle_count.clone(),
         );
-        let doc_info = DocumentInfo { state };
+        let doc_info = DocumentInfo {
+            state,
+            handle_count,
+        };
         self.collection_sender
             .send((
                 self.collection_id.clone(),
@@ -68,7 +74,10 @@ struct CollectionInfo {
 /// Info about a document, held by the repo(via CollectionInfo).
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
+    /// State shared with the handle.
     state: Arc<(Mutex<DocState>, Condvar)>,
+    /// Ref count for handles.
+    handle_count: Arc<AtomicUsize>,
 }
 
 impl DocumentInfo {
@@ -197,7 +206,13 @@ impl Repo {
                                     .collections
                                     .get_mut(&collection_id)
                                     .expect("Unexpected collection event.");
-                                collection.documents.remove(&id);
+                                let doc_info = collection
+                                    .documents
+                                    .remove(&id)
+                                    .expect("Document closed but not doc info found.");
+                                if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
+                                    panic!("Document closed with outstanding handles.");
+                                }
                             }
                         }
                     },
