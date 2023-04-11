@@ -61,7 +61,7 @@ struct CollectionInfo {
     storage_adapter: Box<dyn StorageAdapter>,
     documents: HashMap<DocumentId, DocumentInfo>,
 
-    // Document data received over the network, but doc no local handle yet.
+    /// Document data received over the network, but doc no local handle yet.
     data_received: HashSet<DocumentId>,
 }
 
@@ -120,15 +120,12 @@ impl Repo {
     }
 
     /// Create a new doc collection, with a storage and a network adapter.
-    /// Calls `plug_into_sink` on the network adapter.
     pub fn new_collection(
         &mut self,
         storage_adapter: Box<dyn StorageAdapter>,
         network_adapter: Box<dyn NetworkAdapter>,
     ) -> DocCollection {
         let collection_id = CollectionId(Uuid::new_v4());
-        let sink = RepoNetworkSink::new(self.network_sender.clone(), collection_id.clone());
-        network_adapter.plug_into_sink(sink);
         let collection = DocCollection {
             collection_sender: self.collection_sender.clone(),
             collection_id: collection_id.clone(),
@@ -153,10 +150,13 @@ impl Repo {
             // ensuring the below loop stops when all collections have been dropped.
             drop(self.collection_sender);
 
-            // Mark the sink as ready to receive for all collections.
+            // Call `plug_into_sink` on all network adapters.
+            // Mark all sinks as ready to receive for all collections.
             // Since the network channel is bounded by the nunber of collections,
             // even if all collection send on it now, the operations will not block.
-            for (_, info) in self.collections.iter() {
+            for (collection_id, info) in self.collections.iter() {
+                let sink = RepoNetworkSink::new(self.network_sender.clone(), collection_id.clone());
+                info.network_adapter.plug_into_sink(sink);
                 info.network_adapter.sink_wants_events();
             }
 
