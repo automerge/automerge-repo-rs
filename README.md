@@ -13,7 +13,7 @@ Project goal: add an integration layer between automerge and client code, compat
 **Problems:** intermittent panics, mostly about channels being disconnected apparently without reason. 
 Occured around use of document handles in client code that ran on a different tokio runtime. 
 
-**Hypothesis:** panics arise from sharing synchronizaiton primitives between different runtime contexts. 
+**Hypothesis:** panics arise from sharing synchronization primitives between different runtime contexts. 
 
 ## Iteration 2
 
@@ -36,7 +36,7 @@ Offer a public interface that is not async,
 but guarantee non-blocking operation by using a pull-based workflow signalling backpressure(see [`sink_wants_events`](https://github.com/gterzian/automerge-repo-demo/blob/55ae8ad59b47db78305b0f3b81bf097952c003ea/src/interfaces.rs#L48)). 
 
 Alternatively, document methods as blocking, 
-and let client code deal with those using a `spawn_blocking`-like API for the runtime of their choice(see [`wait_ready`](https://github.com/gterzian/automerge-repo-demo/blob/55ae8ad59b47db78305b0f3b81bf097952c003ea/src/dochandle.rs#L65)). 
+and let client code deal with those using a `spawn_blocking`-like API from the runtime of their choice(see [`wait_ready`](https://github.com/gterzian/automerge-repo-demo/blob/55ae8ad59b47db78305b0f3b81bf097952c003ea/src/dochandle.rs#L65)). 
 
 [main.rs](https://github.com/gterzian/automerge-repo-demo/blob/master/src/main.rs) contains the example "client code". 
 
