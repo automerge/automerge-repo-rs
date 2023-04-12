@@ -33,10 +33,10 @@ and offer a "normal" interface with guarantees about blocking.
 **How:** Use a native thread to run event-loop of library. 
 
 Offer a public interface that is not async, 
-but guarantee non-blocking operation by using a pull-based workflow signalling backpressure(see [`sink_wants_events`](https://github.com/gterzian/automerge-repo-demo/blob/9fbcba0f8df8c7310ff76c607f415b5faf90e9b0/src/interfaces.rs#L50)). 
+but guarantee non-blocking operation by using a pull-based workflow signalling backpressure(see [`sink_wants_events`](https://github.com/gterzian/automerge-repo-demo/blob/31ba5b31509debf32077f3101ebdaf784bea0f18/src/interfaces.rs#L50)). 
 
 Alternatively, document methods as blocking, 
-and let client code deal with those using a `spawn_blocking`-like API from the runtime of their choice(see [`wait_ready`](https://github.com/gterzian/automerge-repo-demo/blob/9fbcba0f8df8c7310ff76c607f415b5faf90e9b0/src/dochandle.rs#L90)). 
+and let client code deal with those using a `spawn_blocking`-like API from the runtime of their choice(see [`wait_ready`](https://github.com/gterzian/automerge-repo-demo/blob/31ba5b31509debf32077f3101ebdaf784bea0f18/src/dochandle.rs#L90)). 
 
 [main.rs](https://github.com/gterzian/automerge-repo-demo/blob/master/src/main.rs) contains the example "client code". 
 
