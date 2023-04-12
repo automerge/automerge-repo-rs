@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
 
-/// The public interface of the repo,
+/// A collection of documents,
 /// through which new docs can be created,
 /// and doc handles acquired.
 pub struct DocCollection {
@@ -74,9 +74,9 @@ struct CollectionInfo {
 /// Info about a document, held by the repo(via CollectionInfo).
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
-    /// State shared with the handle.
+    /// State of the document(shared with handles).
     state: Arc<(Mutex<DocState>, Condvar)>,
-    /// Ref count for handles.
+    /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
 }
 
@@ -129,6 +129,7 @@ impl Repo {
     }
 
     /// Create a new doc collection, with a storage and a network adapter.
+    /// Note: all collections must be created before starting to run the repo.
     pub fn new_collection(
         &mut self,
         storage_adapter: Box<dyn StorageAdapter>,
