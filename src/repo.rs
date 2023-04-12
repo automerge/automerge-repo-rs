@@ -82,12 +82,12 @@ pub(crate) struct DocumentInfo {
 
 impl DocumentInfo {
     /// Set the document to a ready state,
-    /// wakes-up the doc handle if inside `wait_ready`.
+    /// wakes-up all doc handles that are waiting inside `wait_ready`.
     pub fn set_ready(&self) {
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
         *state = DocState::Ready;
-        cvar.notify_one();
+        cvar.notify_all();
     }
 }
 
