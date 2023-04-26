@@ -4,42 +4,78 @@ mod dochandle;
 mod interfaces;
 mod repo;
 
-use crate::interfaces::{NetworkAdapter, NetworkEvent, RepoNetworkSink, StorageAdapter};
+use crate::interfaces::{
+    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter,
+};
 use crate::repo::Repo;
+use core::pin::Pin;
+use futures::sink::Sink;
+use futures::stream::Stream;
+use futures::task::{Context, Poll, Waker};
+use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 
 fn main() {
-    // Events used internally by the network adapter.
-    #[derive(Debug)]
-    enum NetworkMessage {
-        SinkWantsEvents,
-        NewSink(RepoNetworkSink),
+    struct Network<NetworkMessage> {
+        buffer: Arc<Mutex<VecDeque<NetworkEvent>>>,
+        stream_waker: Arc<Mutex<Option<Waker>>>,
+        outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
+        sink_waker: Arc<Mutex<Option<Waker>>>,
+        sender: Sender<()>,
     }
 
-    struct Network {
-        network_sender: Sender<NetworkMessage>,
-    }
-
-    impl NetworkAdapter for Network {
-        fn send_message(&self) {}
-
-        fn sink_wants_events(&self) {
-            // Note use of blocking send,
-            // an easy way for the adapter to integrate
-            // with an async backend(see tasks below).
-            self.network_sender
-                .blocking_send(NetworkMessage::SinkWantsEvents)
-                .unwrap();
-        }
-
-        fn plug_into_sink(&self, sink: RepoNetworkSink) {
-            self.network_sender
-                .blocking_send(NetworkMessage::NewSink(sink))
-                .unwrap();
+    impl Stream for Network<NetworkMessage> {
+        type Item = NetworkEvent;
+        fn poll_next(
+            self: Pin<&mut Network<NetworkMessage>>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<NetworkEvent>> {
+            *self.stream_waker.lock() = Some(cx.waker().clone());
+            if let Some(event) = self.buffer.lock().pop_front() {
+                Poll::Ready(Some(event))
+            } else {
+                Poll::Pending
+            }
         }
     }
+
+    impl Sink<NetworkMessage> for Network<NetworkMessage> {
+        type Error = NetworkError;
+        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            *self.sink_waker.lock() = Some(cx.waker().clone());
+            if self.outgoing.lock().is_empty() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+        fn start_send(self: Pin<&mut Self>, item: NetworkMessage) -> Result<(), Self::Error> {
+            self.outgoing.lock().push_back(item);
+            self.sender.blocking_send(()).unwrap();
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            *self.sink_waker.lock() = Some(cx.waker().clone());
+            if self.outgoing.lock().is_empty() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            *self.sink_waker.lock() = Some(cx.waker().clone());
+            if self.outgoing.lock().is_empty() {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl NetworkAdapter for Network<NetworkMessage> {}
 
     struct Storage {
         sender: Sender<()>,
@@ -54,20 +90,27 @@ fn main() {
     let (sender, mut storage_receiver) = channel(1);
     let storage = Storage { sender };
 
-    let (network_sender, mut network_receiver) = channel(1);
-    let network = Network { network_sender };
+    let buffer = Arc::new(Mutex::new(VecDeque::new()));
+    let stream_waker = Arc::new(Mutex::new(None));
+    let sink_waker = Arc::new(Mutex::new(None));
+    let outgoing = Arc::new(Mutex::new(VecDeque::new()));
+    let (sender, mut network_receiver) = channel(1);
+    let network = Network {
+        buffer: buffer.clone(),
+        stream_waker: stream_waker.clone(),
+        outgoing: outgoing.clone(),
+        sender,
+        sink_waker: sink_waker.clone(),
+    };
 
     // Create the repo.
     let mut repo = Repo::new(1);
 
     // Create a new collection with a network and a storage adapters.
-    let collection = repo.new_collection(Box::new(storage), Box::new(network));
+    let collection = repo.new_collection(Box::new(storage), network);
 
     // Run the repo in the background.
     let repo_join_handle = repo.run();
-
-    // A channel used to model another peer over the network.
-    let (other_peer_sender, mut other_peer_receiver) = channel(1);
 
     // The client code uses tokio.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -88,80 +131,28 @@ fn main() {
         let document_id = handle.get_document_id();
         let handle_clone = handle.clone();
 
-        // Simulate another peer sending data over the network.
-        // The peer magically knows the document id.
-        other_peer_sender.send(document_id).await.unwrap();
-
-        // The state of the network sink.
-        // Changed in response to the `sink_wants_events`
-        // method call of the NetworkAdapter.
-        #[derive(Debug)]
-        enum SinkState {
-            None,
-            WantsEvents(RepoNetworkSink),
-            Wait(RepoNetworkSink),
-        }
-
-        // Spawn a task that receives data from the "other peer",
-        // and buffers it until the repo sink is ready to receive events.
+        // Spawn a task that receives data from the "other peer".
         Handle::current().spawn(async move {
-            // Start in the None state.
-            let mut sink_state = SinkState::None;
-            let mut buffer = VecDeque::new();
-            let mut should_stop = false;
             loop {
                 tokio::select! {
-                        msg = network_receiver.recv() => {
-                            match msg {
-                                Some(NetworkMessage::NewSink(new_sink)) => {
-                                    // We have now received the sink,
-                                    // via the `plug_into_sink`
-                                    // method of the NetworkAdapter.
-                                    sink_state = SinkState::Wait(new_sink);
-                                },
-                                Some(NetworkMessage::SinkWantsEvents) =>  {
-                                    // The repo tells it is ready
-                                    // to receive an event(could be a batch instead).
-                                    match sink_state {
-                                        SinkState::Wait(new_sink) => {
-                                            sink_state = SinkState::WantsEvents(new_sink)
-                                        },
-                                        SinkState::WantsEvents(_) => {},
-                                        SinkState::None => panic!("Unepxected NetworkMessage"),
+                        _ = network_receiver.recv() => {
+                            if let Some(network_message) = outgoing.lock().pop_front() {
+                                match network_message {
+                                    NetworkMessage::WantDoc(doc_id) => {
+                                        buffer.lock().push_back(NetworkEvent::DocFullData(doc_id));
+                                        if let Some(waker) = stream_waker.lock().take() {
+                                            waker.wake();
+                                        }
                                     }
-                                },
-                                None => {
-                                    should_stop = true;
-                                },
-                            }
-                        }
-                        data = other_peer_receiver.recv() => {
-                            // The "other peer" sends a message,
-                            // assumed here to be the data for a document.
-                            if data.is_some() {
-                                buffer.push_back(data.unwrap());
+                                }
+                                if let Some(waker) = sink_waker.lock().take() {
+                                    waker.wake();
+                                }
                             } else {
-                                should_stop = true;
+                                break;
                             }
-                        }
+                        },
                 };
-                // Send events if possible.
-                sink_state = match (sink_state, buffer.is_empty()) {
-                    (SinkState::WantsEvents(sink), false) => {
-                        let data = buffer.pop_front().unwrap();
-                        // Pretend the peer sent us the data of a document,
-                        // the repo will mark the document as ready, via the handle,
-                        // upon receiving that event.
-                        sink.send_event(NetworkEvent::DocFullData(data));
-
-                        // Set the sink back to waiting mode.
-                        SinkState::Wait(sink)
-                    }
-                    (sink_state, _) => sink_state,
-                };
-                if should_stop {
-                    break;
-                }
             }
         });
 
