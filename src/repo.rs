@@ -351,7 +351,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             // Initial poll to network streams.
             let collection_ids: Vec<CollectionId> = self.collections.keys().cloned().collect();
             for collection_id in collection_ids {
-                self.collect_and_handle_network_events(collection_id.clone());
+                self.collect_and_handle_network_events(collection_id);
             }
 
             loop {
