@@ -4,10 +4,15 @@ mod dochandle;
 mod interfaces;
 mod repo;
 
+use crate::interfaces::{CollectionId, DocumentId};
 use crate::interfaces::{
     NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter,
 };
 use crate::repo::Repo;
+use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
+use automerge::transaction::Transactable;
+use automerge::AutoCommit;
+use automerge::ReadDoc;
 use core::pin::Pin;
 use futures::sink::Sink;
 use futures::stream::Stream;
@@ -17,6 +22,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
+use uuid::Uuid;
 
 fn main() {
     struct Network<NetworkMessage> {
@@ -127,33 +133,59 @@ fn main() {
         // Create a new document
         // (or rather acquire a handle to an existing doc
         // to be synced over the network).
-        let handle = collection.new_document();
-        let document_id = handle.get_document_id();
+        let document_id = DocumentId(Uuid::new_v4());
+        let handle = collection.load_existing_document(document_id.clone());
         let handle_clone = handle.clone();
+        let another_clone = handle.clone();
 
         // Spawn a task that receives data from the "other peer".
         Handle::current().spawn(async move {
+            // Create a doc, change it, and send a sync message.
+            let mut peer2 = automerge::AutoCommit::new();
+            let mut peer2_state = SyncState::new();
+            peer2.put(automerge::ROOT, "key", "value").unwrap();
+            let first_message = peer2.sync().generate_sync_message(&mut peer2_state).unwrap();
+            buffer.lock().push_back(NetworkEvent::Sync(document_id.clone(), first_message));
+            if let Some(waker) = stream_waker.lock().take() {
+                waker.wake();
+            }
             loop {
                 tokio::select! {
                         _ = network_receiver.recv() => {
-                            if let Some(network_message) = outgoing.lock().pop_front() {
+                            let message = outgoing.lock().pop_front();
+                            if let Some(network_message) = message {
                                 match network_message {
-                                    NetworkMessage::WantDoc(doc_id) => {
-                                        buffer.lock().push_back(NetworkEvent::DocFullData(doc_id));
-                                        if let Some(waker) = stream_waker.lock().take() {
-                                            waker.wake();
+                                    NetworkMessage::Sync(_, message) => {
+                                        peer2.sync().receive_sync_message(&mut peer2_state, message).unwrap();
+                                        if let Some(message) = peer2.sync().generate_sync_message(&mut peer2_state) {
+                                            buffer.lock().push_back(NetworkEvent::Sync(document_id.clone(), message));
+                                            if let Some(waker) = stream_waker.lock().take() {
+                                                waker.wake();
+                                            }
+                                        } else {
+                                            buffer.lock().push_back(NetworkEvent::DoneSync(document_id.clone()));
+                                            if let Some(waker) = stream_waker.lock().take() {
+                                                waker.wake();
+                                            }
                                         }
-                                    }
+                                    },
+                                    NetworkMessage::DoneSync(_) => {
+                                        if peer2.get(automerge::ROOT, "key").unwrap().unwrap().0.to_str() ==  Some("test") {
+                                            // Signal task being done to main.
+                                            done_sender.send(()).await.unwrap();
+                                            break;
+                                        }
+                                    },
                                 }
                                 if let Some(waker) = sink_waker.lock().take() {
                                     waker.wake();
                                 }
-                            } else {
-                                break;
                             }
                         },
                 };
             }
+            // Drop the last handle, stopping the repo.
+            drop(another_clone);
         });
 
         // Spawn, and await,
@@ -166,18 +198,14 @@ fn main() {
             })
             .await
             .unwrap();
-
         // Change the document.
-        handle.change();
-
-        // Signal task being done to main.
-        done_sender.send(()).await.unwrap();
+        handle.with_doc_mut(|doc| {
+            doc.put(automerge::ROOT, "key", "test")
+                .expect("Failed to change the document.");
+            doc.commit();
+        });
     });
     done_receiver.blocking_recv().unwrap();
-
-    // Wait for the `save_document` call,
-    // which happens in response to the change call in the task above.
-    storage_receiver.blocking_recv().unwrap();
 
     // All collections and doc handles have been dropped,
     // repo should stop running.

@@ -1,5 +1,7 @@
 use crate::interfaces::{CollectionId, DocumentId};
 use crate::repo::CollectionEvent;
+use automerge::transaction::Transactable;
+use automerge::AutoCommit;
 use crossbeam_channel::Sender;
 use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8,15 +10,15 @@ use std::sync::Arc;
 /// The doc handle state machine.
 #[derive(Clone, Debug)]
 pub(crate) enum DocState {
-    Start,
-    Ready,
+    Bootstrap,
+    Sync,
 }
 
 #[derive(Debug)]
 /// A handle to a document, held by the client.
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
-    state: Arc<(Mutex<DocState>, Condvar)>,
+    state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
@@ -58,7 +60,7 @@ impl DocHandle {
         collection_sender: Sender<(CollectionId, CollectionEvent)>,
         document_id: DocumentId,
         collection_id: CollectionId,
-        state: Arc<(Mutex<DocState>, Condvar)>,
+        state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
         handle_count: Arc<AtomicUsize>,
     ) -> Self {
         DocHandle {
@@ -74,9 +76,17 @@ impl DocHandle {
         self.document_id.clone()
     }
 
-    /// Send the "doc changed" event to the repo,
-    /// which will trigger the `save` call on the StorageAdapter.
-    pub fn change(&self) {
+    /// Run a closure over a mutable reference to the document,
+    /// sends a `DocChange` event to the repo.
+    pub fn with_doc_mut<F>(&self, f: F)
+    where
+        F: FnOnce(&mut AutoCommit),
+    {
+        {
+            let (lock, cvar) = &*self.state;
+            let mut state = lock.lock();
+            f(&mut state.1);
+        }
         self.collection_sender
             .send((
                 self.collection_id.clone(),
@@ -85,16 +95,16 @@ impl DocHandle {
             .expect("Failed to send doc change event.");
     }
 
-    /// Wait for the document to be ready.
+    /// Wait for the document to be ready to be edited.
     /// Note: blocks, should be called only from within a blocking task or thread.
     pub fn wait_ready(&self) {
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
         loop {
-            if let DocState::Ready = *state {
-                return;
+            match state.0 {
+                DocState::Sync => return,
+                DocState::Bootstrap => cvar.wait(&mut state),
             }
-            cvar.wait(&mut state);
         }
     }
 }

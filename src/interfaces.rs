@@ -1,3 +1,4 @@
+use automerge::sync::Message as SyncMessage;
 use crossbeam_channel::Sender;
 use futures::sink::Sink;
 use futures::stream::Stream;
@@ -13,16 +14,19 @@ pub struct CollectionId(pub Uuid);
 /// Events sent by the network adapter.
 #[derive(Debug)]
 pub enum NetworkEvent {
-    /// A peer sent us the "full data" for the doc,
-    /// which will set the doc handle state to ready.
-    DocFullData(DocumentId),
+    /// A peer sent us a sync message,
+    // to be applied to a given document.
+    Sync(DocumentId, SyncMessage),
+    DoneSync(DocumentId),
 }
 
 /// Messages sent into the network sink.
 #[derive(Debug)]
 pub enum NetworkMessage {
-    /// We want data for a doc.
-    WantDoc(DocumentId),
+    /// We're sending a sync message,
+    // to be applied to a peer to a given document.
+    Sync(DocumentId, SyncMessage),
+    DoneSync(DocumentId),
 }
 
 /// Network errors used by the sink.

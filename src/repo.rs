@@ -1,6 +1,8 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{CollectionId, DocumentId};
 use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage, StorageAdapter};
+use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
+use automerge::AutoCommit;
 use core::pin::Pin;
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
 use futures::stream::Stream;
@@ -10,6 +12,7 @@ use futures::Sink;
 use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
+use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -27,12 +30,20 @@ pub struct DocCollection {
 
 impl DocCollection {
     /// Public method used in the client context.
-    /// Create a new document,
+    /// Create a new document in a syncing state,
     /// send the info to the repo,
     /// return a handle.
     pub fn new_document(&self) -> DocHandle {
         let document_id = DocumentId(Uuid::new_v4());
-        let state = Arc::new((Mutex::new(DocState::Start), Condvar::new()));
+        self.new_document_handle(document_id, DocState::Sync)
+    }
+
+    pub fn load_existing_document(&self, document_id: DocumentId) -> DocHandle {
+        self.new_document_handle(document_id, DocState::Bootstrap)
+    }
+
+    fn new_document_handle(&self, document_id: DocumentId, state: DocState) -> DocHandle {
+        let state = Arc::new((Mutex::new((state, AutoCommit::new())), Condvar::new()));
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.collection_sender.clone(),
@@ -44,11 +55,12 @@ impl DocCollection {
         let doc_info = DocumentInfo {
             state,
             handle_count,
+            sync_state: SyncState::new(),
         };
         self.collection_sender
             .send((
                 self.collection_id.clone(),
-                CollectionEvent::NewDoc(document_id, doc_info),
+                CollectionEvent::NewDocHandle(document_id, doc_info),
             ))
             .expect("Failed to send collection event.");
         handle
@@ -59,7 +71,7 @@ impl DocCollection {
 #[derive(Debug)]
 pub(crate) enum CollectionEvent {
     /// A doc was created.
-    NewDoc(DocumentId, DocumentInfo),
+    NewDocHandle(DocumentId, DocumentInfo),
     /// A document changed.
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
@@ -80,25 +92,52 @@ struct CollectionInfo<T: NetworkAdapter> {
 
     /// Messages to send on the network adapter sink.
     pending_messages: VecDeque<NetworkMessage>,
+    /// Events received on the network stream, pending processing.
+    pending_events: VecDeque<NetworkEvent>,
 }
 
 /// Info about a document, held by the repo(via CollectionInfo).
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
     /// State of the document(shared with handles).
-    state: Arc<(Mutex<DocState>, Condvar)>,
+    state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
+    /// The automerge sync state.
+    sync_state: SyncState,
 }
 
 impl DocumentInfo {
-    /// Set the document to a ready state,
+    /// Mark the document as ready for editing,
     /// wakes-up all doc handles that are waiting inside `wait_ready`.
-    pub fn set_ready(&self) {
+    fn set_ready(&self) {
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
-        *state = DocState::Ready;
+        state.0 = DocState::Sync;
         cvar.notify_all();
+    }
+
+    fn apply_sync_message(&mut self, message: SyncMessage) -> Option<SyncMessage> {
+        let outgoing = {
+            let (state, cvar) = &*self.state;
+            let mut sync = state.lock();
+            sync.1
+                .sync()
+                .receive_sync_message(&mut self.sync_state, message)
+                .expect("Failed to apply sync message.");
+            let outgoing = sync.1.sync().generate_sync_message(&mut self.sync_state);
+            outgoing
+        };
+        outgoing
+    }
+
+    fn generate_sync_for_local_changes(&mut self) -> Option<SyncMessage> {
+        let (state, cvar) = &*self.state;
+        state
+            .lock()
+            .1
+            .sync()
+            .generate_sync_message(&mut self.sync_state)
     }
 }
 
@@ -154,7 +193,7 @@ impl ArcWake for SinkWaker {
         arc_self
             .network_sink_sender
             .send(arc_self.collection_id.clone())
-            .expect("Failed to send network stream readiness signal.");
+            .expect("Failed to send network sink readiness signal.");
     }
 }
 
@@ -206,6 +245,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             stream_waker,
             sink_waker,
             pending_messages: Default::default(),
+            pending_events: Default::default(),
         };
         self.collections.insert(collection_id, collection_info);
         collection
@@ -213,47 +253,30 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
 
     /// Poll the network adapter stream for a given collection,
     /// handle the incoming events.
-    fn collect_and_handle_network_events(&mut self, collection_id: CollectionId) {
+    fn collect_network_events(&mut self, collection_id: &CollectionId) {
         let collection = self
             .collections
-            .get_mut(&collection_id)
+            .get_mut(collection_id)
             .expect("Unexpected collection event.");
 
         // Collect as many events as possible.
-        let mut events = VecDeque::new();
         loop {
             let waker = waker_ref(&collection.stream_waker);
             let pinned_stream = Pin::new(&mut collection.network_adapter);
             let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
             match result {
                 Poll::Pending => break,
-                Poll::Ready(Some(event)) => events.push_back(event),
+                Poll::Ready(Some(event)) => collection.pending_events.push_back(event),
                 Poll::Ready(None) => return,
-            }
-        }
-
-        // Handle events.
-        for event in events {
-            match event {
-                NetworkEvent::DocFullData(doc_id) => {
-                    if let Some(document) = collection.documents.get(&doc_id) {
-                        // Set the doc as ready
-                        document.set_ready();
-                    } else {
-                        // keep the data for now,
-                        // we haven't received the CollectionEvent::NewDoc yet.
-                        collection.data_received.insert(doc_id);
-                    }
-                }
             }
         }
     }
 
     /// Process pending messages on network sinks for all collections.
-    fn process_outgoing_network_messages(&mut self, collection_id: CollectionId) {
+    fn process_outgoing_network_messages(&mut self, collection_id: &CollectionId) {
         let collection = self
             .collections
-            .get_mut(&collection_id)
+            .get_mut(collection_id)
             .expect("Unexpected collection event.");
 
         // Send as many messages as possible.
@@ -289,43 +312,34 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
     }
 
-    fn handle_collection_event(&mut self, collection_id: CollectionId, event: CollectionEvent) {
+    fn handle_collection_event(&mut self, collection_id: &CollectionId, event: CollectionEvent) {
         match event {
-            CollectionEvent::NewDoc(id, info) => {
-                // Handle new document
-                // (or rather, a new handle for a doc to be synced).
+            CollectionEvent::NewDocHandle(id, info) => {
                 let collection = self
                     .collections
-                    .get_mut(&collection_id)
+                    .get_mut(collection_id)
                     .expect("Unexpected collection event.");
-
-                // We will either already have received the data for this doc,
-                // or will eventually receive it
-                // (see handling of NetworkEvent below).
-                if collection.data_received.remove(&id) {
-                    // Set the doc as ready
-                    info.set_ready();
-                } else {
-                    // Ask the other peer for the data.
-                    collection
-                        .pending_messages
-                        .push_back(NetworkMessage::WantDoc(id.clone()));
-                }
                 collection.documents.insert(id, info);
             }
-            CollectionEvent::DocChange(_id) => {
-                // Handle doc changes: save the document.
+            CollectionEvent::DocChange(doc_id) => {
+                // Handle doc changes: sync the document.
                 let collection = self
                     .collections
-                    .get_mut(&collection_id)
+                    .get_mut(collection_id)
                     .expect("Unexpected collection event.");
-                collection.storage_adapter.save_document(());
+                if let Some(info) = collection.documents.get_mut(&doc_id) {
+                    if let Some(outoing_sync_message) = info.generate_sync_for_local_changes() {
+                        collection
+                            .pending_messages
+                            .push_back(NetworkMessage::Sync(doc_id, outoing_sync_message));
+                    }
+                }
             }
             CollectionEvent::DocClosed(id) => {
                 // Handle doc closed: remove the document info.
                 let collection = self
                     .collections
-                    .get_mut(&collection_id)
+                    .get_mut(collection_id)
                     .expect("Unexpected collection event.");
                 let doc_info = collection
                     .documents
@@ -333,6 +347,38 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     .expect("Document closed but not doc info found.");
                 if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
                     panic!("Document closed with outstanding handles.");
+                }
+            }
+        }
+    }
+
+    fn sync_document_collection(&mut self, collection_id: &CollectionId) {
+        let collection = self
+            .collections
+            .get_mut(collection_id)
+            .expect("Unexpected collection event.");
+
+        // Process incoming events.
+        // Handle events.
+        for event in mem::take(&mut collection.pending_events) {
+            match event {
+                NetworkEvent::Sync(doc_id, message) => {
+                    if let Some(info) = collection.documents.get_mut(&doc_id) {
+                        if let Some(outoing_sync_message) = info.apply_sync_message(message) {
+                            collection
+                                .pending_messages
+                                .push_back(NetworkMessage::Sync(doc_id, outoing_sync_message));
+                        } else {
+                            collection
+                                .pending_messages
+                                .push_back(NetworkMessage::DoneSync(doc_id));
+                        }
+                    }
+                }
+                NetworkEvent::DoneSync(doc_id) => {
+                    if let Some(info) = collection.documents.get_mut(&doc_id) {
+                        info.set_ready();
+                    }
                 }
             }
         }
@@ -351,21 +397,17 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             // Initial poll to network streams.
             let collection_ids: Vec<CollectionId> = self.collections.keys().cloned().collect();
             for collection_id in collection_ids {
-                self.collect_and_handle_network_events(collection_id);
+                self.collect_network_events(&collection_id);
+                self.sync_document_collection(&collection_id);
+                self.process_outgoing_network_messages(&collection_id);
             }
 
             loop {
                 select! {
                     recv(self.collection_receiver) -> collection_event => {
-                        if let Ok((id, event)) = collection_event {
-                            self.handle_collection_event(id.clone(), event);
-                            let collection = self
-                                .collections
-                                .get(&id)
-                                .expect("Unexpected collection event.");
-                            if !collection.pending_messages.is_empty() {
-                                self.process_outgoing_network_messages(id);
-                            }
+                        if let Ok((collection_id, event)) = collection_event {
+                            self.handle_collection_event(&collection_id, event);
+                            self.process_outgoing_network_messages(&collection_id);
                         } else {
                             break;
                         }
@@ -374,7 +416,9 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                         match event {
                             Err(_) => panic!("Network senders dropped before closing stream"),
                             Ok(collection_id) => {
-                                self.collect_and_handle_network_events(collection_id);
+                                self.collect_network_events(&collection_id);
+                                self.sync_document_collection(&collection_id);
+                                self.process_outgoing_network_messages(&collection_id);
                             }
                         }
                     },
@@ -382,7 +426,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                         match event {
                             Err(_) => panic!("Network senders dropped before closing stream"),
                             Ok(collection_id) => {
-                                self.process_outgoing_network_messages(collection_id);
+                                self.process_outgoing_network_messages(&collection_id);
                             }
                         }
                     },
