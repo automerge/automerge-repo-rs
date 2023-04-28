@@ -144,18 +144,6 @@ fn main() {
                                             if let Some(waker) = stream_waker.lock().take() {
                                                 waker.wake();
                                             }
-                                        } else {
-                                            buffer.lock().push_back(NetworkEvent::DoneSync(document_id.clone()));
-                                            if let Some(waker) = stream_waker.lock().take() {
-                                                waker.wake();
-                                            }
-                                        }
-                                    },
-                                    NetworkMessage::DoneSync(_) => {
-                                        if peer2.get(automerge::ROOT, "key").unwrap().unwrap().0.to_str() ==  Some("test") {
-                                            // Signal task being done to main.
-                                            done_sender.send(()).await.unwrap();
-                                            break;
                                         }
                                     },
                                 }
@@ -165,6 +153,11 @@ fn main() {
                             }
                         },
                 };
+                if peer2.get(automerge::ROOT, "key").unwrap().unwrap().0.to_str() ==  Some("test") {
+                    // Signal task being done to main.
+                    done_sender.send(()).await.unwrap();
+                    break;
+                }
             }
             // Drop the last handle, stopping the repo.
             drop(another_clone);

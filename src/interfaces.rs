@@ -16,7 +16,6 @@ pub enum NetworkEvent {
     /// A peer sent us a sync message,
     // to be applied to a given document.
     Sync(DocumentId, SyncMessage),
-    DoneSync(DocumentId),
 }
 
 /// Messages sent into the network sink.
@@ -25,7 +24,6 @@ pub enum NetworkMessage {
     /// We're sending a sync message,
     // to be applied to a peer to a given document.
     Sync(DocumentId, SyncMessage),
-    DoneSync(DocumentId),
 }
 
 /// Network errors used by the sink.

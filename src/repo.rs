@@ -348,19 +348,13 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 NetworkEvent::Sync(doc_id, message) => {
                     if let Some(info) = collection.documents.get_mut(&doc_id) {
                         if let Some(outoing_sync_message) = info.apply_sync_message(message) {
+                            if !outoing_sync_message.heads.is_empty() {
+                                info.set_ready();
+                            }
                             collection
                                 .pending_messages
                                 .push_back(NetworkMessage::Sync(doc_id, outoing_sync_message));
-                        } else {
-                            collection
-                                .pending_messages
-                                .push_back(NetworkMessage::DoneSync(doc_id));
                         }
-                    }
-                }
-                NetworkEvent::DoneSync(doc_id) => {
-                    if let Some(info) = collection.documents.get_mut(&doc_id) {
-                        info.set_ready();
                     }
                 }
             }
