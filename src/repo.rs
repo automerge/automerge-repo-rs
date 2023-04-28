@@ -148,16 +148,20 @@ impl DocumentInfo {
     }
 }
 
+/// Signal that for a given collection, 
+/// the stream or sink on the network adapter is ready to be polled.
 enum WakeSignal {
     Stream(CollectionId),
     Sink(CollectionId),
 }
 
+/// Waking mechanism for stream and sinks.
 enum CollectionWaker {
     Stream(Sender<WakeSignal>, CollectionId),
     Sink(Sender<WakeSignal>, CollectionId),
 }
 
+/// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
 impl ArcWake for CollectionWaker {
     fn wake_by_ref(arc_self: &Arc<Self>) {
         match &**arc_self {
@@ -396,12 +400,14 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             self.handle_collection_event(&collection_id, event);
                             self.process_outgoing_network_messages(&collection_id);
                         } else {
+                            // The repo shuts down 
+                            // once all handles and collections drop.
                             break;
                         }
                     },
                     recv(self.wake_receiver) -> event => {
                         match event {
-                            Err(_) => panic!("Network senders dropped before closing stream"),
+                            Err(_) => panic!("Wake senders dropped"),
                             Ok(WakeSignal::Stream(collection_id)) => {
                                 self.collect_network_events(&collection_id);
                                 self.sync_document_collection(&collection_id);
