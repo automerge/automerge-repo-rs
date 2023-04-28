@@ -130,6 +130,7 @@ impl DocumentInfo {
         self.is_ready = true;
     }
 
+    /// Apply incoming sync messages, and potentially generate and outgoing one.
     fn apply_sync_message(&mut self, message: SyncMessage) -> Option<SyncMessage> {
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
@@ -139,6 +140,8 @@ impl DocumentInfo {
         sync.generate_sync_message(&mut self.sync_state)
     }
 
+    /// Potentially generate an outgoing sync message,
+    /// called in response to local changes.
     fn generate_sync_for_local_changes(&mut self) -> Option<SyncMessage> {
         let (lock, _cvar) = &*self.state;
         lock.lock()
