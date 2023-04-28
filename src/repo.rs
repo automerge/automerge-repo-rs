@@ -148,7 +148,7 @@ impl DocumentInfo {
     }
 }
 
-/// Signal that for a given collection, 
+/// Signal that for a given collection,
 /// the stream or sink on the network adapter is ready to be polled.
 enum WakeSignal {
     Stream(CollectionId),
@@ -275,6 +275,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             .expect("Unexpected collection event.");
 
         // Send as many messages as possible.
+        let mut needs_flush = false;
         loop {
             if collection.pending_messages.is_empty() {
                 break;
@@ -295,15 +296,18 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     if result.is_err() {
                         return;
                     }
+                    needs_flush = true;
                 }
                 Poll::Ready(Err(_)) => return,
             }
         }
 
-        // Flusk the sink.
-        let waker = waker_ref(&collection.sink_waker);
-        let pinned_sink = Pin::new(&mut collection.network_adapter);
-        let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+        // Flusk the sink if any messages have been sent.
+        if needs_flush {
+            let waker = waker_ref(&collection.sink_waker);
+            let pinned_sink = Pin::new(&mut collection.network_adapter);
+            let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+        }
     }
 
     /// Handle incoming collection events(sent by colleciton or document handles).
@@ -400,7 +404,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             self.handle_collection_event(&collection_id, event);
                             self.process_outgoing_network_messages(&collection_id);
                         } else {
-                            // The repo shuts down 
+                            // The repo shuts down
                             // once all handles and collections drop.
                             break;
                         }
