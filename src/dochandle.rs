@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub(crate) enum DocState {
     /// While in bootstrap, the doc should not be edited locally.
     Bootstrap,
-    /// The doc is syncing.
+    /// The doc is syncing(can be edited locally).
     Sync,
 }
 
