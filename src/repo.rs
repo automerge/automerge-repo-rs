@@ -140,9 +140,8 @@ impl DocumentInfo {
     }
 
     fn generate_sync_for_local_changes(&mut self) -> Option<SyncMessage> {
-        let (state, _cvar) = &*self.state;
-        state
-            .lock()
+        let (lock, _cvar) = &*self.state;
+        lock.lock()
             .1
             .sync()
             .generate_sync_message(&mut self.sync_state)
