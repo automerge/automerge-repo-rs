@@ -38,6 +38,9 @@ impl DocCollection {
         self.new_document_handle(document_id, DocState::Sync)
     }
 
+    /// Load an existing document for local editing.
+    /// The document should not be edited until ready,
+    /// use `DocHandle.wait_ready` to wait for it.
     pub fn load_existing_document(&self, document_id: DocumentId) -> DocHandle {
         self.new_document_handle(document_id, DocState::Bootstrap)
     }
@@ -87,8 +90,8 @@ struct CollectionInfo<T: NetworkAdapter> {
 
     /// Document data received over the network, but doc no local handle yet.
     data_received: HashSet<DocumentId>,
-    stream_waker: Arc<StreamWaker>,
-    sink_waker: Arc<SinkWaker>,
+    stream_waker: Arc<CollectionWaker>,
+    sink_waker: Arc<CollectionWaker>,
 
     /// Messages to send on the network adapter sink.
     pending_messages: VecDeque<NetworkMessage>,
@@ -141,20 +144,42 @@ impl DocumentInfo {
     }
 }
 
+enum WakeSignal {
+    Stream(CollectionId),
+    Sink(CollectionId),
+}
+
+enum CollectionWaker {
+    Stream(Sender<WakeSignal>, CollectionId),
+    Sink(Sender<WakeSignal>, CollectionId),
+}
+
+impl ArcWake for CollectionWaker {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        match &**arc_self {
+            CollectionWaker::Stream(sender, id) => {
+                sender
+                    .send(WakeSignal::Stream(id.clone()))
+                    .expect("Failed to send stream readiness signal.");
+            }
+            CollectionWaker::Sink(sender, id) => {
+                sender
+                    .send(WakeSignal::Sink(id.clone()))
+                    .expect("Failed to send sink readiness signal.");
+            }
+        }
+    }
+}
+
 /// The backend of doc collections: the repo runs an event-loop in a background thread.
 pub(crate) struct Repo<T: NetworkAdapter> {
     /// A map of collections to their info.
     collections: HashMap<CollectionId, CollectionInfo<T>>,
 
-    /// Sender use to signal network stream readiness.
+    /// Sender use to signal network stream and sink readiness.
     /// A sender is kept around to clone for multiple calls to `new_collection`.
-    network_stream_sender: Sender<CollectionId>,
-    network_stream_receiver: Receiver<CollectionId>,
-
-    /// Sender use to signal network sink readiness.
-    /// A sender is kept around to clone for multiple calls to `new_collection`.
-    network_sink_sender: Sender<CollectionId>,
-    network_sink_receiver: Receiver<CollectionId>,
+    wake_sender: Sender<WakeSignal>,
+    wake_receiver: Receiver<WakeSignal>,
 
     /// Sender and receiver of collection events.
     /// A sender is kept around to clone for multiple calls to `new_collection`,
@@ -163,54 +188,22 @@ pub(crate) struct Repo<T: NetworkAdapter> {
     /// once all collections and doc handles have been dropped.
     collection_sender: Option<Sender<(CollectionId, CollectionEvent)>>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
-
-    /// Max number of collections that be created for this repo,
-    /// used to configure the buffer of the network channels.
-    max_number_collections: usize,
-}
-
-struct StreamWaker {
-    network_stream_sender: Sender<CollectionId>,
-    collection_id: CollectionId,
-}
-
-impl ArcWake for StreamWaker {
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        arc_self
-            .network_stream_sender
-            .send(arc_self.collection_id.clone())
-            .expect("Failed to send network stream readiness signal.");
-    }
-}
-
-struct SinkWaker {
-    network_sink_sender: Sender<CollectionId>,
-    collection_id: CollectionId,
-}
-
-impl ArcWake for SinkWaker {
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        arc_self
-            .network_sink_sender
-            .send(arc_self.collection_id.clone())
-            .expect("Failed to send network sink readiness signal.");
-    }
 }
 
 impl<T: NetworkAdapter + 'static> Repo<T> {
+    /// Create a new repo, specifying a
+    /// max number of collections that can be created for this repo.
     pub fn new(max_number_collections: usize) -> Self {
-        let (network_stream_sender, network_stream_receiver) = bounded(max_number_collections);
-        let (network_sink_sender, network_sink_receiver) = bounded(max_number_collections);
+        // Bound the channels by the max number of collections times two,
+        // ensuring sending on them as part of polling sink and streams never blocks.
+        let (wake_sender, wake_receiver) = bounded(max_number_collections * 2);
         let (collection_sender, collection_receiver) = unbounded();
         Repo {
             collections: Default::default(),
-            network_stream_sender,
-            network_stream_receiver,
-            network_sink_sender,
-            network_sink_receiver,
+            wake_sender,
+            wake_receiver,
             collection_sender: Some(collection_sender),
             collection_receiver,
-            max_number_collections,
         }
     }
 
@@ -229,14 +222,14 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 .expect("No collection sender."),
             collection_id: collection_id.clone(),
         };
-        let stream_waker = Arc::new(StreamWaker {
-            network_stream_sender: self.network_stream_sender.clone(),
-            collection_id: collection_id.clone(),
-        });
-        let sink_waker = Arc::new(SinkWaker {
-            network_sink_sender: self.network_sink_sender.clone(),
-            collection_id: collection_id.clone(),
-        });
+        let stream_waker = Arc::new(CollectionWaker::Stream(
+            self.wake_sender.clone(),
+            collection_id.clone(),
+        ));
+        let sink_waker = Arc::new(CollectionWaker::Sink(
+            self.wake_sender.clone(),
+            collection_id.clone(),
+        ));
         let collection_info = CollectionInfo {
             network_adapter: Box::new(network_adapter),
             storage_adapter,
@@ -272,7 +265,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         }
     }
 
-    /// Process pending messages on network sinks for all collections.
+    /// Try to send pending messages on network sinks for a given collection.
     fn process_outgoing_network_messages(&mut self, collection_id: &CollectionId) {
         let collection = self
             .collections
@@ -312,9 +305,11 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
     }
 
+    /// Handle incoming collection events(sent by colleciton or document handles).
     fn handle_collection_event(&mut self, collection_id: &CollectionId, event: CollectionEvent) {
         match event {
             CollectionEvent::NewDocHandle(id, info) => {
+                // A new doc handle has been created.
                 let collection = self
                     .collections
                     .get_mut(collection_id)
@@ -352,6 +347,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         }
     }
 
+    /// Apply incoming sync messages, and generate outgoing ones.
     fn sync_document_collection(&mut self, collection_id: &CollectionId) {
         let collection = self
             .collections
@@ -412,20 +408,15 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             break;
                         }
                     },
-                    recv(self.network_stream_receiver) -> event => {
+                    recv(self.wake_receiver) -> event => {
                         match event {
                             Err(_) => panic!("Network senders dropped before closing stream"),
-                            Ok(collection_id) => {
+                            Ok(WakeSignal::Stream(collection_id)) => {
                                 self.collect_network_events(&collection_id);
                                 self.sync_document_collection(&collection_id);
                                 self.process_outgoing_network_messages(&collection_id);
-                            }
-                        }
-                    },
-                    recv(self.network_sink_receiver) -> event => {
-                        match event {
-                            Err(_) => panic!("Network senders dropped before closing stream"),
-                            Ok(collection_id) => {
+                            },
+                            Ok(WakeSignal::Sink(collection_id)) => {
                                 self.process_outgoing_network_messages(&collection_id);
                             }
                         }
