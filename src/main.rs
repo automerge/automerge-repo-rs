@@ -116,8 +116,8 @@ fn main() {
         // (or rather acquire a handle to an existing doc
         // to be synced over the network).
         let document_id = DocumentId(Uuid::new_v4());
-        let handle = collection.load_existing_document(document_id.clone());
-        let handle_clone = handle.clone();
+        let mut handle = collection.load_existing_document(document_id.clone());
+        let mut handle_clone = handle.clone();
         let another_clone = handle.clone();
 
         // Spawn a task that receives data from the "other peer".

@@ -27,6 +27,8 @@ pub struct DocHandle {
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     document_id: DocumentId,
     collection_id: CollectionId,
+    /// Flag set to true once the doc reaches `DocState::Sync`.
+    is_ready: bool,
 }
 
 impl Clone for DocHandle {
@@ -71,14 +73,21 @@ impl DocHandle {
             document_id,
             collection_id,
             handle_count,
+            is_ready: false,
         }
     }
 
     /// Run a closure over a mutable reference to the document.
-    pub fn with_doc_mut<F>(&self, f: F)
+    /// Note: blocks if called on a document that isn't ready,
+    /// should be called only from within a blocking task or thread,
+    /// or only after having called `wait_ready`.
+    pub fn with_doc_mut<F>(&mut self, f: F)
     where
         F: FnOnce(&mut AutoCommit),
     {
+        if !self.is_ready {
+            self.wait_ready();
+        }
         {
             let (lock, _cvar) = &*self.state;
             let mut state = lock.lock();
@@ -94,14 +103,18 @@ impl DocHandle {
 
     /// Wait for the document to be ready to be edited.
     /// Note: blocks, should be called only from within a blocking task or thread.
-    pub fn wait_ready(&self) {
+    pub fn wait_ready(&mut self) {
+        if self.is_ready {
+            return;
+        }
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
         loop {
             match state.0 {
-                DocState::Sync => return,
+                DocState::Sync => break,
                 DocState::Bootstrap => cvar.wait(&mut state),
             }
         }
+        self.is_ready = true;
     }
 }

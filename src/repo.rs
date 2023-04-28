@@ -46,7 +46,7 @@ impl DocCollection {
     }
 
     fn new_document_handle(&self, document_id: DocumentId, state: DocState) -> DocHandle {
-        let is_ready = if let DocState::Sync = state {
+        let is_ready = if matches!(state, DocState::Sync) {
             true
         } else {
             false
