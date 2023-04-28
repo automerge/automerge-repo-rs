@@ -131,14 +131,12 @@ impl DocumentInfo {
     }
 
     fn apply_sync_message(&mut self, message: SyncMessage) -> Option<SyncMessage> {
-        let (state, _cvar) = &*self.state;
-        let mut sync = state.lock();
-        sync.1
-            .sync()
-            .receive_sync_message(&mut self.sync_state, message)
+        let (lock, _cvar) = &*self.state;
+        let mut state = lock.lock();
+        let mut sync = state.1.sync();
+        sync.receive_sync_message(&mut self.sync_state, message)
             .expect("Failed to apply sync message.");
-        let outgoing = sync.1.sync().generate_sync_message(&mut self.sync_state);
-        outgoing
+        sync.generate_sync_message(&mut self.sync_state)
     }
 
     fn generate_sync_for_local_changes(&mut self) -> Option<SyncMessage> {
