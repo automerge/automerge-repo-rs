@@ -85,11 +85,8 @@ pub(crate) enum CollectionEvent {
 /// Each collection can be configured with different adapters.
 struct CollectionInfo<T: NetworkAdapter> {
     network_adapter: Box<T>,
-    storage_adapter: Box<dyn StorageAdapter>,
     documents: HashMap<DocumentId, DocumentInfo>,
 
-    /// Document data received over the network, but doc no local handle yet.
-    data_received: HashSet<DocumentId>,
     stream_waker: Arc<CollectionWaker>,
     sink_waker: Arc<CollectionWaker>,
 
@@ -209,11 +206,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
 
     /// Create a new doc collection, with a storage and a network adapter.
     /// Note: all collections must be created before starting to run the repo.
-    pub fn new_collection(
-        &mut self,
-        storage_adapter: Box<dyn StorageAdapter>,
-        network_adapter: T,
-    ) -> DocCollection {
+    pub fn new_collection(&mut self, network_adapter: T) -> DocCollection {
         let collection_id = CollectionId(Uuid::new_v4());
         let collection = DocCollection {
             collection_sender: self
@@ -232,9 +225,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         ));
         let collection_info = CollectionInfo {
             network_adapter: Box::new(network_adapter),
-            storage_adapter,
             documents: Default::default(),
-            data_received: Default::default(),
             stream_waker,
             sink_waker,
             pending_messages: Default::default(),

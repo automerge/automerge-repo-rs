@@ -83,19 +83,6 @@ fn main() {
 
     impl NetworkAdapter for Network<NetworkMessage> {}
 
-    struct Storage {
-        sender: Sender<()>,
-    }
-
-    impl StorageAdapter for Storage {
-        fn save_document(&self, document: ()) {
-            self.sender.blocking_send(document).unwrap();
-        }
-    }
-
-    let (sender, mut storage_receiver) = channel(1);
-    let storage = Storage { sender };
-
     let buffer = Arc::new(Mutex::new(VecDeque::new()));
     let stream_waker = Arc::new(Mutex::new(None));
     let sink_waker = Arc::new(Mutex::new(None));
@@ -113,7 +100,7 @@ fn main() {
     let mut repo = Repo::new(1);
 
     // Create a new collection with a network and a storage adapters.
-    let collection = repo.new_collection(Box::new(storage), network);
+    let collection = repo.new_collection(network);
 
     // Run the repo in the background.
     let repo_join_handle = repo.run();
