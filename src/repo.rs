@@ -46,6 +46,11 @@ impl DocCollection {
     }
 
     fn new_document_handle(&self, document_id: DocumentId, state: DocState) -> DocHandle {
+        let is_ready = if let DocState::Sync = state {
+            true
+        } else {
+            false
+        };
         let state = Arc::new((Mutex::new((state, AutoCommit::new())), Condvar::new()));
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
@@ -59,6 +64,7 @@ impl DocCollection {
             state,
             handle_count,
             sync_state: SyncState::new(),
+            is_ready,
         };
         self.collection_sender
             .send((
@@ -105,16 +111,22 @@ pub(crate) struct DocumentInfo {
     handle_count: Arc<AtomicUsize>,
     /// The automerge sync state.
     sync_state: SyncState,
+    /// Flag set to true once the doc reaches `DocState::Sync`.
+    is_ready: bool,
 }
 
 impl DocumentInfo {
     /// Mark the document as ready for editing,
     /// wakes-up all doc handles that are waiting inside `wait_ready`.
-    fn set_ready(&self) {
+    fn set_ready(&mut self) {
+        if self.is_ready {
+            return;
+        }
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
         state.0 = DocState::Sync;
         cvar.notify_all();
+        self.is_ready = true;
     }
 
     fn apply_sync_message(&mut self, message: SyncMessage) -> Option<SyncMessage> {
