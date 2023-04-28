@@ -1,6 +1,5 @@
 use crate::interfaces::{CollectionId, DocumentId};
 use crate::repo::CollectionEvent;
-use automerge::transaction::Transactable;
 use automerge::AutoCommit;
 use crossbeam_channel::Sender;
 use parking_lot::{Condvar, Mutex};
@@ -10,7 +9,9 @@ use std::sync::Arc;
 /// The doc handle state machine.
 #[derive(Clone, Debug)]
 pub(crate) enum DocState {
+    /// While in bootstrap, the doc should not be edited locally.
     Bootstrap,
+    /// The doc is syncing.
     Sync,
 }
 
@@ -72,18 +73,13 @@ impl DocHandle {
         }
     }
 
-    pub fn get_document_id(&self) -> DocumentId {
-        self.document_id.clone()
-    }
-
-    /// Run a closure over a mutable reference to the document,
-    /// sends a `DocChange` event to the repo.
+    /// Run a closure over a mutable reference to the document.
     pub fn with_doc_mut<F>(&self, f: F)
     where
         F: FnOnce(&mut AutoCommit),
     {
         {
-            let (lock, cvar) = &*self.state;
+            let (lock, _cvar) = &*self.state;
             let mut state = lock.lock();
             f(&mut state.1);
         }

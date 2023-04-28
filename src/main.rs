@@ -1,17 +1,12 @@
-#![feature(hash_drain_filter)]
-
 mod dochandle;
 mod interfaces;
 mod repo;
 
-use crate::interfaces::{CollectionId, DocumentId};
-use crate::interfaces::{
-    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter,
-};
+use crate::interfaces::DocumentId;
+use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
 use crate::repo::Repo;
-use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
+use automerge::sync::{State as SyncState, SyncDoc};
 use automerge::transaction::Transactable;
-use automerge::AutoCommit;
 use automerge::ReadDoc;
 use core::pin::Pin;
 use futures::sink::Sink;

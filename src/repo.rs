@@ -1,6 +1,6 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{CollectionId, DocumentId};
-use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage, StorageAdapter};
+use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
 use core::pin::Pin;
@@ -10,8 +10,8 @@ use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll};
 use futures::Sink;
 use parking_lot::{Condvar, Mutex};
+use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -118,21 +118,18 @@ impl DocumentInfo {
     }
 
     fn apply_sync_message(&mut self, message: SyncMessage) -> Option<SyncMessage> {
-        let outgoing = {
-            let (state, cvar) = &*self.state;
-            let mut sync = state.lock();
-            sync.1
-                .sync()
-                .receive_sync_message(&mut self.sync_state, message)
-                .expect("Failed to apply sync message.");
-            let outgoing = sync.1.sync().generate_sync_message(&mut self.sync_state);
-            outgoing
-        };
+        let (state, _cvar) = &*self.state;
+        let mut sync = state.lock();
+        sync.1
+            .sync()
+            .receive_sync_message(&mut self.sync_state, message)
+            .expect("Failed to apply sync message.");
+        let outgoing = sync.1.sync().generate_sync_message(&mut self.sync_state);
         outgoing
     }
 
     fn generate_sync_for_local_changes(&mut self) -> Option<SyncMessage> {
-        let (state, cvar) = &*self.state;
+        let (state, _cvar) = &*self.state;
         state
             .lock()
             .1
@@ -274,7 +271,6 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             match result {
                 Poll::Pending => break,
                 Poll::Ready(Ok(())) => {
-                    let waker = waker_ref(&collection.sink_waker);
                     let pinned_sink = Pin::new(&mut collection.network_adapter);
                     let result = pinned_sink.start_send(
                         collection

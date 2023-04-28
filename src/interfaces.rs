@@ -1,5 +1,4 @@
 use automerge::sync::Message as SyncMessage;
-use crossbeam_channel::Sender;
 use futures::sink::Sink;
 use futures::stream::Stream;
 use std::marker::Unpin;
@@ -38,8 +37,4 @@ pub enum NetworkError {
 pub trait NetworkAdapter:
     Send + Unpin + Stream<Item = NetworkEvent> + Sink<NetworkMessage>
 {
-}
-
-pub trait StorageAdapter: Send {
-    fn save_document(&self, document: ());
 }
