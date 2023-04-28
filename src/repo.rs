@@ -59,6 +59,7 @@ impl DocCollection {
             self.collection_id.clone(),
             state.clone(),
             handle_count.clone(),
+            is_ready.clone(),
         );
         let doc_info = DocumentInfo {
             state,

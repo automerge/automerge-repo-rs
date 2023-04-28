@@ -41,6 +41,7 @@ impl Clone for DocHandle {
             self.collection_id.clone(),
             self.state.clone(),
             self.handle_count.clone(),
+            self.is_ready.clone(),
         )
     }
 }
@@ -66,6 +67,7 @@ impl DocHandle {
         collection_id: CollectionId,
         state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
         handle_count: Arc<AtomicUsize>,
+        is_ready: bool,
     ) -> Self {
         DocHandle {
             state,
@@ -73,7 +75,7 @@ impl DocHandle {
             document_id,
             collection_id,
             handle_count,
-            is_ready: false,
+            is_ready,
         }
     }
 
