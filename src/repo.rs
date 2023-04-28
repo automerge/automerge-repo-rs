@@ -106,6 +106,7 @@ struct CollectionInfo<T: NetworkAdapter> {
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
     /// State of the document(shared with handles).
+    /// Document used to apply and generate sync messages.
     state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,

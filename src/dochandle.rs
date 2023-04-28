@@ -19,6 +19,7 @@ pub(crate) enum DocState {
 /// A handle to a document, held by the client.
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
+    /// Document used by the handle for local editing.
     state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
