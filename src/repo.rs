@@ -131,19 +131,17 @@ impl DocumentInfo {
         self.is_ready = true;
     }
 
-    /// Apply incoming sync messages, and potentially generate and outgoing one.
-    fn apply_sync_message(&mut self, message: SyncMessage) -> Option<SyncMessage> {
+    /// Apply incoming sync messages.
+    fn receive_sync_message(&mut self, message: SyncMessage) {
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
         let mut sync = state.1.sync();
         sync.receive_sync_message(&mut self.sync_state, message)
             .expect("Failed to apply sync message.");
-        sync.generate_sync_message(&mut self.sync_state)
     }
 
-    /// Potentially generate an outgoing sync message,
-    /// called in response to local changes.
-    fn generate_sync_for_local_changes(&mut self) -> Option<SyncMessage> {
+    /// Potentially generate an outgoing sync message.
+    fn generate_sync_message(&mut self) -> Option<SyncMessage> {
         let (lock, _cvar) = &*self.state;
         lock.lock()
             .1
@@ -332,7 +330,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     .get_mut(collection_id)
                     .expect("Unexpected collection event.");
                 if let Some(info) = collection.documents.get_mut(&doc_id) {
-                    if let Some(outoing_sync_message) = info.generate_sync_for_local_changes() {
+                    if let Some(outoing_sync_message) = info.generate_sync_message() {
                         collection
                             .pending_messages
                             .push_back(NetworkMessage::Sync(doc_id, outoing_sync_message));
@@ -369,7 +367,8 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             match event {
                 NetworkEvent::Sync(doc_id, message) => {
                     if let Some(info) = collection.documents.get_mut(&doc_id) {
-                        if let Some(outoing_sync_message) = info.apply_sync_message(message) {
+                        info.receive_sync_message(message);
+                        if let Some(outoing_sync_message) = info.generate_sync_message() {
                             if !outoing_sync_message.heads.is_empty() {
                                 info.set_ready();
                             }
