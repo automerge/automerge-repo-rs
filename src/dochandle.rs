@@ -79,6 +79,10 @@ impl DocHandle {
         }
     }
 
+    pub fn document_id(&self) -> DocumentId {
+        self.document_id.clone()
+    }
+
     /// Run a closure over a mutable reference to the document.
     /// Note: blocks if called on a document that isn't ready,
     /// should be called only from within a blocking task or thread,

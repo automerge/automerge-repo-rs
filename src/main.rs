@@ -1,18 +1,25 @@
 mod dochandle;
 mod interfaces;
 mod repo;
+mod simulation;
 
+use crate::dochandle::DocHandle;
 use crate::interfaces::DocumentId;
 use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
+use crate::repo::DocCollection;
 use crate::repo::Repo;
-use automerge::sync::{State as SyncState, SyncDoc};
+use automerge::sync::Message as SyncMessage;
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
+use axum::extract::{Path, State};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use core::pin::Pin;
 use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::task::{Context, Poll, Waker};
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::runtime::Handle;
@@ -100,91 +107,102 @@ fn main() {
     // Run the repo in the background.
     let repo_join_handle = repo.run();
 
-    // The client code uses tokio.
+    // The client code uses tokio and axum.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
-    // A channel used to block the main function
-    // until the async system here has shut down.
-    let (done_sender, mut done_receiver) = channel(1);
-
-    // Spawn the backend for the client code.
+    // Task that handles outgoing network messages.
     rt.spawn(async move {
-        // Create a new document
-        // (or rather acquire a handle to an existing doc
-        // to be synced over the network).
-        let document_id = DocumentId(Uuid::new_v4());
-        let mut handle = collection.load_existing_document(document_id.clone());
-        let mut handle_clone = handle.clone();
-        let another_clone = handle.clone();
+        loop {
+            let message = network_receiver.recv().await;
+            let message = outgoing.lock().pop_front();
+            if let Some(NetworkMessage::Sync(id, sync_message)) = message {
+                let sync_message = sync_message.encode();
+                let client = reqwest::Client::new();
 
-        // Spawn a task that receives data from the "other peer".
-        Handle::current().spawn(async move {
-            // Create a doc, change it, and send a sync message.
-            let mut peer2 = automerge::AutoCommit::new();
-            let mut peer2_state = SyncState::new();
-            peer2.put(automerge::ROOT, "key", "value").unwrap();
-            let first_message = peer2.sync().generate_sync_message(&mut peer2_state).unwrap();
-            buffer.lock().push_back(NetworkEvent::Sync(document_id.clone(), first_message));
-            if let Some(waker) = stream_waker.lock().take() {
-                waker.wake();
-            }
-            loop {
-                tokio::select! {
-                        _ = network_receiver.recv() => {
-                            let message = outgoing.lock().pop_front();
-                            if let Some(network_message) = message {
-                                match network_message {
-                                    NetworkMessage::Sync(_, message) => {
-                                        peer2.sync().receive_sync_message(&mut peer2_state, message).unwrap();
-                                        if let Some(message) = peer2.sync().generate_sync_message(&mut peer2_state) {
-                                            buffer.lock().push_back(NetworkEvent::Sync(document_id.clone(), message));
-                                            if let Some(waker) = stream_waker.lock().take() {
-                                                waker.wake();
-                                            }
-                                        }
-                                    },
-                                }
-                                if let Some(waker) = sink_waker.lock().take() {
-                                    waker.wake();
-                                }
-                            }
-                        },
-                };
-                if peer2.get(automerge::ROOT, "key").unwrap().unwrap().0.to_str() ==  Some("test") {
-                    // Signal task being done to main.
-                    done_sender.send(()).await.unwrap();
-                    break;
+                if let Some(waker) = sink_waker.lock().take() {
+                    waker.wake();
                 }
             }
-            // Drop the last handle, stopping the repo.
-            drop(another_clone);
-        });
+        }
+    });
 
-        // Spawn, and await,
-        // a blocking task to wait for the document to be ready.
-        Handle::current()
-            .spawn_blocking(move || {
-                // Wait for the document
-                // to get into the `ready` state.
-                handle_clone.wait_ready();
-            })
+    struct AppState {
+        incoming: Arc<Mutex<VecDeque<NetworkEvent>>>,
+        collection: DocCollection,
+        doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>>,
+        stream_waker: Arc<Mutex<Option<Waker>>>,
+    }
+
+    async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
+        let doc_handle = state.collection.new_document();
+        let doc_id = doc_handle.document_id();
+        state.doc_handles.lock().insert(doc_id.clone(), doc_handle);
+        Json(doc_id)
+    }
+
+    async fn load_doc(State(state): State<Arc<AppState>>, Path(id): Path<DocumentId>) {
+        let doc_handle = state.collection.load_existing_document(id);
+        state
+            .doc_handles
+            .lock()
+            .insert(doc_handle.document_id(), doc_handle);
+    }
+
+    async fn edit_doc(
+        State(state): State<Arc<AppState>>,
+        Path(id): Path<DocumentId>,
+        Path(string): Path<String>,
+    ) {
+        let mut handles = state.doc_handles.lock();
+        if let Some(doc_handle) = handles.get_mut(&id) {
+            doc_handle.with_doc_mut(|doc| {
+                doc.put(automerge::ROOT, "key", string)
+                    .expect("Failed to change the document.");
+                doc.commit();
+            });
+        }
+    }
+
+    async fn sync_doc(
+        State(state): State<Arc<AppState>>,
+        Path(id): Path<DocumentId>,
+        Path(msg): Path<Vec<u8>>,
+    ) {
+        let sync_message = SyncMessage::decode(&msg).expect("Failed to decode sync mesage.");
+        state
+            .incoming
+            .lock()
+            .push_back(NetworkEvent::Sync(id, sync_message));
+        if let Some(waker) = state.stream_waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    let app_state = Arc::new(AppState {
+        incoming: buffer,
+        collection,
+        doc_handles: Arc::new(Mutex::new(Default::default())),
+        stream_waker,
+    });
+
+    let app = Router::new()
+        .route("/new_doc", get(new_doc))
+        .route("/load_doc/:id", get(load_doc))
+        .route("/edit_doc/:id/:string", post(edit_doc))
+        .route("/sync_doc/:id/:msg", post(sync_doc))
+        .with_state(app_state);
+
+    rt.spawn(async move {
+        // run it with hyper on localhost:3000
+        axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+            .serve(app.into_make_service())
             .await
             .unwrap();
-        // Change the document.
-        handle.with_doc_mut(|doc| {
-            doc.put(automerge::ROOT, "key", "test")
-                .expect("Failed to change the document.");
-            doc.commit();
-        });
     });
-    done_receiver.blocking_recv().unwrap();
 
-    // All collections and doc handles have been dropped,
-    // repo should stop running.
     repo_join_handle.join().unwrap();
-
     println!("Stopped");
 }

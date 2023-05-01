@@ -1,10 +1,11 @@
 use automerge::sync::Message as SyncMessage;
 use futures::sink::Sink;
 use futures::stream::Stream;
+use serde::{Deserialize, Serialize};
 use std::marker::Unpin;
 use uuid::Uuid;
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct DocumentId(pub Uuid);
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
