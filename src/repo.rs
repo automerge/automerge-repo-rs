@@ -392,7 +392,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             // ensuring the below loop stops when all collections have been dropped.
             drop(self.collection_sender.take());
 
-            // Initial poll to network streams.
+            // Initial poll to streams and sinks.
             let collection_ids: Vec<CollectionId> = self.collections.keys().cloned().collect();
             for collection_id in collection_ids {
                 self.collect_network_events(&collection_id);
