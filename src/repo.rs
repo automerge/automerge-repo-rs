@@ -364,6 +364,10 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 NetworkEvent::Sync(doc_id, message) => {
                     if let Some(info) = collection.documents.get_mut(&doc_id) {
                         info.receive_sync_message(message);
+                        // Note: since receiving and generating sync messages is done
+                        // in two separate critical sections,
+                        // local changes could be made in between those, 
+                        // which is a good thing(generated messages will include those changes).
                         if let Some(outoing_sync_message) = info.generate_sync_message() {
                             if !outoing_sync_message.heads.is_empty() {
                                 info.set_ready();
