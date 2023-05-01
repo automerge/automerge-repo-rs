@@ -46,11 +46,7 @@ impl DocCollection {
     }
 
     fn new_document_handle(&self, document_id: DocumentId, state: DocState) -> DocHandle {
-        let is_ready = if matches!(state, DocState::Sync) {
-            true
-        } else {
-            false
-        };
+        let is_ready = matches!(state, DocState::Sync);
         let state = Arc::new((Mutex::new((state, AutoCommit::new())), Condvar::new()));
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
@@ -59,7 +55,7 @@ impl DocCollection {
             self.collection_id.clone(),
             state.clone(),
             handle_count.clone(),
-            is_ready.clone(),
+            is_ready,
         );
         let doc_info = DocumentInfo {
             state,

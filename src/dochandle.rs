@@ -41,7 +41,7 @@ impl Clone for DocHandle {
             self.collection_id.clone(),
             self.state.clone(),
             self.handle_count.clone(),
-            self.is_ready.clone(),
+            self.is_ready,
         )
     }
 }
