@@ -311,12 +311,20 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     /// Handle incoming collection events(sent by colleciton or document handles).
     fn handle_collection_event(&mut self, collection_id: &CollectionId, event: CollectionEvent) {
         match event {
-            CollectionEvent::NewDocHandle(id, info) => {
+            CollectionEvent::NewDocHandle(id, mut info) => {
                 // A new doc handle has been created.
                 let collection = self
                     .collections
                     .get_mut(collection_id)
                     .expect("Unexpected collection event.");
+                if !info.is_ready {
+                    let sync_message = info
+                        .generate_sync_message()
+                        .expect("Failed to generate sync message for loaded document.");
+                    collection
+                        .pending_messages
+                        .push_back(NetworkMessage::Sync(id.clone(), sync_message));
+                }
                 collection.documents.insert(id, info);
             }
             CollectionEvent::DocChange(doc_id) => {

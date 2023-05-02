@@ -1,7 +1,6 @@
 mod dochandle;
 mod interfaces;
 mod repo;
-mod simulation;
 
 use crate::dochandle::DocHandle;
 use crate::interfaces::DocumentId;
@@ -14,6 +13,7 @@ use automerge::ReadDoc;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use clap::Parser;
 use core::pin::Pin;
 use futures::sink::Sink;
 use futures::stream::Stream;
@@ -22,69 +22,77 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
-use uuid::Uuid;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    run_ip: String,
+    #[arg(short, long)]
+    other_ip: String,
+}
+
+struct Network<NetworkMessage> {
+    buffer: Arc<Mutex<VecDeque<NetworkEvent>>>,
+    stream_waker: Arc<Mutex<Option<Waker>>>,
+    outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
+    sink_waker: Arc<Mutex<Option<Waker>>>,
+    sender: Sender<()>,
+}
+
+impl Stream for Network<NetworkMessage> {
+    type Item = NetworkEvent;
+    fn poll_next(
+        self: Pin<&mut Network<NetworkMessage>>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<NetworkEvent>> {
+        *self.stream_waker.lock() = Some(cx.waker().clone());
+        if let Some(event) = self.buffer.lock().pop_front() {
+            Poll::Ready(Some(event))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Sink<NetworkMessage> for Network<NetworkMessage> {
+    type Error = NetworkError;
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        *self.sink_waker.lock() = Some(cx.waker().clone());
+        if self.outgoing.lock().is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+    fn start_send(self: Pin<&mut Self>, item: NetworkMessage) -> Result<(), Self::Error> {
+        self.outgoing.lock().push_back(item);
+        self.sender.blocking_send(()).unwrap();
+        Ok(())
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        *self.sink_waker.lock() = Some(cx.waker().clone());
+        if self.outgoing.lock().is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        *self.sink_waker.lock() = Some(cx.waker().clone());
+        if self.outgoing.lock().is_empty() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl NetworkAdapter for Network<NetworkMessage> {}
 
 fn main() {
-    struct Network<NetworkMessage> {
-        buffer: Arc<Mutex<VecDeque<NetworkEvent>>>,
-        stream_waker: Arc<Mutex<Option<Waker>>>,
-        outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
-        sink_waker: Arc<Mutex<Option<Waker>>>,
-        sender: Sender<()>,
-    }
-
-    impl Stream for Network<NetworkMessage> {
-        type Item = NetworkEvent;
-        fn poll_next(
-            self: Pin<&mut Network<NetworkMessage>>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Option<NetworkEvent>> {
-            *self.stream_waker.lock() = Some(cx.waker().clone());
-            if let Some(event) = self.buffer.lock().pop_front() {
-                Poll::Ready(Some(event))
-            } else {
-                Poll::Pending
-            }
-        }
-    }
-
-    impl Sink<NetworkMessage> for Network<NetworkMessage> {
-        type Error = NetworkError;
-        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            *self.sink_waker.lock() = Some(cx.waker().clone());
-            if self.outgoing.lock().is_empty() {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        }
-        fn start_send(self: Pin<&mut Self>, item: NetworkMessage) -> Result<(), Self::Error> {
-            self.outgoing.lock().push_back(item);
-            self.sender.blocking_send(()).unwrap();
-            Ok(())
-        }
-        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            *self.sink_waker.lock() = Some(cx.waker().clone());
-            if self.outgoing.lock().is_empty() {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        }
-        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            *self.sink_waker.lock() = Some(cx.waker().clone());
-            if self.outgoing.lock().is_empty() {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        }
-    }
-
-    impl NetworkAdapter for Network<NetworkMessage> {}
-
+    let args = Args::parse();
     let buffer = Arc::new(Mutex::new(VecDeque::new()));
     let stream_waker = Arc::new(Mutex::new(None));
     let sink_waker = Arc::new(Mutex::new(None));
@@ -115,16 +123,17 @@ fn main() {
 
     // Task that handles outgoing network messages.
     rt.spawn(async move {
+        let client = reqwest::Client::new();
         loop {
-            let message = network_receiver.recv().await;
+            network_receiver.recv().await.unwrap();
             let message = outgoing.lock().pop_front();
             if let Some(NetworkMessage::Sync(id, sync_message)) = message {
-                let sync_message = sync_message.encode();
-                let client = reqwest::Client::new();
-
                 if let Some(waker) = sink_waker.lock().take() {
                     waker.wake();
                 }
+                let sync_message = sync_message.encode();
+                let url = format!("http://{}/sync_doc/{}", args.other_ip, id.0);
+                client.post(url).json(&sync_message).send().await.unwrap();
             }
         }
     });
@@ -153,23 +162,21 @@ fn main() {
 
     async fn edit_doc(
         State(state): State<Arc<AppState>>,
-        Path(id): Path<DocumentId>,
-        Path(string): Path<String>,
+        Path((id, string)): Path<(DocumentId, String)>,
     ) {
         let mut handles = state.doc_handles.lock();
-        if let Some(doc_handle) = handles.get_mut(&id) {
-            doc_handle.with_doc_mut(|doc| {
-                doc.put(automerge::ROOT, "key", string)
-                    .expect("Failed to change the document.");
-                doc.commit();
-            });
-        }
+        let doc_handle = handles.get_mut(&id).unwrap();
+        doc_handle.with_doc_mut(|doc| {
+            doc.put(automerge::ROOT, "key", string)
+                .expect("Failed to change the document.");
+            doc.commit();
+        });
     }
 
     async fn sync_doc(
         State(state): State<Arc<AppState>>,
         Path(id): Path<DocumentId>,
-        Path(msg): Path<Vec<u8>>,
+        Json(msg): Json<Vec<u8>>,
     ) {
         let sync_message = SyncMessage::decode(&msg).expect("Failed to decode sync mesage.");
         state
@@ -179,6 +186,14 @@ fn main() {
         if let Some(waker) = state.stream_waker.lock().take() {
             waker.wake();
         }
+    }
+
+    async fn print_doc(State(state): State<Arc<AppState>>, Path(id): Path<DocumentId>) {
+        let mut handles = state.doc_handles.lock();
+        let doc_handle = handles.get_mut(&id).unwrap();
+        doc_handle.with_doc_mut(|doc| {
+            println!("Doc: {:?}", doc.get(automerge::ROOT, "key"));
+        });
     }
 
     let app_state = Arc::new(AppState {
@@ -191,13 +206,14 @@ fn main() {
     let app = Router::new()
         .route("/new_doc", get(new_doc))
         .route("/load_doc/:id", get(load_doc))
-        .route("/edit_doc/:id/:string", post(edit_doc))
-        .route("/sync_doc/:id/:msg", post(sync_doc))
+        .route("/edit_doc/:id/:string", get(edit_doc))
+        .route("/sync_doc/:id", post(sync_doc))
+        .route("/print_doc/:id", get(print_doc))
         .with_state(app_state);
 
     rt.spawn(async move {
         // run it with hyper on localhost:3000
-        axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+        axum::Server::bind(&args.run_ip.parse().unwrap())
             .serve(app.into_make_service())
             .await
             .unwrap();
