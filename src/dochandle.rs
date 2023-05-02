@@ -107,6 +107,12 @@ impl DocHandle {
             .expect("Failed to send doc change event.");
     }
 
+    /// Returns whether the document is ready for editing.
+    /// If false, `with_doc_mut` will block until the document is ready.
+    pub fn is_ready_for_editing(&self) -> bool {
+        self.is_ready
+    }
+
     /// Wait for the document to be ready to be edited.
     /// Note: blocks, should be called only from within a blocking task or thread.
     pub fn wait_ready(&mut self) {

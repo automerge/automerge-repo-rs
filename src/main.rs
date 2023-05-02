@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 
 #[derive(Parser, Debug)]
@@ -164,6 +165,33 @@ fn main() {
         State(state): State<Arc<AppState>>,
         Path((id, string)): Path<(DocumentId, String)>,
     ) {
+        let mut handle_clone = {
+            let mut handles = state.doc_handles.lock();
+            let doc_handle = handles.get_mut(&id).unwrap();
+            if doc_handle.is_ready_for_editing() {
+                // Make the edit and return.
+                doc_handle.with_doc_mut(|doc| {
+                    doc.put(automerge::ROOT, "key", string)
+                        .expect("Failed to change the document.");
+                    doc.commit();
+                });
+                return;
+            } else {
+                // Clone the handle and wait for it to be ready.
+                // Need to clone so as not to hold the lock across await.
+                doc_handle.clone()
+            }
+        };
+        Handle::current()
+            .spawn_blocking(move || {
+                // Wait for the document
+                // to get into the `ready` state.
+                handle_clone.wait_ready();
+            })
+            .await
+            .unwrap();
+
+        // Here we are sure the doc is ready.
         let mut handles = state.doc_handles.lock();
         let doc_handle = handles.get_mut(&id).unwrap();
         doc_handle.with_doc_mut(|doc| {
