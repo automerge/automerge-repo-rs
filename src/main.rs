@@ -240,7 +240,6 @@ fn main() {
         .with_state(app_state);
 
     rt.spawn(async move {
-        // run it with hyper on localhost:3000
         axum::Server::bind(&args.run_ip.parse().unwrap())
             .serve(app.into_make_service())
             .await
