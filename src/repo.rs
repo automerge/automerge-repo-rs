@@ -317,14 +317,6 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     .collections
                     .get_mut(collection_id)
                     .expect("Unexpected collection event.");
-                if !info.is_ready {
-                    let sync_message = info
-                        .generate_sync_message()
-                        .expect("Failed to generate sync message for loaded document.");
-                    collection
-                        .pending_messages
-                        .push_back(NetworkMessage::Sync(id.clone(), sync_message));
-                }
                 collection.documents.insert(id, info);
             }
             CollectionEvent::DocChange(doc_id) => {
