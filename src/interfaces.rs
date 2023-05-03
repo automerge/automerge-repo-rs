@@ -2,14 +2,36 @@ use automerge::sync::Message as SyncMessage;
 use futures::sink::Sink;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter, Result};
 use std::marker::Unpin;
 use uuid::Uuid;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
-pub struct DocumentId(pub Uuid);
+pub struct RepoId(pub Uuid);
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone)]
-pub struct CollectionId(pub Uuid);
+impl Display for RepoId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+pub struct DocumentId(pub (CollectionId, u64));
+
+impl Display for DocumentId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}::{}", self.0 .0, self.0 .1)
+    }
+}
+
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+pub struct CollectionId(pub (RepoId, u64));
+
+impl Display for CollectionId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}::{}", self.0 .0, self.0 .1)
+    }
+}
 
 /// Events sent by the network adapter.
 #[derive(Debug)]

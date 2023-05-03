@@ -128,28 +128,33 @@ fn main() {
                     waker.wake();
                 }
                 let sync_message = sync_message.encode();
-                let url = format!("http://{}/sync_doc/{}", args.other_ip, id.0);
-                client.post(url).json(&sync_message).send().await.unwrap();
+                let url = format!("http://{}/sync_doc", args.other_ip);
+                client
+                    .post(url)
+                    .json(&(id, sync_message))
+                    .send()
+                    .await
+                    .unwrap();
             }
         }
     });
 
     struct AppState {
         incoming: Arc<Mutex<VecDeque<NetworkEvent>>>,
-        collection: DocCollection,
+        collection: Arc<Mutex<DocCollection>>,
         doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>>,
         stream_waker: Arc<Mutex<Option<Waker>>>,
     }
 
     async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
-        let doc_handle = state.collection.new_document();
+        let doc_handle = state.collection.lock().new_document();
         let doc_id = doc_handle.document_id();
         state.doc_handles.lock().insert(doc_id.clone(), doc_handle);
         Json(doc_id)
     }
 
-    async fn load_doc(State(state): State<Arc<AppState>>, Path(id): Path<DocumentId>) {
-        let doc_handle = state.collection.load_existing_document(id);
+    async fn load_doc(State(state): State<Arc<AppState>>, Json(id): Json<DocumentId>) {
+        let doc_handle = state.collection.lock().load_existing_document(id);
         state
             .doc_handles
             .lock()
@@ -158,7 +163,8 @@ fn main() {
 
     async fn edit_doc(
         State(state): State<Arc<AppState>>,
-        Path((id, string)): Path<(DocumentId, String)>,
+        Path(string): Path<String>,
+        Json(id): Json<DocumentId>,
     ) {
         let mut handle_clone = {
             let mut handles = state.doc_handles.lock();
@@ -198,8 +204,7 @@ fn main() {
 
     async fn sync_doc(
         State(state): State<Arc<AppState>>,
-        Path(id): Path<DocumentId>,
-        Json(msg): Json<Vec<u8>>,
+        Json((id, msg)): Json<(DocumentId, Vec<u8>)>,
     ) {
         let sync_message = SyncMessage::decode(&msg).expect("Failed to decode sync mesage.");
         state
@@ -211,7 +216,7 @@ fn main() {
         }
     }
 
-    async fn print_doc(State(state): State<Arc<AppState>>, Path(id): Path<DocumentId>) {
+    async fn print_doc(State(state): State<Arc<AppState>>, Json(id): Json<DocumentId>) {
         let mut handles = state.doc_handles.lock();
         let doc_handle = handles.get_mut(&id).unwrap();
         doc_handle.with_doc_mut(|doc| {
@@ -221,17 +226,17 @@ fn main() {
 
     let app_state = Arc::new(AppState {
         incoming: buffer,
-        collection,
+        collection: Arc::new(Mutex::new(collection)),
         doc_handles: Arc::new(Mutex::new(Default::default())),
         stream_waker,
     });
 
     let app = Router::new()
         .route("/new_doc", get(new_doc))
-        .route("/load_doc/:id", get(load_doc))
-        .route("/edit_doc/:id/:string", get(edit_doc))
-        .route("/sync_doc/:id", post(sync_doc))
-        .route("/print_doc/:id", get(print_doc))
+        .route("/load_doc", post(load_doc))
+        .route("/edit_doc/:string", post(edit_doc))
+        .route("/sync_doc", post(sync_doc))
+        .route("/print_doc", post(print_doc))
         .with_state(app_state);
 
     rt.spawn(async move {

@@ -1,5 +1,5 @@
 use crate::dochandle::{DocHandle, DocState};
-use crate::interfaces::{CollectionId, DocumentId};
+use crate::interfaces::{CollectionId, DocumentId, RepoId};
 use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
@@ -26,6 +26,9 @@ pub struct DocCollection {
     /// such as when a doc is created, and a doc handle acquired.
     collection_sender: Sender<(CollectionId, CollectionEvent)>,
     collection_id: CollectionId,
+
+    /// Counter to generate unique document ids.
+    document_id_counter: u64,
 }
 
 impl DocCollection {
@@ -33,8 +36,9 @@ impl DocCollection {
     /// Create a new document in a syncing state,
     /// send the info to the repo,
     /// return a handle.
-    pub fn new_document(&self) -> DocHandle {
-        let document_id = DocumentId(Uuid::new_v4());
+    pub fn new_document(&mut self) -> DocHandle {
+        self.document_id_counter = self.document_id_counter.saturating_add(1);
+        let document_id = DocumentId((self.collection_id.clone(), self.document_id_counter));
         self.new_document_handle(document_id, DocState::Sync)
     }
 
@@ -179,6 +183,11 @@ impl ArcWake for CollectionWaker {
 
 /// The backend of doc collections: the repo runs an event-loop in a background thread.
 pub struct Repo<T: NetworkAdapter> {
+    /// The Id of the repo.
+    repo_id: RepoId,
+    /// Counter to generate unique collection ids.
+    collection_id_counter: u64,
+
     /// A map of collections to their info.
     collections: HashMap<CollectionId, CollectionInfo<T>>,
 
@@ -205,6 +214,8 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         let (wake_sender, wake_receiver) = bounded(max_number_collections * 2);
         let (collection_sender, collection_receiver) = unbounded();
         Repo {
+            repo_id: RepoId(Uuid::new_v4()),
+            collection_id_counter: Default::default(),
             collections: Default::default(),
             wake_sender,
             wake_receiver,
@@ -216,13 +227,15 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     /// Create a new doc collection, with a storage and a network adapter.
     /// Note: all collections must be created before starting to run the repo.
     pub fn new_collection(&mut self, network_adapter: T) -> DocCollection {
-        let collection_id = CollectionId(Uuid::new_v4());
+        self.collection_id_counter = self.collection_id_counter.saturating_add(1);
+        let collection_id = CollectionId((self.repo_id.clone(), self.collection_id_counter));
         let collection = DocCollection {
             collection_sender: self
                 .collection_sender
                 .clone()
                 .expect("No collection sender."),
             collection_id: collection_id.clone(),
+            document_id_counter: Default::default(),
         };
         let stream_waker = Arc::new(CollectionWaker::Stream(
             self.wake_sender.clone(),
