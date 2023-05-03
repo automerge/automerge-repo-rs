@@ -1,15 +1,10 @@
-mod dochandle;
-mod interfaces;
-mod repo;
-
-use crate::dochandle::DocHandle;
-use crate::interfaces::DocumentId;
-use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
-use crate::repo::DocCollection;
-use crate::repo::Repo;
 use automerge::sync::Message as SyncMessage;
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
+use automerge_repo::{
+    DocCollection, DocHandle, DocumentId, NetworkAdapter, NetworkError, NetworkEvent,
+    NetworkMessage, Repo,
+};
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};

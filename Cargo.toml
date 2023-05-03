@@ -1,18 +1,27 @@
 [package]
-name = "automerge-repo"
+name = "automerge_repo"
 version = "0.1.0"
 edition = "2021"
+path = "src/lib.rs"
+
+[[example]]
+name = "http-server"
+path = "examples/http_server.rs"
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 automerge = { version = "^0.3" }
 uuid = { version = "1.2.2"}
-tokio = { version = "1.27", features = ["full"] }
 crossbeam-channel = { version = "0.5.8" }
 parking_lot = { version = "0.12.1" }
 futures = { version = "0.3.28" }
-axum = { version = "0.6.18" }
-reqwest = { version = "0.11.17", features = ["json"] }
 serde = { version = "1.0.160", features = ["derive"]}
+
+
+[dev-dependencies]
 clap = { version = "4.2.5", features = ["derive"] }
+reqwest = { version = "0.11.17", features = ["json"] }
+axum = { version = "0.6.18" }
+tokio = { version = "1.27", features = ["full"] }

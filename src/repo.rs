@@ -178,7 +178,7 @@ impl ArcWake for CollectionWaker {
 }
 
 /// The backend of doc collections: the repo runs an event-loop in a background thread.
-pub(crate) struct Repo<T: NetworkAdapter> {
+pub struct Repo<T: NetworkAdapter> {
     /// A map of collections to their info.
     collections: HashMap<CollectionId, CollectionInfo<T>>,
 
