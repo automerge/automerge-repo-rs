@@ -370,7 +370,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: *collection_id.get_repo_id(),
                             to_repo_id: repo_id,
-                            document_id: document_id,
+                            document_id,
                             message,
                         };
                         collection.pending_messages.push_back(outgoing);
