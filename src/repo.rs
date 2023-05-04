@@ -111,6 +111,9 @@ struct CollectionInfo<T: NetworkAdapter> {
     pending_messages: VecDeque<NetworkMessage>,
     /// Events received on the network stream, pending processing.
     pending_events: VecDeque<NetworkEvent>,
+
+    /// Callback on applying sync messages.
+    sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
 }
 
 /// Info about a document, held by the repo(via CollectionInfo).
@@ -247,7 +250,11 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
 
     /// Create a new doc collection, with a storage and a network adapter.
     /// Note: all collections must be created before starting to run the repo.
-    pub fn new_collection(&mut self, network_adapter: T) -> DocCollection {
+    pub fn new_collection(
+        &mut self,
+        network_adapter: T,
+        sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+    ) -> DocCollection {
         self.collection_id_counter = self.collection_id_counter.saturating_add(1);
         let collection_id = CollectionId((self.repo_id, self.collection_id_counter));
         let collection = DocCollection {
@@ -273,6 +280,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             sink_waker,
             pending_messages: Default::default(),
             pending_events: Default::default(),
+            sync_observer,
         };
         self.collections.insert(collection_id, collection_info);
         collection
@@ -410,6 +418,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
 
         // Process incoming events.
         // Handle events.
+        let mut synced = vec![];
         for event in mem::take(&mut collection.pending_events) {
             match event {
                 NetworkEvent::Sync {
@@ -420,6 +429,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 } => {
                     if let Some(info) = collection.documents.get_mut(&document_id) {
                         info.receive_sync_message(from_repo_id, message);
+                        synced.push(document_id);
                         // Note: since receiving and generating sync messages is done
                         // in two separate critical sections,
                         // local changes could be made in between those,
@@ -438,6 +448,13 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                         }
                     }
                 }
+            }
+        }
+
+        // Notify the client of synced documents.
+        if let Some(observer) = collection.sync_observer.as_ref() {
+            if !synced.is_empty() {
+                observer(synced);
             }
         }
     }
