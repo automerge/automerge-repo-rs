@@ -149,7 +149,7 @@ fn main() {
     async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
         let doc_handle = state.collection.lock().new_document();
         let doc_id = doc_handle.document_id();
-        state.doc_handles.lock().insert(doc_id.clone(), doc_handle);
+        state.doc_handles.lock().insert(doc_ * id, doc_handle);
         Json(doc_id)
     }
 

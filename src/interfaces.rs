@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter, Result};
 use std::marker::Unpin;
 use uuid::Uuid;
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
 pub struct RepoId(pub Uuid);
 
 impl Display for RepoId {
@@ -15,7 +15,7 @@ impl Display for RepoId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
 pub struct DocumentId(pub (CollectionId, u64));
 
 impl Display for DocumentId {
@@ -24,8 +24,20 @@ impl Display for DocumentId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+impl DocumentId {
+    pub fn get_repo_id(&self) -> &RepoId {
+        &self.0 .0 .0 .0
+    }
+}
+
+#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
 pub struct CollectionId(pub (RepoId, u64));
+
+impl CollectionId {
+    pub fn get_repo_id(&self) -> &RepoId {
+        &self.0 .0
+    }
+}
 
 impl Display for CollectionId {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
@@ -36,17 +48,27 @@ impl Display for CollectionId {
 /// Events sent by the network adapter.
 #[derive(Debug)]
 pub enum NetworkEvent {
-    /// A peer sent us a sync message,
+    /// A repo sent us a sync message,
     // to be applied to a given document.
-    Sync(DocumentId, SyncMessage),
+    Sync {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: SyncMessage,
+    },
 }
 
 /// Messages sent into the network sink.
 #[derive(Debug)]
 pub enum NetworkMessage {
     /// We're sending a sync message,
-    // to be applied to a peer to a given document.
-    Sync(DocumentId, SyncMessage),
+    // to be applied by a given repo to a given document.
+    Sync {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: SyncMessage,
+    },
 }
 
 /// Network errors used by the sink.

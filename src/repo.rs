@@ -38,7 +38,7 @@ impl DocCollection {
     /// return a handle.
     pub fn new_document(&mut self) -> DocHandle {
         self.document_id_counter = self.document_id_counter.saturating_add(1);
-        let document_id = DocumentId((self.collection_id.clone(), self.document_id_counter));
+        let document_id = DocumentId((self.collection_id, self.document_id_counter));
         self.new_document_handle(document_id, DocState::Sync)
     }
 
@@ -55,8 +55,8 @@ impl DocCollection {
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.collection_sender.clone(),
-            document_id.clone(),
-            self.collection_id.clone(),
+            document_id,
+            self.collection_id,
             state.clone(),
             handle_count.clone(),
             is_ready,
@@ -64,12 +64,12 @@ impl DocCollection {
         let doc_info = DocumentInfo {
             state,
             handle_count,
-            sync_state: SyncState::new(),
+            sync_states: Default::default(),
             is_ready,
         };
         self.collection_sender
             .send((
-                self.collection_id.clone(),
+                self.collection_id,
                 CollectionEvent::NewDocHandle(document_id, doc_info),
             ))
             .expect("Failed to send collection event.");
@@ -111,8 +111,8 @@ pub(crate) struct DocumentInfo {
     state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
-    /// The automerge sync state.
-    sync_state: SyncState,
+    /// Per repo automerge sync state.
+    sync_states: HashMap<RepoId, SyncState>,
     /// Flag set to true once the doc reaches `DocState::Sync`.
     is_ready: bool,
 }
@@ -132,21 +132,32 @@ impl DocumentInfo {
     }
 
     /// Apply incoming sync messages.
-    fn receive_sync_message(&mut self, message: SyncMessage) {
+    fn receive_sync_message(&mut self, repo_id: RepoId, message: SyncMessage) {
+        let sync_state = self.sync_states.entry(repo_id).or_insert(SyncState::new());
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
         let mut sync = state.1.sync();
-        sync.receive_sync_message(&mut self.sync_state, message)
+        sync.receive_sync_message(sync_state, message)
             .expect("Failed to apply sync message.");
     }
 
     /// Potentially generate an outgoing sync message.
-    fn generate_sync_message(&mut self) -> Option<SyncMessage> {
+    fn generate_first_sync_message(&mut self, repo_id: RepoId) -> Option<SyncMessage> {
+        let sync_state = self.sync_states.entry(repo_id).or_insert(SyncState::new());
         let (lock, _cvar) = &*self.state;
-        lock.lock()
-            .1
-            .sync()
-            .generate_sync_message(&mut self.sync_state)
+        lock.lock().1.sync().generate_sync_message(sync_state)
+    }
+
+    /// Generate outgoing sync message for all repos we are syncing with.
+    fn generate_sync_messages(&mut self) -> Vec<(RepoId, SyncMessage)> {
+        self.sync_states
+            .iter_mut()
+            .filter_map(|(repo_id, sync_state)| {
+                let (lock, _cvar) = &*self.state;
+                let message = lock.lock().1.sync().generate_sync_message(sync_state);
+                message.map(|msg| (*repo_id, msg))
+            })
+            .collect()
     }
 }
 
@@ -169,12 +180,12 @@ impl ArcWake for CollectionWaker {
         match &**arc_self {
             CollectionWaker::Stream(sender, id) => {
                 sender
-                    .send(WakeSignal::Stream(id.clone()))
+                    .send(WakeSignal::Stream(*id))
                     .expect("Failed to send stream readiness signal.");
             }
             CollectionWaker::Sink(sender, id) => {
                 sender
-                    .send(WakeSignal::Sink(id.clone()))
+                    .send(WakeSignal::Sink(*id))
                     .expect("Failed to send sink readiness signal.");
             }
         }
@@ -228,22 +239,22 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     /// Note: all collections must be created before starting to run the repo.
     pub fn new_collection(&mut self, network_adapter: T) -> DocCollection {
         self.collection_id_counter = self.collection_id_counter.saturating_add(1);
-        let collection_id = CollectionId((self.repo_id.clone(), self.collection_id_counter));
+        let collection_id = CollectionId((self.repo_id, self.collection_id_counter));
         let collection = DocCollection {
             collection_sender: self
                 .collection_sender
                 .clone()
                 .expect("No collection sender."),
-            collection_id: collection_id.clone(),
+            collection_id,
             document_id_counter: Default::default(),
         };
         let stream_waker = Arc::new(CollectionWaker::Stream(
             self.wake_sender.clone(),
-            collection_id.clone(),
+            collection_id,
         ));
         let sink_waker = Arc::new(CollectionWaker::Sink(
             self.wake_sender.clone(),
-            collection_id.clone(),
+            collection_id,
         ));
         let collection_info = CollectionInfo {
             network_adapter: Box::new(network_adapter),
@@ -330,10 +341,18 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     .collections
                     .get_mut(collection_id)
                     .expect("Unexpected collection event.");
-                if let Some(outoing_sync_message) = info.generate_sync_message() {
-                    collection
-                        .pending_messages
-                        .push_back(NetworkMessage::Sync(id.clone(), outoing_sync_message));
+
+                // Send a sync message to the creator, unless it is the local repo.
+                if id.get_repo_id() != collection_id.get_repo_id() {
+                    if let Some(message) = info.generate_first_sync_message(*id.get_repo_id()) {
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: *collection_id.get_repo_id(),
+                            to_repo_id: *id.get_repo_id(),
+                            document_id: id,
+                            message,
+                        };
+                        collection.pending_messages.push_back(outgoing);
+                    }
                 }
                 collection.documents.insert(id, info);
             }
@@ -344,10 +363,14 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     .get_mut(collection_id)
                     .expect("Unexpected collection event.");
                 if let Some(info) = collection.documents.get_mut(&doc_id) {
-                    if let Some(outoing_sync_message) = info.generate_sync_message() {
-                        collection
-                            .pending_messages
-                            .push_back(NetworkMessage::Sync(doc_id, outoing_sync_message));
+                    for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: *collection_id.get_repo_id(),
+                            to_repo_id,
+                            document_id: doc_id,
+                            message,
+                        };
+                        collection.pending_messages.push_back(outgoing);
                     }
                 }
             }
@@ -379,22 +402,29 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         // Handle events.
         for event in mem::take(&mut collection.pending_events) {
             match event {
-                NetworkEvent::Sync(doc_id, message) => {
-                    if let Some(info) = collection.documents.get_mut(&doc_id) {
-                        info.receive_sync_message(message);
+                NetworkEvent::Sync {
+                    from_repo_id,
+                    to_repo_id: local_repo_id,
+                    document_id,
+                    message,
+                } => {
+                    if let Some(info) = collection.documents.get_mut(&document_id) {
+                        info.receive_sync_message(from_repo_id, message);
                         // Note: since receiving and generating sync messages is done
                         // in two separate critical sections,
                         // local changes could be made in between those,
                         // which is a good thing(generated messages will include those changes).
-                        if let Some(outoing_sync_message) = info.generate_sync_message() {
-                            if !outoing_sync_message.heads.is_empty()
-                                && outoing_sync_message.need.is_empty()
-                            {
+                        for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
+                            if !message.heads.is_empty() && message.need.is_empty() {
                                 info.set_ready();
                             }
-                            collection
-                                .pending_messages
-                                .push_back(NetworkMessage::Sync(doc_id, outoing_sync_message));
+                            let outgoing = NetworkMessage::Sync {
+                                from_repo_id: local_repo_id,
+                                to_repo_id,
+                                document_id,
+                                message,
+                            };
+                            collection.pending_messages.push_back(outgoing);
                         }
                     }
                 }
