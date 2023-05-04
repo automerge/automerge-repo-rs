@@ -83,6 +83,14 @@ impl DocHandle {
         self.document_id
     }
 
+    /// Let the repo know the document must be persisted.
+    /// Blocks until finished.
+    pub fn persist_doc_blocking(&self) {}
+
+    /// Let the repo know the document must be persisted.
+    /// Returns immediately, persistence done in the background.
+    pub fn persist_doc_non_blocking(&self) {}
+
     /// Run a closure over a mutable reference to the document.
     /// Note: blocks if called on a document that isn't ready,
     /// should be called only from within a blocking task or thread,
