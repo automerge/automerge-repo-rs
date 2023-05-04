@@ -387,7 +387,9 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                         // local changes could be made in between those,
                         // which is a good thing(generated messages will include those changes).
                         if let Some(outoing_sync_message) = info.generate_sync_message() {
-                            if !outoing_sync_message.heads.is_empty() {
+                            if !outoing_sync_message.heads.is_empty()
+                                && outoing_sync_message.need.is_empty()
+                            {
                                 info.set_ready();
                             }
                             collection
