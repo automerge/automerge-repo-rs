@@ -40,7 +40,7 @@ impl DocCollection {
         self.document_id_counter = self.document_id_counter.saturating_add(1);
         let document_id = DocumentId((self.collection_id, self.document_id_counter));
         let document = AutoCommit::new();
-        self.new_document_handle(document_id, document, DocState::Sync)
+        self.new_document_handle(None, document_id, document, DocState::Sync)
     }
 
     /// Load an existing document for local editing.
@@ -48,14 +48,16 @@ impl DocCollection {
     /// use `DocHandle.wait_ready` to wait for it.
     pub fn load_existing_document(
         &self,
+        repo_id: RepoId,
         document_id: DocumentId,
         document: AutoCommit,
     ) -> DocHandle {
-        self.new_document_handle(document_id, document, DocState::Bootstrap)
+        self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
     }
 
     fn new_document_handle(
         &self,
+        repo_id: Option<RepoId>,
         document_id: DocumentId,
         document: AutoCommit,
         state: DocState,
@@ -80,7 +82,7 @@ impl DocCollection {
         self.collection_sender
             .send((
                 self.collection_id,
-                CollectionEvent::NewDocHandle(document_id, doc_info),
+                CollectionEvent::NewDocHandle(repo_id, document_id, doc_info),
             ))
             .expect("Failed to send collection event.");
         handle
@@ -90,8 +92,10 @@ impl DocCollection {
 /// Events sent by doc collections or doc handles to the repo.
 #[derive(Debug)]
 pub(crate) enum CollectionEvent {
-    /// A doc was created.
-    NewDocHandle(DocumentId, DocumentInfo),
+    /// Load a document,
+    // repo id is the repo to start syncing with,
+    // none if locally created.
+    NewDocHandle(Option<RepoId>, DocumentId, DocumentInfo),
     /// A document changed.
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
@@ -353,7 +357,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     /// Handle incoming collection events(sent by colleciton or document handles).
     fn handle_collection_event(&mut self, collection_id: &CollectionId, event: CollectionEvent) {
         match event {
-            CollectionEvent::NewDocHandle(id, mut info) => {
+            CollectionEvent::NewDocHandle(repo_id, document_id, mut info) => {
                 // A new doc handle has been created.
                 let collection = self
                     .collections
@@ -361,18 +365,18 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     .expect("Unexpected collection event.");
 
                 // Send a sync message to the creator, unless it is the local repo.
-                if id.get_repo_id() != collection_id.get_repo_id() {
-                    if let Some(message) = info.generate_first_sync_message(*id.get_repo_id()) {
+                if let Some(repo_id) = repo_id {
+                    if let Some(message) = info.generate_first_sync_message(repo_id) {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: *collection_id.get_repo_id(),
-                            to_repo_id: *id.get_repo_id(),
-                            document_id: id,
+                            to_repo_id: repo_id,
+                            document_id: document_id,
                             message,
                         };
                         collection.pending_messages.push_back(outgoing);
                     }
                 }
-                collection.documents.insert(id, info);
+                collection.documents.insert(document_id, info);
             }
             CollectionEvent::DocChange(doc_id) => {
                 // Handle doc changes: sync the document.
