@@ -36,11 +36,11 @@ impl DocCollection {
     /// Create a new document in a syncing state,
     /// send the info to the repo,
     /// return a handle.
-    pub fn new_document(&mut self) -> DocHandle {
-        self.document_id_counter = self.document_id_counter.saturating_add(1);
+    pub fn new_document(&mut self) -> Option<DocHandle> {
+        self.document_id_counter = self.document_id_counter.checked_add(1)?;
         let document_id = DocumentId((self.collection_id, self.document_id_counter));
         let document = AutoCommit::new();
-        self.new_document_handle(None, document_id, document, DocState::Sync)
+        Some(self.new_document_handle(None, document_id, document, DocState::Sync))
     }
 
     /// Load an existing document for local editing.
@@ -258,8 +258,8 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         &mut self,
         network_adapter: T,
         sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
-    ) -> DocCollection {
-        self.collection_id_counter = self.collection_id_counter.saturating_add(1);
+    ) -> Option<DocCollection> {
+        self.collection_id_counter = self.collection_id_counter.checked_add(1)?;
         let collection_id = CollectionId((self.repo_id, self.collection_id_counter));
         let collection = DocCollection {
             collection_sender: self
@@ -287,7 +287,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             sync_observer,
         };
         self.collections.insert(collection_id, collection_info);
-        collection
+        Some(collection)
     }
 
     /// Poll the network adapter stream for a given collection,
