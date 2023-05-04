@@ -39,19 +39,29 @@ impl DocCollection {
     pub fn new_document(&mut self) -> DocHandle {
         self.document_id_counter = self.document_id_counter.saturating_add(1);
         let document_id = DocumentId((self.collection_id, self.document_id_counter));
-        self.new_document_handle(document_id, DocState::Sync)
+        let document = AutoCommit::new();
+        self.new_document_handle(document_id, document, DocState::Sync)
     }
 
     /// Load an existing document for local editing.
     /// The document should not be edited until ready,
     /// use `DocHandle.wait_ready` to wait for it.
-    pub fn load_existing_document(&self, document_id: DocumentId) -> DocHandle {
-        self.new_document_handle(document_id, DocState::Bootstrap)
+    pub fn load_existing_document(
+        &self,
+        document_id: DocumentId,
+        document: AutoCommit,
+    ) -> DocHandle {
+        self.new_document_handle(document_id, document, DocState::Bootstrap)
     }
 
-    fn new_document_handle(&self, document_id: DocumentId, state: DocState) -> DocHandle {
+    fn new_document_handle(
+        &self,
+        document_id: DocumentId,
+        document: AutoCommit,
+        state: DocState,
+    ) -> DocHandle {
         let is_ready = matches!(state, DocState::Sync);
-        let state = Arc::new((Mutex::new((state, AutoCommit::new())), Condvar::new()));
+        let state = Arc::new((Mutex::new((state, document)), Condvar::new()));
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.collection_sender.clone(),
