@@ -32,10 +32,7 @@ pub struct DocCollection {
 }
 
 impl DocCollection {
-    /// Public method used in the client context.
-    /// Create a new document in a syncing state,
-    /// send the info to the repo,
-    /// return a handle.
+    /// Create a new document.
     pub fn new_document(&mut self) -> DocHandle {
         self.document_id_counter = self
             .document_id_counter
@@ -46,15 +43,21 @@ impl DocCollection {
         self.new_document_handle(None, document_id, document, DocState::Sync)
     }
 
-    /// Load an existing document for local editing.
-    /// The document should not be edited until ready,
-    /// use `DocHandle.wait_ready` to wait for it.
+    /// Load an existing document, assumed to be ready for editing.
     pub fn load_existing_document(
         &self,
         repo_id: RepoId,
         document_id: DocumentId,
         document: AutoCommit,
     ) -> DocHandle {
+        self.new_document_handle(Some(repo_id), document_id, document, DocState::Sync)
+    }
+
+    /// Boostrap a document using it's ID only.
+    /// The returned document should not be edited until ready,
+    /// use `DocHandle.wait_ready` to wait for it.
+    pub fn bootstrap_document_from_id(&self, repo_id: RepoId, document_id: DocumentId) -> DocHandle {
+        let document = AutoCommit::new();
         self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
     }
 
