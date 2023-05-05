@@ -1,9 +1,10 @@
 use automerge::sync::Message as SyncMessage;
 use automerge::transaction::Transactable;
+use automerge::AutoCommit;
 use automerge::ReadDoc;
 use automerge_repo::{
     DocCollection, DocHandle, DocumentId, NetworkAdapter, NetworkError, NetworkEvent,
-    NetworkMessage, Repo,
+    NetworkMessage, Repo, RepoId,
 };
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
@@ -94,6 +95,7 @@ fn main() {
     let sink_waker = Arc::new(Mutex::new(None));
     let outgoing = Arc::new(Mutex::new(VecDeque::new()));
     let (sender, mut network_receiver) = channel(1);
+    let doc_handles = Arc::new(Mutex::new(Default::default()));
     let network = Network {
         buffer: buffer.clone(),
         stream_waker: stream_waker.clone(),
@@ -106,7 +108,13 @@ fn main() {
     let mut repo = Repo::new(1);
 
     // Create a new collection with a network and a storage adapters.
-    let collection = repo.new_collection(network);
+    let doc_handles_clone = doc_handles.clone();
+    let collection = repo.new_collection(
+        network,
+        Some(Box::new(move |synced| {
+            println!("Synced: {:?} {:?}", synced, doc_handles_clone);
+        })),
+    );
 
     // Run the repo in the background.
     let repo_join_handle = repo.run();
@@ -123,15 +131,21 @@ fn main() {
         loop {
             network_receiver.recv().await.unwrap();
             let message = outgoing.lock().pop_front();
-            if let Some(NetworkMessage::Sync(id, sync_message)) = message {
+            if let Some(NetworkMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+            }) = message
+            {
                 if let Some(waker) = sink_waker.lock().take() {
                     waker.wake();
                 }
-                let sync_message = sync_message.encode();
+                let message = message.encode();
                 let url = format!("http://{}/sync_doc", args.other_ip);
                 client
                     .post(url)
-                    .json(&(id, sync_message))
+                    .json(&(from_repo_id, to_repo_id, document_id, message))
                     .send()
                     .await
                     .unwrap();
@@ -149,12 +163,19 @@ fn main() {
     async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
         let doc_handle = state.collection.lock().new_document();
         let doc_id = doc_handle.document_id();
-        state.doc_handles.lock().insert(doc_ * id, doc_handle);
+        state.doc_handles.lock().insert(doc_id, doc_handle);
         Json(doc_id)
     }
 
-    async fn load_doc(State(state): State<Arc<AppState>>, Json(id): Json<DocumentId>) {
-        let doc_handle = state.collection.lock().load_existing_document(id);
+    async fn load_doc(
+        State(state): State<Arc<AppState>>,
+        Json((repo_id, document_id)): Json<(RepoId, DocumentId)>,
+    ) {
+        let doc_handle =
+            state
+                .collection
+                .lock()
+                .load_existing_document(repo_id, document_id, AutoCommit::new());
         state
             .doc_handles
             .lock()
@@ -204,13 +225,20 @@ fn main() {
 
     async fn sync_doc(
         State(state): State<Arc<AppState>>,
-        Json((id, msg)): Json<(DocumentId, Vec<u8>)>,
+        Json((from_repo_id, to_repo_id, document_id, message)): Json<(
+            RepoId,
+            RepoId,
+            DocumentId,
+            Vec<u8>,
+        )>,
     ) {
-        let sync_message = SyncMessage::decode(&msg).expect("Failed to decode sync mesage.");
-        state
-            .incoming
-            .lock()
-            .push_back(NetworkEvent::Sync(id, sync_message));
+        let message = SyncMessage::decode(&message).expect("Failed to decode sync mesage.");
+        state.incoming.lock().push_back(NetworkEvent::Sync {
+            from_repo_id,
+            to_repo_id,
+            document_id,
+            message,
+        });
         if let Some(waker) = state.stream_waker.lock().take() {
             waker.wake();
         }
@@ -227,7 +255,7 @@ fn main() {
     let app_state = Arc::new(AppState {
         incoming: buffer,
         collection: Arc::new(Mutex::new(collection)),
-        doc_handles: Arc::new(Mutex::new(Default::default())),
+        doc_handles,
         stream_waker,
     });
 
