@@ -1,6 +1,5 @@
 use automerge::sync::Message as SyncMessage;
 use automerge::transaction::Transactable;
-use automerge::AutoCommit;
 use automerge::ReadDoc;
 use automerge_repo::{
     DocCollection, DocHandle, DocumentId, NetworkAdapter, NetworkError, NetworkEvent,
@@ -24,10 +23,10 @@ use tokio::sync::mpsc::{channel, Sender};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(long)]
     run_ip: String,
-    #[arg(short, long)]
-    other_ip: String,
+    #[arg(long)]
+    relay_ip: String,
 }
 
 struct Network<NetworkMessage> {
@@ -96,6 +95,7 @@ fn main() {
     let outgoing = Arc::new(Mutex::new(VecDeque::new()));
     let (sender, mut network_receiver) = channel(1);
     let doc_handles = Arc::new(Mutex::new(Default::default()));
+    let peers = Arc::new(Mutex::new(Default::default()));
     let network = Network {
         buffer: buffer.clone(),
         stream_waker: stream_waker.clone(),
@@ -126,6 +126,7 @@ fn main() {
         .unwrap();
 
     // Task that handles outgoing network messages.
+    let relay_ip = args.relay_ip.clone();
     rt.spawn(async move {
         let client = reqwest::Client::new();
         loop {
@@ -142,7 +143,7 @@ fn main() {
                     waker.wake();
                 }
                 let message = message.encode();
-                let url = format!("http://{}/sync_doc", args.other_ip);
+                let url = format!("http://{}/relay_sync", relay_ip);
                 client
                     .post(url)
                     .json(&(from_repo_id, to_repo_id, document_id, message))
@@ -158,24 +159,24 @@ fn main() {
         collection: Arc<Mutex<DocCollection>>,
         doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>>,
         stream_waker: Arc<Mutex<Option<Waker>>>,
+        peers: Arc<Mutex<HashMap<RepoId, String>>>,
     }
 
-    async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
+    async fn new_doc(State(state): State<Arc<AppState>>) -> Json<(RepoId, DocumentId)> {
         let doc_handle = state.collection.lock().new_document();
         let doc_id = doc_handle.document_id();
         state.doc_handles.lock().insert(doc_id, doc_handle);
-        Json(doc_id)
+        Json((*doc_id.get_repo_id(), doc_id))
     }
 
     async fn load_doc(
         State(state): State<Arc<AppState>>,
         Json((repo_id, document_id)): Json<(RepoId, DocumentId)>,
     ) {
-        let doc_handle =
-            state
-                .collection
-                .lock()
-                .load_existing_document(repo_id, document_id, AutoCommit::new());
+        let doc_handle = state
+            .collection
+            .lock()
+            .bootstrap_document_from_id(repo_id, document_id);
         state
             .doc_handles
             .lock()
@@ -223,6 +224,35 @@ fn main() {
         });
     }
 
+    async fn register_relay(
+        State(state): State<Arc<AppState>>,
+        Json((repo_id, peer)): Json<(RepoId, String)>,
+    ) {
+        state.peers.lock().insert(repo_id, peer);
+    }
+
+    async fn relay_sync(
+        State(state): State<Arc<AppState>>,
+        Json((from_repo_id, to_repo_id, document_id, message)): Json<(
+            RepoId,
+            RepoId,
+            DocumentId,
+            Vec<u8>,
+        )>,
+    ) {
+        let client = reqwest::Client::new();
+        let url = format!(
+            "http://{}/sync_doc",
+            state.peers.lock().get(&to_repo_id).unwrap()
+        );
+        client
+            .post(url)
+            .json(&(from_repo_id, to_repo_id, document_id, message))
+            .send()
+            .await
+            .unwrap();
+    }
+
     async fn sync_doc(
         State(state): State<Arc<AppState>>,
         Json((from_repo_id, to_repo_id, document_id, message)): Json<(
@@ -252,11 +282,13 @@ fn main() {
         });
     }
 
+    let repo_id = collection.get_repo_id();
     let app_state = Arc::new(AppState {
         incoming: buffer,
         collection: Arc::new(Mutex::new(collection)),
         doc_handles,
         stream_waker,
+        peers,
     });
 
     let app = Router::new()
@@ -264,10 +296,23 @@ fn main() {
         .route("/load_doc", post(load_doc))
         .route("/edit_doc/:string", post(edit_doc))
         .route("/sync_doc", post(sync_doc))
+        .route("/relay_sync", post(relay_sync))
+        .route("/register_relay", post(register_relay))
         .route("/print_doc", post(print_doc))
         .with_state(app_state);
 
     rt.spawn(async move {
+        if args.relay_ip != args.run_ip {
+            // Register with relay server.
+            let client = reqwest::Client::new();
+            let url = format!("http://{}/register_relay", args.relay_ip);
+            client
+                .post(url)
+                .json(&(repo_id, args.run_ip.clone()))
+                .send()
+                .await
+                .unwrap();
+        }
         axum::Server::bind(&args.run_ip.parse().unwrap())
             .serve(app.into_make_service())
             .await

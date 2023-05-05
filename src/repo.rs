@@ -32,6 +32,10 @@ pub struct DocCollection {
 }
 
 impl DocCollection {
+    pub fn get_repo_id(&self) -> RepoId {
+        self.collection_id.0 .0
+    }
+
     /// Create a new document.
     pub fn new_document(&mut self) -> DocHandle {
         self.document_id_counter = self
@@ -56,7 +60,11 @@ impl DocCollection {
     /// Boostrap a document using it's ID only.
     /// The returned document should not be edited until ready,
     /// use `DocHandle.wait_ready` to wait for it.
-    pub fn bootstrap_document_from_id(&self, repo_id: RepoId, document_id: DocumentId) -> DocHandle {
+    pub fn bootstrap_document_from_id(
+        &self,
+        repo_id: RepoId,
+        document_id: DocumentId,
+    ) -> DocHandle {
         let document = AutoCommit::new();
         self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
     }
