@@ -5,8 +5,8 @@ edition = "2021"
 path = "src/lib.rs"
 
 [[example]]
-name = "http-server"
-path = "examples/http_server.rs"
+name = "http-server-with-relay"
+path = "examples/http_server_with_relay.rs"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

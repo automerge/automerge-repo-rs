@@ -1,43 +1,22 @@
-# automerge-repo-demo
+# Spanreed
 
 Project goal: add an integration layer between automerge and client code, compatible with any async runtime.
 
-## Iteration 1
+## Examples 
 
-**What:** use an async public interface, and use async internally(but hidden from view).
+### HTTP servers, with one relay server
 
-**How:** traits for network and storage adapters are async, document handle method are async as well. Use a tokio runtime internally.
-
-**Notes:** Need to run library inside a native thread, because tokio runtime cannot be dropped in an async context.
-
-**Problems:** intermittent panics, mostly about channels being disconnected apparently without reason. 
-Occured around use of document handles in client code that ran on a different tokio runtime. 
-
-**Hypothesis:** panics arise from sharing synchronization primitives between different runtime contexts. 
-
-## Iteration 2
-
-**What:** test above hypothesis.
-
-**How:** run everything, client and library code, in the context of a single tokio runtime. 
-
-**Notes:** panics go away, but we now have a tokio demo app, which is not the goal of the project. 
-
-**Hypothesis:** as a way of integrating with any runtime, use native threading internally, 
-and offer a "normal" interface with guarantees about blocking. 
-
-## Iteration 3
-
-**What:** test above hypothesis.
-
-**How:** Use a native thread to run event-loop of library. 
-
-Offer a public interface that is not async, 
-but guarantee non-blocking operation by using a pull-based workflow signalling backpressure(see [`send_event`](https://github.com/gterzian/automerge-repo-demo/blob/869b4b604b3a3c6045fc97a90baadbadb9342c9d/src/interfaces.rs#L39)). 
-
-Alternatively, document methods as blocking, 
-and let client code deal with those using a `spawn_blocking`-like API from the runtime of their choice(see [`wait_ready`](https://github.com/gterzian/automerge-repo-demo/blob/31ba5b31509debf32077f3101ebdaf784bea0f18/src/dochandle.rs#L90)). 
-
-[main.rs](https://github.com/gterzian/automerge-repo-demo/blob/master/src/main.rs) contains the example "client code". 
-
-Current state works pretty well, good basis for further discussion. 
+1. Start the relay server(run-ip equals relay-ip): `cargo run --example http-server-with-relay  -- --run-ip 0.0.0.0:3001 --relay-ip 0.0.0.0:3001`
+2. Start any number of peers: 
+   - `cargo run --example http-server-with-relay  -- --run-ip 0.0.0.0:3000 --relay-ip 0.0.0.0:3001`
+   - `cargo run --example http-server-with-relay  -- --run-ip 0.0.0.0:3002 --relay-ip 0.0.0.0:3001`
+   - `cargo run --example http-server-with-relay  -- --run-ip 0.0.0.0:3003 --relay-ip 0.0.0.0:3001`
+3. Create a document: `curl 0.0.0.0:3000/new_doc`. This returns a document id in the format `[["d3206efc-cff0-4cd5-ad16-9ecfee76a03f",1],1]`
+4. Edit the document at the creator node: `curl --json '{document id}' 0.0.0.0:3000/edit_doc/test001`
+5. Load the document at one, or several, peers(s):
+   - `curl --json '{document id}' 0.0.0.0:3002/load_doc`
+   - `curl --json '{document id}' 0.0.0.0:3003/load_doc`
+   - Syncing servers should be printing out "Synced DocumentId" type of output.
+6. Check the document state at at one, or several, peers(s):
+   - `curl --json '{document id}' 0.0.0.0:3000/print_doc`
+7. Make additional edits, at any peer, and repeat step 6. 
