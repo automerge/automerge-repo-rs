@@ -94,7 +94,7 @@ fn main() {
     let sink_waker = Arc::new(Mutex::new(None));
     let outgoing = Arc::new(Mutex::new(VecDeque::new()));
     let (sender, mut network_receiver) = channel(1);
-    let doc_handles = Arc::new(Mutex::new(Default::default()));
+    let doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>> = Arc::new(Mutex::new(Default::default()));
     let peers = Arc::new(Mutex::new(Default::default()));
     let network = Network {
         buffer: buffer.clone(),
@@ -112,7 +112,11 @@ fn main() {
     let collection = repo.new_collection(
         network,
         Some(Box::new(move |synced| {
-            println!("Synced: {:?} {:?}", synced, doc_handles_clone);
+            for doc_id in synced {
+                let handles = doc_handles_clone.lock();
+                let doc_handle = handles.get(&doc_id).unwrap();
+                println!("Synced {:?}", doc_handle.document_id());
+            }
         })),
     );
 
@@ -125,7 +129,8 @@ fn main() {
         .build()
         .unwrap();
 
-    // Task that handles outgoing network messages.
+    // Task that handles outgoing network messages,
+    // which are all sent to the relay server.
     let relay_ip = args.relay_ip.clone();
     rt.spawn(async move {
         let client = reqwest::Client::new();
@@ -162,11 +167,11 @@ fn main() {
         peers: Arc<Mutex<HashMap<RepoId, String>>>,
     }
 
-    async fn new_doc(State(state): State<Arc<AppState>>) -> Json<(RepoId, DocumentId)> {
+    async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
         let doc_handle = state.collection.lock().new_document();
         let doc_id = doc_handle.document_id();
         state.doc_handles.lock().insert(doc_id, doc_handle);
-        Json((*doc_id.get_repo_id(), doc_id))
+        Json(doc_id)
     }
 
     async fn load_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
