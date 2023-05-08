@@ -169,14 +169,11 @@ fn main() {
         Json((*doc_id.get_repo_id(), doc_id))
     }
 
-    async fn load_doc(
-        State(state): State<Arc<AppState>>,
-        Json((repo_id, document_id)): Json<(RepoId, DocumentId)>,
-    ) {
+    async fn load_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
         let doc_handle = state
             .collection
             .lock()
-            .bootstrap_document_from_id(repo_id, document_id);
+            .bootstrap_document_from_id(None, document_id);
         state
             .doc_handles
             .lock()

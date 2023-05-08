@@ -62,10 +62,12 @@ impl DocCollection {
     /// use `DocHandle.wait_ready` to wait for it.
     pub fn bootstrap_document_from_id(
         &self,
-        repo_id: RepoId,
+        repo_id: Option<RepoId>,
         document_id: DocumentId,
     ) -> DocHandle {
         let document = AutoCommit::new();
+        // If no repo id is provided, sync with the creator.
+        let repo_id = repo_id.unwrap_or_else(|| *document_id.get_repo_id());
         self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
     }
 
