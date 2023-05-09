@@ -285,7 +285,7 @@ fn main() {
         });
     }
 
-    let repo_id = collection.get_repo_id();
+    let repo_id = *collection.get_repo_id();
     let app_state = Arc::new(AppState {
         incoming: buffer,
         collection: Arc::new(Mutex::new(collection)),

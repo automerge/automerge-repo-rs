@@ -46,7 +46,7 @@ impl Display for CollectionId {
 }
 
 /// Events sent by the network adapter.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NetworkEvent {
     /// A repo sent us a sync message,
     // to be applied to a given document.
@@ -59,7 +59,7 @@ pub enum NetworkEvent {
 }
 
 /// Messages sent into the network sink.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NetworkMessage {
     /// We're sending a sync message,
     // to be applied by a given repo to a given document.

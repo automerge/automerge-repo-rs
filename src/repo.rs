@@ -21,6 +21,7 @@ use uuid::Uuid;
 /// A collection of documents,
 /// through which new docs can be created,
 /// and doc handles acquired.
+#[derive(Debug)]
 pub struct DocCollection {
     /// Channel used to send events back to the repo,
     /// such as when a doc is created, and a doc handle acquired.
@@ -32,8 +33,8 @@ pub struct DocCollection {
 }
 
 impl DocCollection {
-    pub fn get_repo_id(&self) -> RepoId {
-        self.collection_id.0 .0
+    pub fn get_repo_id(&self) -> &RepoId {
+        &self.collection_id.0 .0
     }
 
     /// Create a new document.
@@ -266,6 +267,10 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             collection_sender: Some(collection_sender),
             collection_receiver,
         }
+    }
+
+    pub fn get_repo_id(&self) -> RepoId {
+        self.repo_id
     }
 
     /// Create a new doc collection, with a storage and a network adapter.
