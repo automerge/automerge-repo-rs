@@ -94,7 +94,8 @@ fn main() {
     let sink_waker = Arc::new(Mutex::new(None));
     let outgoing = Arc::new(Mutex::new(VecDeque::new()));
     let (sender, mut network_receiver) = channel(1);
-    let doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>> = Arc::new(Mutex::new(Default::default()));
+    let doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>> =
+        Arc::new(Mutex::new(Default::default()));
     let peers = Arc::new(Mutex::new(Default::default()));
     let network = Network {
         buffer: buffer.clone(),
