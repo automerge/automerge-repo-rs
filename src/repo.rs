@@ -484,10 +484,10 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
 
     /// The event-loop of the repo.
     /// Handles events from collections and adapters.
-    /// Returns a `std::thread::JoinHandle` for optional clean shutdown.
-    pub fn run(mut self) -> JoinHandle<()> {
+    /// Returns a handle for optional clean shutdown.
+    pub fn run(mut self) -> RepoHandle {
         // Run the repo's event-loop in a thread.
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             // Drop the repo's clone of the collection sender,
             // ensuring the below loop stops when all collections have been dropped.
             drop(self.collection_sender.take());
@@ -521,6 +521,18 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     },
                 }
             }
-        })
+        });
+        RepoHandle { handle }
+    }
+}
+
+pub struct RepoHandle {
+    handle: JoinHandle<()>,
+}
+
+impl RepoHandle {
+    pub fn join(self) -> Result<(), ()> {
+        self.handle.join().expect("Failed to join on repo.");
+        Ok(())
     }
 }
