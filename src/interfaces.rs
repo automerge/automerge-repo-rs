@@ -58,6 +58,24 @@ pub enum NetworkEvent {
     },
 }
 
+impl From<NetworkMessage> for NetworkEvent {
+    fn from(msg: NetworkMessage) -> Self {
+        match msg {
+            NetworkMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+            } => NetworkEvent::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+            },
+        }
+    }
+}
+
 /// Messages sent into the network sink.
 #[derive(Debug)]
 pub enum NetworkMessage {

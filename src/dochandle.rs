@@ -95,24 +95,25 @@ impl DocHandle {
     /// Note: blocks if called on a document that isn't ready,
     /// should be called only from within a blocking task or thread,
     /// or only after having called `wait_ready`.
-    pub fn with_doc_mut<F>(&mut self, f: F)
+    pub fn with_doc_mut<F, O>(&mut self, f: F) -> O
     where
-        F: FnOnce(&mut AutoCommit),
+        F: FnOnce(&mut AutoCommit) -> O,
     {
         if !self.is_ready {
             self.wait_ready();
         }
-        {
+        let result = {
             let (lock, _cvar) = &*self.state;
             let mut state = lock.lock();
-            f(&mut state.1);
-        }
+            f(&mut state.1)
+        };
         self.collection_sender
             .send((
                 self.collection_id,
                 CollectionEvent::DocChange(self.document_id),
             ))
             .expect("Failed to send doc change event.");
+        result
     }
 
     /// Returns whether the document is ready for editing.

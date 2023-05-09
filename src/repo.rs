@@ -1,20 +1,18 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{CollectionId, DocumentId, RepoId};
-use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
+use crate::interfaces::{NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
-use core::pin::Pin;
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
-use futures::stream::Stream;
-use futures::task::ArcWake;
-use futures::task::{waker_ref, Context, Poll};
-use futures::Sink;
+use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt, TryStreamExt};
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::mem;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
 
@@ -34,6 +32,10 @@ pub struct DocCollection {
 impl DocCollection {
     pub fn get_repo_id(&self) -> RepoId {
         self.collection_id.0 .0
+    }
+
+    pub fn id(&self) -> CollectionId {
+        self.collection_id
     }
 
     /// Create a new document.
@@ -116,16 +118,14 @@ pub(crate) enum CollectionEvent {
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
+    /// Network event
+    Network(NetworkEvent),
 }
 
 /// Information on a doc collection held by the repo.
 /// Each collection can be configured with different adapters.
-struct CollectionInfo<T: NetworkAdapter> {
-    network_adapter: Box<T>,
+struct CollectionInfo {
     documents: HashMap<DocumentId, DocumentInfo>,
-
-    stream_waker: Arc<CollectionWaker>,
-    sink_waker: Arc<CollectionWaker>,
 
     /// Messages to send on the network adapter sink.
     pending_messages: VecDeque<NetworkMessage>,
@@ -194,51 +194,39 @@ impl DocumentInfo {
     }
 }
 
-/// Signal that for a given collection,
-/// the stream or sink on the network adapter is ready to be polled.
-enum WakeSignal {
-    Stream(CollectionId),
-    Sink(CollectionId),
+enum ControlEvent {
+    CreateCollection {
+        observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+        reply: Sender<DocCollection>,
+    },
+    Shutdown,
 }
 
-/// Waking mechanism for stream and sinks.
-enum CollectionWaker {
-    Stream(Sender<WakeSignal>, CollectionId),
-    Sink(Sender<WakeSignal>, CollectionId),
+struct Outbox {
+    waker: Option<Waker>,
+    messages: Vec<NetworkMessage>,
 }
 
-/// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
-impl ArcWake for CollectionWaker {
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        match &**arc_self {
-            CollectionWaker::Stream(sender, id) => {
-                sender
-                    .send(WakeSignal::Stream(*id))
-                    .expect("Failed to send stream readiness signal.");
-            }
-            CollectionWaker::Sink(sender, id) => {
-                sender
-                    .send(WakeSignal::Sink(*id))
-                    .expect("Failed to send sink readiness signal.");
-            }
+impl Outbox {
+    fn new() -> Self {
+        Self {
+            waker: None,
+            messages: Vec::new(),
         }
     }
 }
 
 /// The backend of doc collections: the repo runs an event-loop in a background thread.
-pub struct Repo<T: NetworkAdapter> {
+pub struct Repo {
+    control_sender: Option<Sender<ControlEvent>>,
+    control_receiver: Receiver<ControlEvent>,
     /// The Id of the repo.
     repo_id: RepoId,
     /// Counter to generate unique collection ids.
     collection_id_counter: u64,
 
     /// A map of collections to their info.
-    collections: HashMap<CollectionId, CollectionInfo<T>>,
-
-    /// Sender use to signal network stream and sink readiness.
-    /// A sender is kept around to clone for multiple calls to `new_collection`.
-    wake_sender: Sender<WakeSignal>,
-    wake_receiver: Receiver<WakeSignal>,
+    collections: HashMap<CollectionId, CollectionInfo>,
 
     /// Sender and receiver of collection events.
     /// A sender is kept around to clone for multiple calls to `new_collection`,
@@ -247,32 +235,31 @@ pub struct Repo<T: NetworkAdapter> {
     /// once all collections and doc handles have been dropped.
     collection_sender: Option<Sender<(CollectionId, CollectionEvent)>>,
     collection_receiver: Receiver<(CollectionId, CollectionEvent)>,
+    outboxes: Arc<Mutex<HashMap<CollectionId, Outbox>>>,
 }
 
-impl<T: NetworkAdapter + 'static> Repo<T> {
+impl Repo {
     /// Create a new repo, specifying a
     /// max number of collections that can be created for this repo.
     pub fn new(max_number_collections: usize) -> Self {
-        // Bound the channels by the max number of collections times two,
-        // ensuring sending on them as part of polling sink and streams never blocks.
-        let (wake_sender, wake_receiver) = bounded(max_number_collections * 2);
         let (collection_sender, collection_receiver) = unbounded();
+        let (control_sender, control_receiver) = unbounded();
         Repo {
             repo_id: RepoId(Uuid::new_v4()),
             collection_id_counter: Default::default(),
             collections: Default::default(),
-            wake_sender,
-            wake_receiver,
             collection_sender: Some(collection_sender),
+            control_sender: Some(control_sender),
+            control_receiver,
             collection_receiver,
+            outboxes: Default::default(),
         }
     }
 
-    /// Create a new doc collection, with a storage and a network adapter.
+    /// Create a new doc collection
     /// Note: all collections must be created before starting to run the repo.
-    pub fn new_collection(
+    fn new_collection(
         &mut self,
-        network_adapter: T,
         sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
     ) -> DocCollection {
         self.collection_id_counter = self
@@ -284,93 +271,18 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             collection_sender: self
                 .collection_sender
                 .clone()
-                .expect("No collection sender."),
+                .expect("no collection sender"),
             collection_id,
             document_id_counter: Default::default(),
         };
-        let stream_waker = Arc::new(CollectionWaker::Stream(
-            self.wake_sender.clone(),
-            collection_id,
-        ));
-        let sink_waker = Arc::new(CollectionWaker::Sink(
-            self.wake_sender.clone(),
-            collection_id,
-        ));
         let collection_info = CollectionInfo {
-            network_adapter: Box::new(network_adapter),
             documents: Default::default(),
-            stream_waker,
-            sink_waker,
             pending_messages: Default::default(),
             pending_events: Default::default(),
             sync_observer,
         };
         self.collections.insert(collection_id, collection_info);
         collection
-    }
-
-    /// Poll the network adapter stream for a given collection,
-    /// handle the incoming events.
-    fn collect_network_events(&mut self, collection_id: &CollectionId) {
-        let collection = self
-            .collections
-            .get_mut(collection_id)
-            .expect("Unexpected collection event.");
-
-        // Collect as many events as possible.
-        loop {
-            let waker = waker_ref(&collection.stream_waker);
-            let pinned_stream = Pin::new(&mut collection.network_adapter);
-            let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Some(event)) => collection.pending_events.push_back(event),
-                Poll::Ready(None) => return,
-            }
-        }
-    }
-
-    /// Try to send pending messages on network sinks for a given collection.
-    fn process_outgoing_network_messages(&mut self, collection_id: &CollectionId) {
-        let collection = self
-            .collections
-            .get_mut(collection_id)
-            .expect("Unexpected collection event.");
-
-        // Send as many messages as possible.
-        let mut needs_flush = false;
-        loop {
-            if collection.pending_messages.is_empty() {
-                break;
-            }
-            let waker = waker_ref(&collection.sink_waker);
-            let pinned_sink = Pin::new(&mut collection.network_adapter);
-            let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Ok(())) => {
-                    let pinned_sink = Pin::new(&mut collection.network_adapter);
-                    let result = pinned_sink.start_send(
-                        collection
-                            .pending_messages
-                            .pop_front()
-                            .expect("Empty pending messages."),
-                    );
-                    if result.is_err() {
-                        return;
-                    }
-                    needs_flush = true;
-                }
-                Poll::Ready(Err(_)) => return,
-            }
-        }
-
-        // Flusk the sink if any messages have been sent.
-        if needs_flush {
-            let waker = waker_ref(&collection.sink_waker);
-            let pinned_sink = Pin::new(&mut collection.network_adapter);
-            let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
-        }
     }
 
     /// Handle incoming collection events(sent by colleciton or document handles).
@@ -386,12 +298,14 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 // Send a sync message to the creator, unless it is the local repo.
                 if let Some(repo_id) = repo_id {
                     if let Some(message) = info.generate_first_sync_message(repo_id) {
+                        tracing::trace!("generating initial sync message");
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: *collection_id.get_repo_id(),
                             to_repo_id: repo_id,
                             document_id,
                             message,
                         };
+                        tracing::trace!(?outgoing, "sending initial sync message");
                         collection.pending_messages.push_back(outgoing);
                     }
                 }
@@ -428,6 +342,13 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
                     panic!("Document closed with outstanding handles.");
                 }
+            }
+            CollectionEvent::Network(network_evt) => {
+                let collection = self
+                    .collections
+                    .get_mut(collection_id)
+                    .expect("Unexpected collection event.");
+                collection.pending_events.push_back(network_evt);
             }
         }
     }
@@ -482,6 +403,23 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         }
     }
 
+    fn fill_outboxes(&mut self) {
+        for (collection_id, collection) in self.collections.iter_mut() {
+            let mut outboxes = self.outboxes.lock();
+            let outbox = outboxes.entry(*collection_id).or_insert_with(Outbox::new);
+            tracing::trace!(
+                num_messages = collection.pending_messages.len(),
+                "enqueing outgoing messages"
+            );
+            outbox
+                .messages
+                .extend(collection.pending_messages.drain(..));
+            if let Some(waker) = outbox.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
     /// The event-loop of the repo.
     /// Handles events from collections and adapters.
     /// Returns a `std::thread::JoinHandle` for optional clean shutdown.
@@ -490,43 +428,175 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         thread::spawn(move || {
             // Drop the repo's clone of the collection sender,
             // ensuring the below loop stops when all collections have been dropped.
-            drop(self.collection_sender.take());
-
-            // Initial poll to streams and sinks.
-            let collection_ids: Vec<CollectionId> = self.collections.keys().cloned().collect();
-            for collection_id in collection_ids {
-                self.collect_network_events(&collection_id);
-                self.sync_document_collection(&collection_id);
-                self.process_outgoing_network_messages(&collection_id);
-            }
 
             loop {
                 select! {
                     recv(self.collection_receiver) -> collection_event => {
                         if let Ok((collection_id, event)) = collection_event {
+                            tracing::trace!(?collection_id, ?event, "received collection event");
                             self.handle_collection_event(&collection_id, event);
-                            self.process_outgoing_network_messages(&collection_id);
+                            self.sync_document_collection(&collection_id);
+                            self.fill_outboxes();
                         } else {
                             // The repo shuts down
                             // once all handles and collections drop.
                             break;
                         }
                     },
-                    recv(self.wake_receiver) -> event => {
-                        match event {
-                            Err(_) => panic!("Wake senders dropped"),
-                            Ok(WakeSignal::Stream(collection_id)) => {
-                                self.collect_network_events(&collection_id);
-                                self.sync_document_collection(&collection_id);
-                                self.process_outgoing_network_messages(&collection_id);
+                    recv(self.control_receiver) -> control_event => {
+                        match control_event {
+                            Ok(ControlEvent::CreateCollection{observer, reply}) => {
+                                let collection = self.new_collection(observer);
+                                reply.send(collection).unwrap();
                             },
-                            Ok(WakeSignal::Sink(collection_id)) => {
-                                self.process_outgoing_network_messages(&collection_id);
+                            Ok(ControlEvent::Shutdown) => {
+                                tracing::info!("shutting down repo");
+                                break;
+                            },
+                            Err(e) => {
+                                tracing::error!("Error receiving control event: {:?}", e);
                             }
                         }
                     },
                 }
             }
         })
+    }
+
+    pub fn handle(&self) -> RepoHandle {
+        RepoHandle {
+            control_sender: self.control_sender.clone().expect("Repo has shut down."),
+            collection_sender: self.collection_sender.clone().expect("Repo has shut down."),
+            outboxes: self.outboxes.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RepoHandle {
+    control_sender: Sender<ControlEvent>,
+    collection_sender: Sender<(CollectionId, CollectionEvent)>,
+    outboxes: Arc<Mutex<HashMap<CollectionId, Outbox>>>,
+}
+
+impl RepoHandle {
+    pub fn create_collection(
+        &self,
+        observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+    ) -> DocCollection {
+        let (reply, receiver) = bounded(1);
+        self.control_sender
+            .send(ControlEvent::CreateCollection { observer, reply })
+            .unwrap();
+        receiver.recv().unwrap()
+    }
+
+    pub async fn connect_stream<RecvErr, SendErr, S>(
+        &self,
+        collection: CollectionId,
+        stream: S,
+    ) -> Result<(), error::RunConnection<SendErr, RecvErr>>
+    where
+        RecvErr: std::fmt::Debug,
+        SendErr: std::error::Error,
+        S: Sink<NetworkMessage, Error = SendErr> + Stream<Item = Result<NetworkMessage, RecvErr>>,
+    {
+        let (mut sink, stream) = stream.split();
+        let to_send = self.outgoing(collection).map(|m| Ok::<_, SendErr>(m));
+        let sending = to_send.forward(&mut sink).fuse();
+
+        let recv_msg = self.collection_sender.clone();
+        let recving = stream
+            .map_err(error::RunConnection::<SendErr, RecvErr>::Recv)
+            .try_for_each({
+                move |m| {
+                    futures::future::ready(
+                        recv_msg
+                            .try_send((collection, CollectionEvent::Network(m.into())))
+                            .map_err(|_| error::RunConnection::<SendErr, RecvErr>::RecvCollection),
+                    )
+                }
+            })
+            .fuse();
+
+        let finished = futures::future::select(sending, recving).await;
+        match finished {
+            futures::future::Either::Left((result, _recving)) => match result {
+                Ok(_) => {
+                    tracing::trace!("we're closing the connection");
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::trace!(err=?e, "error while sending");
+                    Err(error::RunConnection::Send(e))
+                }
+            },
+            futures::future::Either::Right((result, _sending)) => {
+                if let Err(e) = sink.close().await {
+                    tracing::trace!(err=?e, "error while closing sink");
+                }
+                match result {
+                    Ok(_) => {
+                        tracing::trace!("the remote closed the connection");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        tracing::trace!(err=?e, "error while receiving");
+                        Err(e)
+                    }
+                }
+            }
+        }
+    }
+
+    fn outgoing(&self, collection: CollectionId) -> impl Stream<Item = NetworkMessage> {
+        OutgoingMessages {
+            outboxes: self.outboxes.clone(),
+            id: collection,
+        }
+    }
+
+    pub fn shutdown(&self) {
+        self.control_sender.send(ControlEvent::Shutdown).unwrap();
+    }
+}
+
+struct OutgoingMessages {
+    outboxes: Arc<Mutex<HashMap<CollectionId, Outbox>>>,
+    id: CollectionId,
+}
+
+impl Stream for OutgoingMessages {
+    type Item = NetworkMessage;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut outboxes = self.outboxes.lock();
+        if let Some(Outbox { waker, messages }) = outboxes.get_mut(&self.id) {
+            if let Some(msg) = messages.pop() {
+                Poll::Ready(Some(msg))
+            } else {
+                *waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        } else {
+            outboxes.insert(
+                self.id,
+                Outbox {
+                    messages: Vec::new(),
+                    waker: Some(cx.waker().clone()),
+                },
+            );
+            Poll::Pending
+        }
+    }
+}
+
+pub mod error {
+
+    #[derive(thiserror::Error, Debug)]
+    pub enum RunConnection<Send, Recv> {
+        Send(Send),
+        Recv(Recv),
+        RecvCollection,
     }
 }

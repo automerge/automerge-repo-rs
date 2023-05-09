@@ -6,4 +6,4 @@ pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{
     DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, RepoId,
 };
-pub use crate::repo::{DocCollection, Repo};
+pub use crate::repo::{DocCollection, Repo, RepoHandle};
