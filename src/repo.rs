@@ -514,9 +514,8 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                         }
                     },
                     recv(self.wake_receiver) -> event => {
-                        match event {
-                            Err(_) => panic!("Wake senders dropped"),
-                            Ok(_) => {},
+                        if event.is_err() {
+                            panic!("Wake senders dropped");
                         }
                     },
                 }
