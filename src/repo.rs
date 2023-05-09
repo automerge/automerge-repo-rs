@@ -4,7 +4,7 @@ use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
 use core::pin::Pin;
-use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender, TrySendError};
 use futures::stream::Stream;
 use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll};
@@ -211,17 +211,12 @@ enum CollectionWaker {
 /// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
 impl ArcWake for CollectionWaker {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        match &**arc_self {
-            CollectionWaker::Stream(sender, id) => {
-                sender
-                    .send(WakeSignal::Stream(*id))
-                    .expect("Failed to send stream readiness signal.");
-            }
-            CollectionWaker::Sink(sender, id) => {
-                sender
-                    .send(WakeSignal::Sink(*id))
-                    .expect("Failed to send sink readiness signal.");
-            }
+        let err = match &**arc_self {
+            CollectionWaker::Stream(sender, id) => sender.try_send(WakeSignal::Stream(*id)),
+            CollectionWaker::Sink(sender, id) => sender.try_send(WakeSignal::Sink(*id)),
+        };
+        if let Err(TrySendError::Disconnected(_)) = err {
+            panic!("Wake sender disconnected.");
         }
     }
 }
@@ -497,15 +492,17 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             // ensuring the below loop stops when all collections have been dropped.
             drop(self.collection_sender.take());
 
-            // Initial poll to streams and sinks.
             let collection_ids: Vec<CollectionId> = self.collections.keys().cloned().collect();
-            for collection_id in collection_ids {
-                self.collect_network_events(&collection_id);
-                self.sync_document_collection(&collection_id);
-                self.process_outgoing_network_messages(&collection_id);
-            }
 
             loop {
+                // Initial poll to streams and sinks.
+                // Required, in combination with `try_send` on the wakers,
+                // to prevent deadlock.
+                for collection_id in collection_ids.iter() {
+                    self.collect_network_events(&collection_id);
+                    self.sync_document_collection(&collection_id);
+                    self.process_outgoing_network_messages(&collection_id);
+                }
                 select! {
                     recv(self.collection_receiver) -> collection_event => {
                         if let Ok((collection_id, event)) = collection_event {

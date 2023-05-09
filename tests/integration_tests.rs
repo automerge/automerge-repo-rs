@@ -139,7 +139,7 @@ fn test_simple_sync() {
 
     for _ in 1..10 {
         // Create the repo.
-        let mut repo = Repo::new(10);
+        let mut repo = Repo::new(1);
 
         // Create the network adapter.
         let network = Network::new(sender.clone(), repo.get_repo_id());
