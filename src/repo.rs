@@ -499,9 +499,9 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 // Required, in combination with `try_send` on the wakers,
                 // to prevent deadlock.
                 for collection_id in collection_ids.iter() {
-                    self.collect_network_events(&collection_id);
-                    self.sync_document_collection(&collection_id);
-                    self.process_outgoing_network_messages(&collection_id);
+                    self.collect_network_events(collection_id);
+                    self.sync_document_collection(collection_id);
+                    self.process_outgoing_network_messages(collection_id);
                 }
                 select! {
                     recv(self.collection_receiver) -> collection_event => {

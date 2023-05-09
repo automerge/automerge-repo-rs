@@ -167,14 +167,18 @@ fn test_simple_sync() {
         repo_handles.push(repo.run());
     }
 
-    for doc_handle in documents.iter() {
-        for collection in collections.values_mut() {
+    // We want each repo to sync the documents created by all other repos.
+    for collection in collections.values_mut() {
+        let mut doc_handles = vec![];
+        let repo_id = *collection.get_repo_id();
+        for doc_handle in documents.iter() {
             let doc_id = doc_handle.document_id();
-            if doc_id.get_repo_id() == collection.get_repo_id() {
+            if doc_id.get_repo_id() == &repo_id {
                 continue;
             }
-            docs_to_sync.insert(doc_id, collection.bootstrap_document_from_id(None, doc_id));
+            doc_handles.push(collection.bootstrap_document_from_id(None, doc_id));
         }
+        docs_to_sync.insert(repo_id, doc_handles);
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -186,19 +190,25 @@ fn test_simple_sync() {
         Handle::current().spawn_blocking(move || {
             // Keep looping until all docs are in sync.
             let mut synced = 0;
+            let total_expected = docs_to_sync
+                .iter()
+                .fold(0, |acc, (_, docs)| acc + docs.len());
             loop {
-                if synced == docs_to_sync.len() {
+                if synced == total_expected {
                     done_sync_sender.blocking_send(()).unwrap();
                     return;
                 }
-                for doc_handle in docs_to_sync.values_mut() {
-                    let expected_repo_id = format!("{}", doc_handle.document_id().get_repo_id());
-                    doc_handle.with_doc_mut(|doc| {
-                        let value = doc.get(automerge::ROOT, "repo_id");
-                        if value.unwrap().unwrap().0.to_str().unwrap() == expected_repo_id {
-                            synced = synced + 1;
-                        }
-                    });
+                for (_, doc_handles) in docs_to_sync.iter_mut() {
+                    for doc_handle in doc_handles {
+                        let expected_repo_id =
+                            format!("{}", doc_handle.document_id().get_repo_id());
+                        doc_handle.with_doc_mut(|doc| {
+                            let value = doc.get(automerge::ROOT, "repo_id");
+                            if value.unwrap().unwrap().0.to_str().unwrap() == expected_repo_id {
+                                synced = synced + 1;
+                            }
+                        });
+                    }
                 }
             }
         });
