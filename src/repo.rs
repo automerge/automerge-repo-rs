@@ -495,7 +495,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             let collection_ids: Vec<CollectionId> = self.collections.keys().cloned().collect();
 
             loop {
-                // Initial poll to streams and sinks.
+                // Poll streams and sinks at the start of each iteration.
                 // Required, in combination with `try_send` on the wakers,
                 // to prevent deadlock.
                 for collection_id in collection_ids.iter() {
@@ -507,7 +507,6 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     recv(self.collection_receiver) -> collection_event => {
                         if let Ok((collection_id, event)) = collection_event {
                             self.handle_collection_event(&collection_id, event);
-                            self.process_outgoing_network_messages(&collection_id);
                         } else {
                             // The repo shuts down
                             // once all handles and collections drop.
@@ -517,14 +516,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     recv(self.wake_receiver) -> event => {
                         match event {
                             Err(_) => panic!("Wake senders dropped"),
-                            Ok(WakeSignal::Stream(collection_id)) => {
-                                self.collect_network_events(&collection_id);
-                                self.sync_document_collection(&collection_id);
-                                self.process_outgoing_network_messages(&collection_id);
-                            },
-                            Ok(WakeSignal::Sink(collection_id)) => {
-                                self.process_outgoing_network_messages(&collection_id);
-                            }
+                            Ok(_) => {},
                         }
                     },
                 }
