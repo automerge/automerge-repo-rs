@@ -1,5 +1,5 @@
-use crate::interfaces::{CollectionId, DocumentId};
-use crate::repo::CollectionEvent;
+use crate::interfaces::DocumentId;
+use crate::repo::RepoEvent;
 use automerge::AutoCommit;
 use crossbeam_channel::Sender;
 use parking_lot::{Condvar, Mutex};
@@ -24,9 +24,8 @@ pub struct DocHandle {
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
-    collection_sender: Sender<(CollectionId, CollectionEvent)>,
+    repo_sender: Sender<RepoEvent>,
     document_id: DocumentId,
-    collection_id: CollectionId,
     /// Flag set to true once the doc reaches `DocState::Sync`.
     is_ready: bool,
 }
@@ -36,9 +35,8 @@ impl Clone for DocHandle {
         // Increment handle count.
         self.handle_count.fetch_add(1, Ordering::SeqCst);
         DocHandle::new(
-            self.collection_sender.clone(),
+            self.repo_sender.clone(),
             self.document_id,
-            self.collection_id,
             self.state.clone(),
             self.handle_count.clone(),
             self.is_ready,
@@ -50,11 +48,8 @@ impl Drop for DocHandle {
     fn drop(&mut self) {
         // Close the document when the last handle drops.
         if self.handle_count.fetch_sub(1, Ordering::SeqCst) == 0 {
-            self.collection_sender
-                .send((
-                    self.collection_id,
-                    CollectionEvent::DocClosed(self.document_id),
-                ))
+            self.repo_sender
+                .send(RepoEvent::DocClosed(self.document_id))
                 .expect("Failed to send doc close event.");
         }
     }
@@ -62,18 +57,16 @@ impl Drop for DocHandle {
 
 impl DocHandle {
     pub(crate) fn new(
-        collection_sender: Sender<(CollectionId, CollectionEvent)>,
+        repo_sender: Sender<RepoEvent>,
         document_id: DocumentId,
-        collection_id: CollectionId,
         state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
         handle_count: Arc<AtomicUsize>,
         is_ready: bool,
     ) -> Self {
         DocHandle {
             state,
-            collection_sender,
+            repo_sender,
             document_id,
-            collection_id,
             handle_count,
             is_ready,
         }
@@ -82,14 +75,6 @@ impl DocHandle {
     pub fn document_id(&self) -> DocumentId {
         self.document_id
     }
-
-    /// Let the repo know the document must be persisted.
-    /// Blocks until finished.
-    pub fn persist_doc_blocking(&self) {}
-
-    /// Let the repo know the document must be persisted.
-    /// Returns immediately, persistence done in the background.
-    pub fn persist_doc_non_blocking(&self) {}
 
     /// Run a closure over a mutable reference to the document.
     /// Note: blocks if called on a document that isn't ready,
@@ -107,11 +92,8 @@ impl DocHandle {
             let mut state = lock.lock();
             f(&mut state.1);
         }
-        self.collection_sender
-            .send((
-                self.collection_id,
-                CollectionEvent::DocChange(self.document_id),
-            ))
+        self.repo_sender
+            .send(RepoEvent::DocChange(self.document_id))
             .expect("Failed to send doc change event.");
     }
 

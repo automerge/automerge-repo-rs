@@ -16,7 +16,7 @@ impl Display for RepoId {
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
-pub struct DocumentId(pub (CollectionId, u64));
+pub struct DocumentId(pub (RepoId, u64));
 
 impl Display for DocumentId {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
@@ -26,22 +26,7 @@ impl Display for DocumentId {
 
 impl DocumentId {
     pub fn get_repo_id(&self) -> &RepoId {
-        &self.0 .0 .0 .0
-    }
-}
-
-#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
-pub struct CollectionId(pub (RepoId, u64));
-
-impl CollectionId {
-    pub fn get_repo_id(&self) -> &RepoId {
         &self.0 .0
-    }
-}
-
-impl Display for CollectionId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{}::{}", self.0 .0, self.0 .1)
     }
 }
 
