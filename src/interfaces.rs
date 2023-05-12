@@ -30,19 +30,6 @@ impl DocumentId {
     }
 }
 
-/// Events sent by the network adapter.
-#[derive(Debug, Clone)]
-pub enum NetworkEvent {
-    /// A repo sent us a sync message,
-    // to be applied to a given document.
-    Sync {
-        from_repo_id: RepoId,
-        to_repo_id: RepoId,
-        document_id: DocumentId,
-        message: SyncMessage,
-    },
-}
-
 /// Messages sent into the network sink.
 #[derive(Debug, Clone)]
 pub enum NetworkMessage {
@@ -60,9 +47,4 @@ pub enum NetworkMessage {
 #[derive(Debug)]
 pub enum NetworkError {
     Error,
-}
-
-pub trait NetworkAdapter:
-    Send + Unpin + Stream<Item = NetworkEvent> + Sink<NetworkMessage>
-{
 }

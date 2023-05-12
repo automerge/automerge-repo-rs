@@ -1,6 +1,6 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{DocumentId, RepoId};
-use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
+use crate::interfaces::NetworkMessage;
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
 use core::pin::Pin;

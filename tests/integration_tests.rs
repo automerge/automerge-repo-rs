@@ -1,4 +1,4 @@
-use automerge_repo::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo, RepoId};
+use automerge_repo::{NetworkError, NetworkMessage, Repo, RepoId};
 use core::pin::Pin;
 use futures::sink::Sink;
 use futures::stream::Stream;
@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{channel, Sender};
 
 #[derive(Debug, Clone)]
 struct Network<NetworkMessage> {
-    buffer: Arc<Mutex<VecDeque<NetworkEvent>>>,
+    buffer: Arc<Mutex<VecDeque<NetworkMessage>>>,
     stream_waker: Arc<Mutex<Option<Waker>>>,
     outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
     sink_waker: Arc<Mutex<Option<Waker>>>,
@@ -34,11 +34,11 @@ impl Network<NetworkMessage> {
 }
 
 impl Stream for Network<NetworkMessage> {
-    type Item = NetworkEvent;
+    type Item = NetworkMessage;
     fn poll_next(
         self: Pin<&mut Network<NetworkMessage>>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<NetworkEvent>> {
+    ) -> Poll<Option<NetworkMessage>> {
         *self.stream_waker.lock() = Some(cx.waker().clone());
         if let Some(event) = self.buffer.lock().pop_front() {
             Poll::Ready(Some(event))
@@ -85,8 +85,6 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
         }
     }
 }
-
-impl NetworkAdapter for Network<NetworkMessage> {}
 
 #[test]
 fn test_repo_stop() {
