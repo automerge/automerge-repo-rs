@@ -90,10 +90,8 @@ impl NetworkAdapter for Network<NetworkMessage> {}
 
 #[test]
 fn test_repo_stop() {
-    let (sender, _network_receiver) = channel(1);
-
     // Create the repo.
-    let repo = Repo::new(Network::new(sender.clone()), None);
+    let repo = Repo::new(None);
 
     // Run the repo in the background.
     let repo_handle = repo.run();

@@ -18,6 +18,7 @@ crossbeam-channel = { version = "0.5.8" }
 parking_lot = { version = "0.12.1" }
 futures = { version = "0.3.28" }
 serde = { version = "1.0.160", features = ["derive"]}
+thiserror = "1.0.40"
 
 [dev-dependencies]
 clap = { version = "4.2.5", features = ["derive"] }

@@ -5,10 +5,9 @@ use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
 use core::pin::Pin;
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender, TrySendError};
-use futures::stream::Stream;
 use futures::task::ArcWake;
-use futures::task::{waker_ref, Context, Poll};
-use futures::Sink;
+use futures::task::{waker_ref, Context, Poll, Waker};
+use futures::{FutureExt, Sink, SinkExt, Stream, StreamExt, TryStreamExt};
 use parking_lot::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -29,6 +28,9 @@ pub struct RepoHandle {
 
     /// Counter to generate unique document ids.
     document_id_counter: u64,
+
+    outboxes: Arc<Mutex<HashMap<RepoId, Arc<Mutex<Outbox>>>>>,
+    inboxes: Arc<Mutex<HashMap<RepoId, Arc<Mutex<Inbox>>>>>,
 }
 
 #[derive(Debug)]
@@ -108,6 +110,92 @@ impl RepoHandle {
             .expect("Failed to send repo event.");
         handle
     }
+
+    pub async fn connect_remote<RecvErr, SendErr, S>(
+        &self,
+        repo_id: RepoId,
+        stream: S,
+    ) -> Result<(), error::RunConnection<SendErr, RecvErr>>
+    where
+        RecvErr: std::fmt::Debug,
+        SendErr: std::error::Error,
+        S: Sink<NetworkMessage, Error = SendErr> + Stream<Item = Result<NetworkMessage, RecvErr>>,
+    {
+        let (mut sink, stream) = stream.split();
+        let outbox = self
+            .outboxes
+            .lock()
+            .entry(repo_id)
+            .or_insert_with(|| Arc::new(Mutex::new(Default::default())))
+            .clone();
+        let inbox = self
+            .inboxes
+            .lock()
+            .entry(repo_id)
+            .or_insert_with(|| Arc::new(Mutex::new(Default::default())))
+            .clone();
+        let sending = OutgoingStream(outbox)
+            .map(|m| Ok::<_, SendErr>(m))
+            .forward(&mut sink)
+            .fuse();
+
+        let recv_msg = self.repo_sender.clone();
+        let recving = stream
+            .map_err(error::RunConnection::<SendErr, RecvErr>::Recv)
+            .try_for_each({
+                move |m| {
+                    inbox.lock().messages.push_back(m);
+                    let _ = recv_msg.try_send(RepoEvent::IncomingSyncMessage);
+                    futures::future::ready(Ok(()))
+                }
+            })
+            .fuse();
+
+        let finished = futures::future::select(sending, recving).await;
+        match finished {
+            futures::future::Either::Left((result, _recving)) => match result {
+                Ok(_) => Ok(()),
+                Err(e) => Err(error::RunConnection::Send(e)),
+            },
+            futures::future::Either::Right((result, _sending)) => {
+                if let Err(_e) = sink.close().await {}
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+}
+
+struct OutgoingStream(Arc<Mutex<Outbox>>);
+
+impl Stream for OutgoingStream {
+    type Item = NetworkMessage;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Outbox {
+            waker,
+            ref mut messages,
+        } = &mut *self.0.lock();
+        if let Some(msg) = messages.pop_front() {
+            Poll::Ready(Some(msg))
+        } else {
+            *waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Outbox {
+    waker: Option<Waker>,
+    messages: VecDeque<NetworkMessage>,
+}
+
+#[derive(Debug, Default)]
+struct Inbox {
+    messages: VecDeque<NetworkMessage>,
 }
 
 /// Events sent by repo or doc handles to the repo.
@@ -121,6 +209,8 @@ pub(crate) enum RepoEvent {
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
+    /// Incoming sync message.
+    IncomingSyncMessage,
 }
 
 /// Info about a document.
@@ -181,80 +271,42 @@ impl DocumentInfo {
     }
 }
 
-/// Signal that the stream or sink on the network adapter is ready to be polled.
-enum WakeSignal {
-    Stream,
-    Sink,
-}
-
-/// Waking mechanism for stream and sinks.
-enum RepoWaker {
-    Stream(Sender<WakeSignal>),
-    Sink(Sender<WakeSignal>),
-}
-
-/// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
-impl ArcWake for RepoWaker {
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        let err = match &**arc_self {
-            RepoWaker::Stream(sender) => sender.try_send(WakeSignal::Stream),
-            RepoWaker::Sink(sender) => sender.try_send(WakeSignal::Sink),
-        };
-        if let Err(TrySendError::Disconnected(_)) = err {
-            panic!("Wake sender disconnected.");
-        }
-    }
-}
-
 /// The backend of a repo: the repo runs an event-loop in a background thread.
-pub struct Repo<T: NetworkAdapter> {
+pub struct Repo {
     /// The Id of the repo.
     repo_id: RepoId,
 
-    network_adapter: Box<T>,
     documents: HashMap<DocumentId, DocumentInfo>,
 
-    stream_waker: Arc<RepoWaker>,
-    sink_waker: Arc<RepoWaker>,
-
     /// Messages to send on the network adapter sink.
-    pending_messages: VecDeque<NetworkMessage>,
+    outgoing_messages: VecDeque<NetworkMessage>,
     /// Events received on the network stream, pending processing.
-    pending_events: VecDeque<NetworkEvent>,
+    incoming_messages: VecDeque<NetworkMessage>,
 
     /// Callback on applying sync messages.
     sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
-
-    /// Receiver of network stream and sink readiness signals.
-    wake_receiver: Receiver<WakeSignal>,
-
     /// Sender and receiver of repo events.
     repo_sender: Option<Sender<RepoEvent>>,
     repo_receiver: Receiver<RepoEvent>,
+
+    outboxes: Arc<Mutex<HashMap<RepoId, Arc<Mutex<Outbox>>>>>,
+    inboxes: Arc<Mutex<HashMap<RepoId, Arc<Mutex<Inbox>>>>>,
 }
 
-impl<T: NetworkAdapter + 'static> Repo<T> {
+impl Repo {
     /// Create a new repo.
-    pub fn new(
-        network_adapter: T,
-        sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
-    ) -> Self {
-        let (wake_sender, wake_receiver) = bounded(2);
+    pub fn new(sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>) -> Self {
         let (repo_sender, repo_receiver) = unbounded();
-        let stream_waker = Arc::new(RepoWaker::Stream(wake_sender.clone()));
-        let sink_waker = Arc::new(RepoWaker::Sink(wake_sender));
         Repo {
             repo_id: RepoId(Uuid::new_v4()),
             documents: Default::default(),
-            network_adapter: Box::new(network_adapter),
-            wake_receiver,
-            stream_waker,
-            sink_waker,
-            pending_messages: Default::default(),
-            pending_events: Default::default(),
+            outgoing_messages: Default::default(),
+            incoming_messages: Default::default(),
             repo_sender: Some(repo_sender),
             repo_receiver,
             sync_observer,
+            outboxes: Default::default(),
+            inboxes: Default::default(),
         }
     }
 
@@ -263,54 +315,28 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     }
 
     /// Poll the network adapter stream.
-    fn collect_network_events(&mut self) {
-        // Collect as many events as possible.
-        loop {
-            let waker = waker_ref(&self.stream_waker);
-            let pinned_stream = Pin::new(&mut self.network_adapter);
-            let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Some(event)) => self.pending_events.push_back(event),
-                Poll::Ready(None) => return,
-            }
+    fn collect_network_messages(&mut self) {
+        for (_syncing_with_repo_id, inbox) in self.inboxes.lock().iter() {
+            self.incoming_messages.append(&mut inbox.lock().messages);
         }
     }
 
     /// Try to send pending messages on the network sink.
     fn process_outgoing_network_messages(&mut self) {
-        // Send as many messages as possible.
-        let mut needs_flush = false;
-        loop {
-            if self.pending_messages.is_empty() {
-                break;
-            }
-            let waker = waker_ref(&self.sink_waker);
-            let pinned_sink = Pin::new(&mut self.network_adapter);
-            let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Ok(())) => {
-                    let pinned_sink = Pin::new(&mut self.network_adapter);
-                    let result = pinned_sink.start_send(
-                        self.pending_messages
-                            .pop_front()
-                            .expect("Empty pending messages."),
-                    );
-                    if result.is_err() {
-                        return;
+        for message in mem::take(&mut self.outgoing_messages) {
+            match message {
+                NetworkMessage::Sync { to_repo_id, .. } => {
+                    if let Some(waker) = {
+                        let outboxes = self.outboxes.lock();
+                        let outbox = outboxes.get(&to_repo_id).expect("No outbox for repo");
+                        let mut outbox = outbox.lock();
+                        outbox.messages.push_back(message);
+                        outbox.waker.take()
+                    } {
+                        waker.wake();
                     }
-                    needs_flush = true;
                 }
-                Poll::Ready(Err(_)) => return,
             }
-        }
-
-        // Flusk the sink if any messages have been sent.
-        if needs_flush {
-            let waker = waker_ref(&self.sink_waker);
-            let pinned_sink = Pin::new(&mut self.network_adapter);
-            let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
         }
     }
 
@@ -327,7 +353,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             document_id,
                             message,
                         };
-                        self.pending_messages.push_back(outgoing);
+                        self.outgoing_messages.push_back(outgoing);
                     }
                 }
                 self.documents.insert(document_id, info);
@@ -342,7 +368,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             document_id: doc_id,
                             message,
                         };
-                        self.pending_messages.push_back(outgoing);
+                        self.outgoing_messages.push_back(outgoing);
                     }
                 }
             }
@@ -356,6 +382,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     panic!("Document closed with outstanding handles.");
                 }
             }
+            RepoEvent::IncomingSyncMessage => {}
         }
     }
 
@@ -364,9 +391,9 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         // Process incoming events.
         // Handle events.
         let mut synced = vec![];
-        for event in mem::take(&mut self.pending_events) {
+        for event in mem::take(&mut self.incoming_messages) {
             match event {
-                NetworkEvent::Sync {
+                NetworkMessage::Sync {
                     from_repo_id,
                     to_repo_id: local_repo_id,
                     document_id,
@@ -389,7 +416,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                                 document_id,
                                 message,
                             };
-                            self.pending_messages.push_back(outgoing);
+                            self.outgoing_messages.push_back(outgoing);
                         }
                     }
                 }
@@ -411,6 +438,8 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         let repo_sender = self.repo_sender.take().unwrap();
         let repo_id = self.repo_id;
         let document_id_counter = Default::default();
+        let outboxes = self.outboxes.clone();
+        let inboxes = self.inboxes.clone();
 
         // Run the repo's event-loop in a thread.
         let handle = thread::spawn(move || {
@@ -418,7 +447,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 // Poll streams and sinks at the start of each iteration.
                 // Required, in combination with `try_send` on the wakers,
                 // to prevent deadlock.
-                self.collect_network_events();
+                self.collect_network_messages();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
                 select! {
@@ -431,11 +460,6 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             break;
                         }
                     },
-                    recv(self.wake_receiver) -> event => {
-                        if event.is_err() {
-                            panic!("Wake senders dropped");
-                        }
-                    },
                 }
             }
         });
@@ -444,6 +468,18 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
             document_id_counter,
             repo_id,
             repo_sender,
+            outboxes,
+            inboxes,
         }
+    }
+}
+
+pub mod error {
+
+    #[derive(thiserror::Error, Debug)]
+    pub enum RunConnection<Send, Recv> {
+        Send(Send),
+        Recv(Recv),
+        RecvCollection,
     }
 }
