@@ -109,7 +109,6 @@ fn main() {
     // Create the repo.
     let doc_handles_clone = doc_handles.clone();
     let repo = Repo::new(
-        network,
         Some(Box::new(move |synced| {
             for doc_id in synced {
                 let handles = doc_handles_clone.lock();

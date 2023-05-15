@@ -1,6 +1,6 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{DocumentId, RepoId};
-use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
+use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
 use core::pin::Pin;
@@ -108,10 +108,19 @@ impl RepoHandle {
             .expect("Failed to send repo event.");
         handle
     }
+
+    pub fn new_network_adapter(
+        &self,
+        repo_id: RepoId,
+        network_adapter: Box<dyn NetworkAdapter<Error = NetworkError>>,
+    ) {
+        self.repo_sender
+            .send(RepoEvent::ConnectNetworkAdapter(repo_id, network_adapter))
+            .expect("Failed to send repo event.");
+    }
 }
 
 /// Events sent by repo or doc handles to the repo.
-#[derive(Debug)]
 pub(crate) enum RepoEvent {
     /// Load a document,
     // repo id is the repo to start syncing with,
@@ -121,6 +130,7 @@ pub(crate) enum RepoEvent {
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
+    ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
 }
 
 /// Info about a document.
@@ -207,18 +217,18 @@ impl ArcWake for RepoWaker {
 }
 
 /// The backend of a repo: the repo runs an event-loop in a background thread.
-pub struct Repo<T: NetworkAdapter> {
+pub struct Repo {
     /// The Id of the repo.
     repo_id: RepoId,
 
-    network_adapter: Box<T>,
+    network_adapters: HashMap<RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>>,
     documents: HashMap<DocumentId, DocumentInfo>,
 
     stream_waker: Arc<RepoWaker>,
     sink_waker: Arc<RepoWaker>,
 
     /// Messages to send on the network adapter sink.
-    pending_messages: VecDeque<NetworkMessage>,
+    pending_messages: HashMap<RepoId, VecDeque<NetworkMessage>>,
     /// Events received on the network stream, pending processing.
     pending_events: VecDeque<NetworkEvent>,
 
@@ -233,12 +243,9 @@ pub struct Repo<T: NetworkAdapter> {
     repo_receiver: Receiver<RepoEvent>,
 }
 
-impl<T: NetworkAdapter + 'static> Repo<T> {
+impl Repo {
     /// Create a new repo.
-    pub fn new(
-        network_adapter: T,
-        sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
-    ) -> Self {
+    pub fn new(sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>) -> Self {
         let (wake_sender, wake_receiver) = bounded(2);
         let (repo_sender, repo_receiver) = unbounded();
         let stream_waker = Arc::new(RepoWaker::Stream(wake_sender.clone()));
@@ -246,7 +253,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         Repo {
             repo_id: RepoId(Uuid::new_v4()),
             documents: Default::default(),
-            network_adapter: Box::new(network_adapter),
+            network_adapters: Default::default(),
             wake_receiver,
             stream_waker,
             sink_waker,
@@ -264,53 +271,58 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
 
     /// Poll the network adapter stream.
     fn collect_network_events(&mut self) {
-        // Collect as many events as possible.
-        loop {
-            let waker = waker_ref(&self.stream_waker);
-            let pinned_stream = Pin::new(&mut self.network_adapter);
-            let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Some(event)) => self.pending_events.push_back(event),
-                Poll::Ready(None) => return,
+        for (_repo_id, mut network_adapter) in self.network_adapters.iter_mut() {
+            // Collect as many events as possible.
+            loop {
+                let waker = waker_ref(&self.stream_waker);
+                let pinned_stream = Pin::new(&mut network_adapter);
+                let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
+                match result {
+                    Poll::Pending => break,
+                    Poll::Ready(Some(event)) => self.pending_events.push_back(event),
+                    Poll::Ready(None) => return,
+                }
             }
         }
     }
 
     /// Try to send pending messages on the network sink.
     fn process_outgoing_network_messages(&mut self) {
-        // Send as many messages as possible.
-        let mut needs_flush = false;
-        loop {
-            if self.pending_messages.is_empty() {
-                break;
-            }
-            let waker = waker_ref(&self.sink_waker);
-            let pinned_sink = Pin::new(&mut self.network_adapter);
-            let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Ok(())) => {
-                    let pinned_sink = Pin::new(&mut self.network_adapter);
-                    let result = pinned_sink.start_send(
-                        self.pending_messages
-                            .pop_front()
-                            .expect("Empty pending messages."),
-                    );
-                    if result.is_err() {
-                        return;
-                    }
-                    needs_flush = true;
+        for (repo_id, mut network_adapter) in self.network_adapters.iter_mut() {
+            // Send as many messages as possible.
+            let mut needs_flush = false;
+            loop {
+                let pending_messages = self.pending_messages.entry(*repo_id).or_insert(Default::default());
+                if pending_messages.is_empty() {
+                    break;
                 }
-                Poll::Ready(Err(_)) => return,
+                let waker = waker_ref(&self.sink_waker);
+                let pinned_sink = Pin::new(&mut network_adapter);
+                let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
+                match result {
+                    Poll::Pending => break,
+                    Poll::Ready(Ok(())) => {
+                        let pinned_sink = Pin::new(&mut network_adapter);
+                        let result = pinned_sink.start_send(
+                            pending_messages
+                                .pop_front()
+                                .expect("Empty pending messages."),
+                        );
+                        if result.is_err() {
+                            return;
+                        }
+                        needs_flush = true;
+                    }
+                    Poll::Ready(Err(_)) => return,
+                }
             }
-        }
 
-        // Flusk the sink if any messages have been sent.
-        if needs_flush {
-            let waker = waker_ref(&self.sink_waker);
-            let pinned_sink = Pin::new(&mut self.network_adapter);
-            let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+            // Flusk the sink if any messages have been sent.
+            if needs_flush {
+                let waker = waker_ref(&self.sink_waker);
+                let pinned_sink = Pin::new(&mut network_adapter);
+                let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+            }
         }
     }
 
@@ -327,7 +339,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             document_id,
                             message,
                         };
-                        self.pending_messages.push_back(outgoing);
+                        self.pending_messages.entry(repo_id).or_insert(Default::default()).push_back(outgoing);
                     }
                 }
                 self.documents.insert(document_id, info);
@@ -342,7 +354,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                             document_id: doc_id,
                             message,
                         };
-                        self.pending_messages.push_back(outgoing);
+                        self.pending_messages.entry(to_repo_id).or_insert(Default::default()).push_back(outgoing);
                     }
                 }
             }
@@ -355,6 +367,14 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
                     panic!("Document closed with outstanding handles.");
                 }
+            }
+            RepoEvent::ConnectNetworkAdapter(repo_id, adapter) => {
+                self.network_adapters
+                    .entry(repo_id)
+                    .and_modify(|_| {
+                        // TODO: close the existing stream/sink?
+                    })
+                    .or_insert(adapter);
             }
         }
     }
@@ -389,7 +409,7 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                                 document_id,
                                 message,
                             };
-                            self.pending_messages.push_back(outgoing);
+                            self.pending_messages.entry(to_repo_id).or_insert(Default::default()).push_back(outgoing);
                         }
                     }
                 }
