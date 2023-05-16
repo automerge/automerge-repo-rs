@@ -450,7 +450,9 @@ impl Repo {
                     }
                 }
             }
-            RepoEvent::Stop => {}
+            RepoEvent::Stop => {
+                // Handled in the main run loop.
+            }
         }
     }
 
