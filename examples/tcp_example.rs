@@ -166,10 +166,12 @@ async fn main() {
 
     let (sender, mut network_receiver) = channel(1);
     let peers = Arc::new(Mutex::new(HashMap::new()));
+    let mut synced_docs = Arc::new(Mutex::new(vec![]));
 
     // Spawn a listening task.
     let handle_clone = repo_handle.clone();
     let peers_clone = peers.clone();
+    let synced_docs_clone = synced_docs.clone();
     Handle::current().spawn(async move {
         let listener = TcpListener::bind(run_ip).await.unwrap();
 
@@ -185,6 +187,7 @@ async fn main() {
                         .unwrap()
                         .new_network_adapter(repo_id.clone(), Box::new(adapter.clone()));
                     peers_clone.lock().insert(repo_id, adapter.clone());
+                    let inner_sync_docs_clone = synced_docs_clone.clone();
                     Handle::current().spawn(async move {
                         // Delimit frames using a length header
                         let length_delimited = FramedRead::new(socket, LengthDelimitedCodec::new());
@@ -194,9 +197,24 @@ async fn main() {
                             length_delimited,
                             SymmetricalJson::<Message>::default(),
                         );
-
-                        while let Some(msg) = deserialized.try_next().await.unwrap() {
-                            println!("GOT: {:?}", msg);
+                        while let Some(Message {
+                            from_repo_id,
+                            to_repo_id,
+                            document_id,
+                            message,
+                        }) = deserialized.try_next().await.unwrap()
+                        {
+                            println!("GOT message from: {:?}", from_repo_id);
+                            inner_sync_docs_clone.lock().push(document_id.clone());
+                            let message = SyncMessage::decode(&message)
+                                .expect("Failed to decode sync mesage.");
+                            let incoming = NetworkEvent::Sync {
+                                from_repo_id,
+                                to_repo_id,
+                                document_id,
+                                message,
+                            };
+                            adapter.receive_incoming(incoming);
                         }
 
                         *adapter.closed.lock() = true;
@@ -270,6 +288,10 @@ async fn main() {
 
     tokio::select! {
         _ = tokio::signal::ctrl_c().fuse() => {
+            for id in synced_docs.lock().iter() {
+                // TODO: add API to get handle to an existing doc in the repo.
+                println!("Synced: {:?}", id);
+            }
             repo_handle_clone.lock().take().unwrap().stop().unwrap();
         }
     }

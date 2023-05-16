@@ -464,28 +464,43 @@ impl Repo {
                     document_id,
                     message,
                 } => {
-                    if let Some(info) = self.documents.get_mut(&document_id) {
-                        info.receive_sync_message(from_repo_id, message);
-                        synced.push(document_id.clone());
-                        // Note: since receiving and generating sync messages is done
-                        // in two separate critical sections,
-                        // local changes could be made in between those,
-                        // which is a good thing(generated messages will include those changes).
-                        for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
-                            if !message.heads.is_empty() && message.need.is_empty() {
-                                info.set_ready();
+                    let info = self
+                        .documents
+                        .entry(document_id.clone())
+                        .or_insert_with(|| {
+                            let document = AutoCommit::new();
+                            let state = Arc::new((
+                                Mutex::new((DocState::Bootstrap, document)),
+                                Condvar::new(),
+                            ));
+                            let handle_count = Arc::new(AtomicUsize::new(0));
+                            DocumentInfo {
+                                state,
+                                handle_count,
+                                sync_states: Default::default(),
+                                is_ready: false,
                             }
-                            let outgoing = NetworkMessage::Sync {
-                                from_repo_id: local_repo_id.clone(),
-                                to_repo_id: to_repo_id.clone(),
-                                document_id: document_id.clone(),
-                                message,
-                            };
-                            self.pending_messages
-                                .entry(to_repo_id)
-                                .or_insert_with(Default::default)
-                                .push_back(outgoing);
+                        });
+                    info.receive_sync_message(from_repo_id, message);
+                    synced.push(document_id.clone());
+                    // Note: since receiving and generating sync messages is done
+                    // in two separate critical sections,
+                    // local changes could be made in between those,
+                    // which is a good thing(generated messages will include those changes).
+                    for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
+                        if !message.heads.is_empty() && message.need.is_empty() {
+                            info.set_ready();
                         }
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: local_repo_id.clone(),
+                            to_repo_id: to_repo_id.clone(),
+                            document_id: document_id.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(to_repo_id)
+                            .or_insert_with(Default::default)
+                            .push_back(outgoing);
                     }
                 }
             }
