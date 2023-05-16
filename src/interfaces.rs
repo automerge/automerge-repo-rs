@@ -4,10 +4,9 @@ use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter, Result};
 use std::marker::Unpin;
-use uuid::Uuid;
 
-#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
-pub struct RepoId(pub Uuid);
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+pub struct RepoId(pub String);
 
 impl Display for RepoId {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
@@ -15,7 +14,7 @@ impl Display for RepoId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Copy, Clone, Deserialize, Serialize)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct DocumentId(pub (RepoId, u64));
 
 impl Display for DocumentId {

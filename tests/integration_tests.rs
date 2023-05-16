@@ -77,12 +77,12 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
         }
     }
     fn start_send(self: Pin<&mut Self>, item: NetworkMessage) -> Result<(), Self::Error> {
-        let (from_repo_id, to_repo_id) = match item {
+        let (from_repo_id, to_repo_id) = match &item {
             NetworkMessage::Sync {
                 from_repo_id,
                 to_repo_id,
                 ..
-            } => (from_repo_id, to_repo_id),
+            } => (from_repo_id.clone(), to_repo_id.clone()),
         };
 
         self.outgoing.lock().push_back(item);
@@ -118,7 +118,7 @@ impl NetworkAdapter for Network<NetworkMessage> {}
 #[test]
 fn test_repo_stop() {
     // Create the repo.
-    let repo = Repo::new(None);
+    let repo = Repo::new(None, None);
 
     // Run the repo in the background.
     let repo_handle = repo.run();
@@ -137,7 +137,7 @@ fn test_simple_sync() {
 
     for _ in 1..10 {
         // Create the repo.
-        let repo = Repo::new(None);
+        let repo = Repo::new(None, None);
         let mut repo_handle = repo.run();
 
         // Create a document.
@@ -158,24 +158,24 @@ fn test_simple_sync() {
 
     let repo_ids: Vec<RepoId> = repo_handles
         .iter()
-        .map(|handle| *handle.get_repo_id())
+        .map(|handle| handle.get_repo_id().clone())
         .collect();
     for repo_handle in repo_handles.iter() {
         for id in repo_ids.iter() {
             // Create the network adapter.
             let network = Network::new(sender.clone());
-            repo_handle.new_network_adapter(*id, Box::new(network.clone()));
+            repo_handle.new_network_adapter(id.clone(), Box::new(network.clone()));
             let entry = peers
-                .entry(*repo_handle.get_repo_id())
+                .entry(repo_handle.get_repo_id().clone())
                 .or_insert(HashMap::new());
-            entry.insert(*id, network);
+            entry.insert(id.clone(), network);
         }
     }
 
     // We want each repo to sync the documents created by all other repos.
     for repo_handle in repo_handles.iter_mut() {
         let mut doc_handles = vec![];
-        let repo_id = *repo_handle.get_repo_id();
+        let repo_id = repo_handle.get_repo_id().clone();
         for doc_handle in documents.iter() {
             let doc_id = doc_handle.document_id();
             if doc_id.get_repo_id() == &repo_id {

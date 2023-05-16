@@ -53,7 +53,7 @@ impl RepoHandle {
             .document_id_counter
             .checked_add(1)
             .expect("Overflowed when creating new document id.");
-        let document_id = DocumentId((self.repo_id, self.document_id_counter));
+        let document_id = DocumentId((self.repo_id.clone(), self.document_id_counter));
         let document = AutoCommit::new();
         self.new_document_handle(None, document_id, document, DocState::Sync)
     }
@@ -78,7 +78,7 @@ impl RepoHandle {
     ) -> DocHandle {
         let document = AutoCommit::new();
         // If no repo id is provided, sync with the creator.
-        let repo_id = repo_id.unwrap_or_else(|| *document_id.get_repo_id());
+        let repo_id = repo_id.unwrap_or_else(|| document_id.get_repo_id().clone());
         self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
     }
 
@@ -94,7 +94,7 @@ impl RepoHandle {
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.repo_sender.clone(),
-            document_id,
+            document_id.clone(),
             state.clone(),
             handle_count.clone(),
             is_ready,
@@ -106,7 +106,11 @@ impl RepoHandle {
             is_ready,
         };
         self.repo_sender
-            .send(RepoEvent::NewDocHandle(repo_id, document_id, doc_info))
+            .send(RepoEvent::NewDocHandle(
+                repo_id,
+                document_id,
+                doc_info,
+            ))
             .expect("Failed to send repo event.");
         handle
     }
@@ -188,7 +192,7 @@ impl DocumentInfo {
             .filter_map(|(repo_id, sync_state)| {
                 let (lock, _cvar) = &*self.state;
                 let message = lock.lock().1.sync().generate_sync_message(sync_state);
-                message.map(|msg| (*repo_id, msg))
+                message.map(|msg| (repo_id.clone(), msg))
             })
             .collect()
     }
@@ -248,13 +252,17 @@ pub struct Repo {
 
 impl Repo {
     /// Create a new repo.
-    pub fn new(sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>) -> Self {
+    pub fn new(
+        sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+        repo_id: Option<String>,
+    ) -> Self {
         let (wake_sender, wake_receiver) = bounded(2);
         let (repo_sender, repo_receiver) = unbounded();
         let stream_waker = Arc::new(RepoWaker::Stream(wake_sender.clone()));
         let sink_waker = Arc::new(RepoWaker::Sink(wake_sender));
+        let repo_id = repo_id.map_or_else(|| RepoId(Uuid::new_v4().to_string()), RepoId);
         Repo {
-            repo_id: RepoId(Uuid::new_v4()),
+            repo_id,
             documents: Default::default(),
             network_adapters: Default::default(),
             wake_receiver,
@@ -313,7 +321,7 @@ impl Repo {
                 loop {
                     let pending_messages = self
                         .pending_messages
-                        .entry(*repo_id)
+                        .entry(repo_id.clone())
                         .or_insert(Default::default());
                     if pending_messages.is_empty() {
                         break;
@@ -364,11 +372,11 @@ impl Repo {
             RepoEvent::NewDocHandle(repo_id, document_id, mut info) => {
                 // Send a sync message to the creator, unless it is the local repo.
                 if let Some(repo_id) = repo_id {
-                    if let Some(message) = info.generate_first_sync_message(repo_id) {
+                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
                         let outgoing = NetworkMessage::Sync {
-                            from_repo_id: *self.get_repo_id(),
-                            to_repo_id: repo_id,
-                            document_id,
+                            from_repo_id: self.get_repo_id().clone(),
+                            to_repo_id: repo_id.clone(),
+                            document_id: document_id.clone(),
                             message,
                         };
                         self.pending_messages
@@ -384,13 +392,13 @@ impl Repo {
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
-                            from_repo_id: *self.get_repo_id(),
-                            to_repo_id,
-                            document_id: doc_id,
+                            from_repo_id: self.get_repo_id().clone(),
+                            to_repo_id: to_repo_id.clone(),
+                            document_id: doc_id.clone(),
                             message,
                         };
                         self.pending_messages
-                            .entry(to_repo_id)
+                            .entry(to_repo_id.clone())
                             .or_insert(Default::default())
                             .push_back(outgoing);
                     }
@@ -433,7 +441,7 @@ impl Repo {
                 } => {
                     if let Some(info) = self.documents.get_mut(&document_id) {
                         info.receive_sync_message(from_repo_id, message);
-                        synced.push(document_id);
+                        synced.push(document_id.clone());
                         // Note: since receiving and generating sync messages is done
                         // in two separate critical sections,
                         // local changes could be made in between those,
@@ -443,9 +451,9 @@ impl Repo {
                                 info.set_ready();
                             }
                             let outgoing = NetworkMessage::Sync {
-                                from_repo_id: local_repo_id,
-                                to_repo_id,
-                                document_id,
+                                from_repo_id: local_repo_id.clone(),
+                                to_repo_id: to_repo_id.clone(),
+                                document_id: document_id.clone(),
                                 message,
                             };
                             self.pending_messages
@@ -469,7 +477,7 @@ impl Repo {
     /// Returns a handle for optional clean shutdown.
     pub fn run(mut self) -> RepoHandle {
         let repo_sender = self.repo_sender.take().unwrap();
-        let repo_id = self.repo_id;
+        let repo_id = self.repo_id.clone();
         let document_id_counter = Default::default();
 
         // Run the repo's event-loop in a thread.

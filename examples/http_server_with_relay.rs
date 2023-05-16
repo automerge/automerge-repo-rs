@@ -129,13 +129,16 @@ fn main() {
 
     // Create the repo.
     let doc_handles_clone = doc_handles.clone();
-    let repo = Repo::new(Some(Box::new(move |synced| {
-        for doc_id in synced {
-            let handles = doc_handles_clone.lock();
-            let doc_handle = handles.get(&doc_id).unwrap();
-            println!("Synced {:?}", doc_handle.document_id());
-        }
-    })));
+    let repo = Repo::new(
+        Some(Box::new(move |synced| {
+            for doc_id in synced {
+                let handles = doc_handles_clone.lock();
+                let doc_handle = handles.get(&doc_id).unwrap();
+                println!("Synced {:?}", doc_handle.document_id());
+            }
+        })),
+        None,
+    );
 
     // Run the repo in the background.
     let repo_handle = repo.run();
@@ -188,7 +191,7 @@ fn main() {
     async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
         let doc_handle = state.repo_handle.lock().as_mut().unwrap().new_document();
         let doc_id = doc_handle.document_id();
-        state.doc_handles.lock().insert(doc_id, doc_handle);
+        state.doc_handles.lock().insert(doc_id.clone(), doc_handle);
         Json(doc_id)
     }
 
@@ -198,7 +201,10 @@ fn main() {
             .lock()
             .as_mut()
             .unwrap()
-            .new_network_adapter(*document_id.get_repo_id(), Box::new(state.adapter.clone()));
+            .new_network_adapter(
+                document_id.get_repo_id().clone(),
+                Box::new(state.adapter.clone()),
+            );
         let doc_handle = state
             .repo_handle
             .lock()
@@ -291,13 +297,13 @@ fn main() {
         )>,
     ) {
         // Connect the adapter for the peer if we haven't already.
-        if state.connected_adapters.lock().insert(from_repo_id) {
+        if state.connected_adapters.lock().insert(from_repo_id.clone()) {
             state
                 .repo_handle
                 .lock()
                 .as_mut()
                 .unwrap()
-                .new_network_adapter(from_repo_id, Box::new(state.adapter.clone()));
+                .new_network_adapter(from_repo_id.clone(), Box::new(state.adapter.clone()));
         }
         let message = SyncMessage::decode(&message).expect("Failed to decode sync mesage.");
         state.adapter.receive_incoming(NetworkEvent::Sync {
@@ -316,7 +322,7 @@ fn main() {
         });
     }
 
-    let repo_id = *repo_handle.get_repo_id();
+    let repo_id = repo_handle.get_repo_id().clone();
     let repo_handle = Arc::new(Mutex::new(Some(repo_handle)));
     let app_state = Arc::new(AppState {
         adapter,
