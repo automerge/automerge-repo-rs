@@ -78,11 +78,19 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
     }
     fn start_send(self: Pin<&mut Self>, item: NetworkMessage) -> Result<(), Self::Error> {
         let (from_repo_id, to_repo_id) = match item {
-            NetworkMessage::Sync { from_repo_id, to_repo_id, .. } => (from_repo_id, to_repo_id),
+            NetworkMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                ..
+            } => (from_repo_id, to_repo_id),
         };
 
         self.outgoing.lock().push_back(item);
-        if self.sender.blocking_send((from_repo_id, to_repo_id)).is_err() {
+        if self
+            .sender
+            .blocking_send((from_repo_id, to_repo_id))
+            .is_err()
+        {
             return Err(NetworkError::Error);
         }
         Ok(())

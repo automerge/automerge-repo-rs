@@ -36,7 +36,9 @@ pub struct RepoError;
 
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
-        drop(self.repo_sender);
+        self.repo_sender
+            .send(RepoEvent::Stop)
+            .expect("Failed to send repo event.");
         self.handle.join().expect("Failed to join on repo.");
         Ok(())
     }
@@ -131,6 +133,7 @@ pub(crate) enum RepoEvent {
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
+    Stop,
 }
 
 /// Info about a document.
@@ -280,7 +283,7 @@ impl Repo {
                 match result {
                     Poll::Pending => break,
                     Poll::Ready(Some(event)) => self.pending_events.push_back(event),
-                    Poll::Ready(None) => return,
+                    Poll::Ready(None) => return, //TODO remove.
                 }
             }
         }
@@ -292,7 +295,10 @@ impl Repo {
             // Send as many messages as possible.
             let mut needs_flush = false;
             loop {
-                let pending_messages = self.pending_messages.entry(*repo_id).or_insert(Default::default());
+                let pending_messages = self
+                    .pending_messages
+                    .entry(*repo_id)
+                    .or_insert(Default::default());
                 if pending_messages.is_empty() {
                     break;
                 }
@@ -339,7 +345,10 @@ impl Repo {
                             document_id,
                             message,
                         };
-                        self.pending_messages.entry(repo_id).or_insert(Default::default()).push_back(outgoing);
+                        self.pending_messages
+                            .entry(repo_id)
+                            .or_insert(Default::default())
+                            .push_back(outgoing);
                     }
                 }
                 self.documents.insert(document_id, info);
@@ -354,7 +363,10 @@ impl Repo {
                             document_id: doc_id,
                             message,
                         };
-                        self.pending_messages.entry(to_repo_id).or_insert(Default::default()).push_back(outgoing);
+                        self.pending_messages
+                            .entry(to_repo_id)
+                            .or_insert(Default::default())
+                            .push_back(outgoing);
                     }
                 }
             }
@@ -376,6 +388,7 @@ impl Repo {
                     })
                     .or_insert(adapter);
             }
+            RepoEvent::Stop => {}
         }
     }
 
@@ -409,7 +422,10 @@ impl Repo {
                                 document_id,
                                 message,
                             };
-                            self.pending_messages.entry(to_repo_id).or_insert(Default::default()).push_back(outgoing);
+                            self.pending_messages
+                                .entry(to_repo_id)
+                                .or_insert(Default::default())
+                                .push_back(outgoing);
                         }
                     }
                 }
@@ -444,7 +460,10 @@ impl Repo {
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
-                            self.handle_repo_event(event);
+                            match event {
+                                RepoEvent::Stop => break,
+                                event => self.handle_repo_event(event),
+                            }
                         } else {
                             // The repo shuts down
                             // once all handles and collections drop.
