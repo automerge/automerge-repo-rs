@@ -242,20 +242,20 @@ pub struct Repo {
     pending_events: VecDeque<NetworkEvent>,
 
     /// Callback on applying sync messages.
-    sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+    sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
 
     /// Receiver of network stream and sink readiness signals.
     wake_receiver: Receiver<WakeSignal>,
 
     /// Sender and receiver of repo events.
-    repo_sender: Option<Sender<RepoEvent>>,
+    repo_sender: Sender<RepoEvent>,
     repo_receiver: Receiver<RepoEvent>,
 }
 
 impl Repo {
     /// Create a new repo.
     pub fn new(
-        sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+        sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
         repo_id: Option<String>,
     ) -> Self {
         let (wake_sender, wake_receiver) = bounded(2);
@@ -272,7 +272,7 @@ impl Repo {
             sink_waker,
             pending_messages: Default::default(),
             pending_events: Default::default(),
-            repo_sender: Some(repo_sender),
+            repo_sender,
             repo_receiver,
             sync_observer,
         }
@@ -332,10 +332,7 @@ impl Repo {
                     let pinned_sink = Pin::new(&mut network_adapter);
                     let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
                     match result {
-                        Poll::Pending => {
-                            needs_flush = false;
-                            break;
-                        }
+                        Poll::Pending => break,
                         Poll::Ready(Ok(())) => {
                             let pinned_sink = Pin::new(&mut network_adapter);
                             let result = pinned_sink.start_send(
@@ -466,7 +463,7 @@ impl Repo {
                 } => {
                     // If we don't know about the document,
                     // create a new sync state and start syncing.
-                    // Note: this is the mirror of sending sync messages for 
+                    // Note: this is the mirror of sending sync messages for
                     // all known documents when a remote repo connects.
                     let info = self
                         .documents
@@ -485,8 +482,19 @@ impl Repo {
                                 is_ready: false,
                             }
                         });
+
+                    // Create a handle and pass it to the sync observer.
+                    info.handle_count.fetch_add(1, Ordering::SeqCst);
+                    let handle = DocHandle::new(
+                        self.repo_sender.clone(),
+                        document_id.clone(),
+                        info.state.clone(),
+                        info.handle_count.clone(),
+                        info.is_ready,
+                    );
+                    synced.push(handle);
+
                     info.receive_sync_message(from_repo_id, message);
-                    synced.push(document_id.clone());
                     // Note: since receiving and generating sync messages is done
                     // in two separate critical sections,
                     // local changes could be made in between those,
@@ -511,7 +519,7 @@ impl Repo {
         }
 
         // Notify the client of synced documents.
-        if let Some(observer) = self.sync_observer.as_ref().filter(|_| synced.is_empty()) {
+        if let Some(observer) = self.sync_observer.as_ref().filter(|_| !synced.is_empty()) {
             observer(synced);
         }
     }
@@ -520,7 +528,7 @@ impl Repo {
     /// Handles events from handles and adapters.
     /// Returns a handle for optional clean shutdown.
     pub fn run(mut self) -> RepoHandle {
-        let repo_sender = self.repo_sender.take().unwrap();
+        let repo_sender = self.repo_sender.clone();
         let repo_id = self.repo_id.clone();
         let document_id_counter = Default::default();
 

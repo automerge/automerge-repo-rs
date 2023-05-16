@@ -128,12 +128,9 @@ fn main() {
     let adapter = Network::new(sender.clone());
 
     // Create the repo.
-    let doc_handles_clone = doc_handles.clone();
     let repo = Repo::new(
         Some(Box::new(move |synced| {
-            for doc_id in synced {
-                let handles = doc_handles_clone.lock();
-                let doc_handle = handles.get(&doc_id).unwrap();
+            for doc_handle in synced {
                 println!("Synced {:?}", doc_handle.document_id());
             }
         })),

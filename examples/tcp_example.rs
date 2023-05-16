@@ -2,8 +2,7 @@ use automerge::sync::Message as SyncMessage;
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{
-    DocHandle, DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo,
-    RepoHandle, RepoId,
+    DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo, RepoId,
 };
 use clap::Parser;
 use core::pin::Pin;
@@ -16,7 +15,7 @@ use futures::TryStreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
@@ -160,34 +159,40 @@ async fn main() {
     let other_ip = args.other_ip;
 
     // Create a repo, the id is the local ip.
-    let repo = Repo::new(None, Some(run_ip.clone()));
+    let synced_docs = Arc::new(Mutex::new(vec![]));
+    let synced_docs_clone = synced_docs.clone();
+    let repo = Repo::new(
+        Some(Box::new(move |synced| {
+            for doc_handle in synced {
+                synced_docs_clone.lock().push(doc_handle);
+            }
+        })),
+        Some(run_ip.clone()),
+    );
     let repo_handle = Arc::new(Mutex::new(Some(repo.run())));
     let repo_handle_clone = repo_handle.clone();
 
     let (sender, mut network_receiver) = channel(1);
     let peers = Arc::new(Mutex::new(HashMap::new()));
-    let mut synced_docs = Arc::new(Mutex::new(vec![]));
 
     // Spawn a listening task.
-    let handle_clone = repo_handle.clone();
     let peers_clone = peers.clone();
-    let synced_docs_clone = synced_docs.clone();
+    let other_ip_clone = other_ip.clone();
     Handle::current().spawn(async move {
         let listener = TcpListener::bind(run_ip).await.unwrap();
 
         loop {
             match listener.accept().await {
-                Ok((socket, addr)) => {
-                    println!("new client: {:?}", addr);
+                Ok((socket, _addr)) => {
                     let adapter = Network::new(sender.clone());
-                    let repo_id = RepoId(addr.to_string());
+                    // FIXME: use addr? Why does it not match other ip?
+                    let repo_id = RepoId(other_ip_clone.clone());
                     repo_handle
                         .lock()
                         .as_mut()
                         .unwrap()
                         .new_network_adapter(repo_id.clone(), Box::new(adapter.clone()));
                     peers_clone.lock().insert(repo_id, adapter.clone());
-                    let inner_sync_docs_clone = synced_docs_clone.clone();
                     Handle::current().spawn(async move {
                         // Delimit frames using a length header
                         let length_delimited = FramedRead::new(socket, LengthDelimitedCodec::new());
@@ -204,8 +209,6 @@ async fn main() {
                             message,
                         }) = deserialized.try_next().await.unwrap()
                         {
-                            println!("GOT message from: {:?}", from_repo_id);
-                            inner_sync_docs_clone.lock().push(document_id.clone());
                             let message = SyncMessage::decode(&message)
                                 .expect("Failed to decode sync mesage.");
                             let incoming = NetworkEvent::Sync {
@@ -227,7 +230,7 @@ async fn main() {
 
     // Spawn a task connecting to the other peer.
     Handle::current().spawn(async move {
-        let mut stream = loop {
+        let stream = loop {
             // Try to connect to a peer
             let res = TcpStream::connect(other_ip.clone()).await;
             if res.is_err() {
@@ -288,11 +291,17 @@ async fn main() {
 
     tokio::select! {
         _ = tokio::signal::ctrl_c().fuse() => {
-            for id in synced_docs.lock().iter() {
-                // TODO: use sync observer to get handles. 
-                println!("Synced: {:?}", id);
+            assert!(!synced_docs.lock().is_empty());
+            for document_handle in synced_docs.lock().iter_mut() {
+                let expected_repo_id =
+                    format!("{}", document_handle.document_id().get_repo_id());
+                document_handle.with_doc_mut(|doc| {
+                    let value = doc.get(automerge::ROOT, "repo_id");
+                    assert_eq!(value.unwrap().unwrap().0.to_str().unwrap(), expected_repo_id);
+                });
             }
             repo_handle_clone.lock().take().unwrap().stop().unwrap();
+            println!("Stopped");
         }
     }
 }
