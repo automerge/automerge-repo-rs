@@ -289,7 +289,7 @@ async fn main() {
     tokio::select! {
         _ = tokio::signal::ctrl_c().fuse() => {
             for id in synced_docs.lock().iter() {
-                // TODO: add API to get handle to an existing doc in the repo.
+                // TODO: use sync observer to get handles. 
                 println!("Synced: {:?}", id);
             }
             repo_handle_clone.lock().take().unwrap().stop().unwrap();
