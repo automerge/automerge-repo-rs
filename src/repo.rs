@@ -106,11 +106,7 @@ impl RepoHandle {
             is_ready,
         };
         self.repo_sender
-            .send(RepoEvent::NewDocHandle(
-                repo_id,
-                document_id,
-                doc_info,
-            ))
+            .send(RepoEvent::NewDocHandle(repo_id, document_id, doc_info))
             .expect("Failed to send repo event.");
         handle
     }
@@ -370,8 +366,14 @@ impl Repo {
     fn handle_repo_event(&mut self, event: RepoEvent) {
         match event {
             RepoEvent::NewDocHandle(repo_id, document_id, mut info) => {
-                // Send a sync message to the creator, unless it is the local repo.
+                // Send a sync message to the creator,
+                // unless it is the local repo,
+                // and all other repos we are connected with.
+                let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
                 if let Some(repo_id) = repo_id {
+                    repo_ids.push(repo_id);
+                }
+                for repo_id in repo_ids {
                     if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: self.get_repo_id().clone(),
