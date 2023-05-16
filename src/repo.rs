@@ -282,13 +282,19 @@ impl Repo {
         &self.repo_id
     }
 
-    /// Remove sync states for repo's that do not have an adapter anymore.
+    /// Remove sync states for repos for which we do not have an adapter anymore.
     fn remove_unused_sync_states(&mut self) {
         for document_info in self.documents.values_mut() {
             document_info
                 .sync_states
                 .drain_filter(|repo_id, _| !self.network_adapters.contains_key(repo_id));
         }
+    }
+
+    /// Remove pending messages for repos for which we do not have an adapter anymore.
+    fn remove_unused_pending_messages(&mut self) {
+        self.pending_messages
+            .drain_filter(|repo_id, _| !self.network_adapters.contains_key(repo_id));
     }
 
     /// Poll the network adapter stream.
@@ -544,6 +550,7 @@ impl Repo {
                 self.sync_documents();
                 self.process_outgoing_network_messages();
                 self.remove_unused_sync_states();
+                self.remove_unused_pending_messages();
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {

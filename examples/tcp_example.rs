@@ -209,6 +209,7 @@ async fn main() {
                             message,
                         }) = deserialized.try_next().await.unwrap()
                         {
+                            println!("Received message from {:?}", from_repo_id);
                             let message = SyncMessage::decode(&message)
                                 .expect("Failed to decode sync mesage.");
                             let incoming = NetworkEvent::Sync {
@@ -261,6 +262,8 @@ async fn main() {
                        let adapter = peers.get_mut(&to_repo_id).unwrap();
                        adapter.take_outgoing()
                    };
+
+                   println!("Sending message to {:?}", to_repo_id);
 
                    // Send the value
                    serialized
