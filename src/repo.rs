@@ -464,6 +464,10 @@ impl Repo {
                     document_id,
                     message,
                 } => {
+                    // If we don't know about the document,
+                    // create a new sync state and start syncing.
+                    // Note: this is the mirror of sending sync messages for 
+                    // all known documents when a remote repo connects.
                     let info = self
                         .documents
                         .entry(document_id.clone())
