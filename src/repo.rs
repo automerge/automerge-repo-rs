@@ -166,7 +166,10 @@ impl DocumentInfo {
 
     /// Apply incoming sync messages.
     fn receive_sync_message(&mut self, repo_id: RepoId, message: SyncMessage) {
-        let sync_state = self.sync_states.entry(repo_id).or_insert(SyncState::new());
+        let sync_state = self
+            .sync_states
+            .entry(repo_id)
+            .or_insert_with(SyncState::new);
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
         let mut sync = state.1.sync();
@@ -176,7 +179,10 @@ impl DocumentInfo {
 
     /// Potentially generate an outgoing sync message.
     fn generate_first_sync_message(&mut self, repo_id: RepoId) -> Option<SyncMessage> {
-        let sync_state = self.sync_states.entry(repo_id).or_insert(SyncState::new());
+        let sync_state = self
+            .sync_states
+            .entry(repo_id)
+            .or_insert_with(SyncState::new);
         let (lock, _cvar) = &*self.state;
         lock.lock().1.sync().generate_sync_message(sync_state)
     }
@@ -318,7 +324,7 @@ impl Repo {
                     let pending_messages = self
                         .pending_messages
                         .entry(repo_id.clone())
-                        .or_insert(Default::default());
+                        .or_insert_with(Default::default);
                     if pending_messages.is_empty() {
                         break;
                     }
@@ -383,7 +389,7 @@ impl Repo {
                         };
                         self.pending_messages
                             .entry(repo_id)
-                            .or_insert(Default::default())
+                            .or_insert_with(Default::default)
                             .push_back(outgoing);
                     }
                 }
@@ -401,7 +407,7 @@ impl Repo {
                         };
                         self.pending_messages
                             .entry(to_repo_id.clone())
-                            .or_insert(Default::default())
+                            .or_insert_with(Default::default)
                             .push_back(outgoing);
                     }
                 }
@@ -436,7 +442,7 @@ impl Repo {
                         };
                         self.pending_messages
                             .entry(repo_id.clone())
-                            .or_insert(Default::default())
+                            .or_insert_with(Default::default)
                             .push_back(outgoing);
                     }
                 }
@@ -477,7 +483,7 @@ impl Repo {
                             };
                             self.pending_messages
                                 .entry(to_repo_id)
-                                .or_insert(Default::default())
+                                .or_insert_with(Default::default)
                                 .push_back(outgoing);
                         }
                     }
