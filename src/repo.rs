@@ -476,8 +476,7 @@ impl Repo {
 
         // Run the repo's event-loop in a thread.
         // The repo shuts down
-        // once all handles and collections drop,
-        // or when the RepoEvent::Stop is received.
+        // when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
             loop {
                 // Poll streams and sinks at the start of each iteration.
@@ -495,7 +494,7 @@ impl Repo {
                                 event => self.handle_repo_event(event),
                             }
                         } else {
-                            break;
+                            panic!("Repo handle dropped before calling `stop`");
                         }
                     },
                     recv(self.wake_receiver) -> event => {
