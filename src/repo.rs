@@ -272,64 +272,90 @@ impl Repo {
         &self.repo_id
     }
 
+    /// Remove sync states for repo's that do not have an adapter anymore.
+    fn remove_unused_sync_states(&mut self) {
+        for document_info in self.documents.values_mut() {
+            document_info
+                .sync_states
+                .drain_filter(|repo_id, _| !self.network_adapters.contains_key(repo_id));
+        }
+    }
+
     /// Poll the network adapter stream.
     fn collect_network_events(&mut self) {
-        for (_repo_id, mut network_adapter) in self.network_adapters.iter_mut() {
-            // Collect as many events as possible.
-            loop {
-                let waker = waker_ref(&self.stream_waker);
-                let pinned_stream = Pin::new(&mut network_adapter);
-                let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
-                match result {
-                    Poll::Pending => break,
-                    Poll::Ready(Some(event)) => self.pending_events.push_back(event),
-                    Poll::Ready(None) => return, //TODO remove.
+        // Receive incoming message on streams,
+        // discarding streams that error.
+        self.network_adapters
+            .drain_filter(|_repo_id, mut network_adapter| {
+                // Collect as many events as possible.
+                loop {
+                    let waker = waker_ref(&self.stream_waker);
+                    let pinned_stream = Pin::new(&mut network_adapter);
+                    let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
+                    match result {
+                        Poll::Pending => break false,
+                        Poll::Ready(Some(event)) => self.pending_events.push_back(event),
+                        Poll::Ready(None) => break true,
+                    }
                 }
-            }
-        }
+            });
     }
 
     /// Try to send pending messages on the network sink.
     fn process_outgoing_network_messages(&mut self) {
-        for (repo_id, mut network_adapter) in self.network_adapters.iter_mut() {
-            // Send as many messages as possible.
-            let mut needs_flush = false;
-            loop {
-                let pending_messages = self
-                    .pending_messages
-                    .entry(*repo_id)
-                    .or_insert(Default::default());
-                if pending_messages.is_empty() {
-                    break;
-                }
-                let waker = waker_ref(&self.sink_waker);
-                let pinned_sink = Pin::new(&mut network_adapter);
-                let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
-                match result {
-                    Poll::Pending => break,
-                    Poll::Ready(Ok(())) => {
-                        let pinned_sink = Pin::new(&mut network_adapter);
-                        let result = pinned_sink.start_send(
-                            pending_messages
-                                .pop_front()
-                                .expect("Empty pending messages."),
-                        );
-                        if result.is_err() {
-                            return;
-                        }
-                        needs_flush = true;
+        // Send outgoing message on sinks,
+        // discarding sinks that error.
+        self.network_adapters
+            .drain_filter(|repo_id, mut network_adapter| {
+                // Send as many messages as possible.
+                let mut needs_flush = false;
+                let mut discard = false;
+                loop {
+                    let pending_messages = self
+                        .pending_messages
+                        .entry(*repo_id)
+                        .or_insert(Default::default());
+                    if pending_messages.is_empty() {
+                        break;
                     }
-                    Poll::Ready(Err(_)) => return,
+                    let waker = waker_ref(&self.sink_waker);
+                    let pinned_sink = Pin::new(&mut network_adapter);
+                    let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
+                    match result {
+                        Poll::Pending => {
+                            needs_flush = false;
+                            break;
+                        }
+                        Poll::Ready(Ok(())) => {
+                            let pinned_sink = Pin::new(&mut network_adapter);
+                            let result = pinned_sink.start_send(
+                                pending_messages
+                                    .pop_front()
+                                    .expect("Empty pending messages."),
+                            );
+                            if result.is_err() {
+                                discard = true;
+                                needs_flush = false;
+                                break;
+                            }
+                            needs_flush = true;
+                        }
+                        Poll::Ready(Err(_)) => {
+                            discard = true;
+                            needs_flush = false;
+                            break;
+                        }
+                    }
                 }
-            }
 
-            // Flusk the sink if any messages have been sent.
-            if needs_flush {
-                let waker = waker_ref(&self.sink_waker);
-                let pinned_sink = Pin::new(&mut network_adapter);
-                let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
-            }
-        }
+                // Flusk the sink if any messages have been sent.
+                if needs_flush {
+                    let waker = waker_ref(&self.sink_waker);
+                    let pinned_sink = Pin::new(&mut network_adapter);
+                    let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+                }
+                discard
+            });
     }
 
     /// Handle incoming repo events(sent by repo or document handles).
@@ -449,6 +475,9 @@ impl Repo {
         let document_id_counter = Default::default();
 
         // Run the repo's event-loop in a thread.
+        // The repo shuts down
+        // once all handles and collections drop,
+        // or when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
             loop {
                 // Poll streams and sinks at the start of each iteration.
@@ -457,6 +486,7 @@ impl Repo {
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
+                self.remove_unused_sync_states();
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
@@ -465,8 +495,6 @@ impl Repo {
                                 event => self.handle_repo_event(event),
                             }
                         } else {
-                            // The repo shuts down
-                            // once all handles and collections drop.
                             break;
                         }
                     },
@@ -477,6 +505,7 @@ impl Repo {
                     },
                 }
             }
+            // TODO: close sinks and streams?
         });
         RepoHandle {
             handle,
