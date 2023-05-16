@@ -15,6 +15,7 @@ use futures::SinkExt;
 use futures::TryStreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -22,7 +23,6 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio_serde::formats::*;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use serde_json::json;
 
 #[derive(Debug, Clone)]
 struct Network<NetworkMessage> {
@@ -184,9 +184,7 @@ async fn main() {
                         .as_mut()
                         .unwrap()
                         .new_network_adapter(repo_id.clone(), Box::new(adapter.clone()));
-                    peers_clone
-                        .lock()
-                        .insert(repo_id, adapter.clone());
+                    peers_clone.lock().insert(repo_id, adapter.clone());
                     Handle::current().spawn(async move {
                         // Delimit frames using a length header
                         let length_delimited = FramedRead::new(socket, LengthDelimitedCodec::new());
@@ -219,7 +217,7 @@ async fn main() {
             }
             break res.unwrap();
         };
-        
+
         // Delimit frames using a length header
         let length_delimited = FramedWrite::new(stream, LengthDelimitedCodec::new());
 
@@ -237,7 +235,7 @@ async fn main() {
                        document_id,
                        message,
                    } = {
-                       
+
                        let mut peers = peers.lock();
                        let adapter = peers.get_mut(&to_repo_id).unwrap();
                        adapter.take_outgoing()
@@ -257,6 +255,18 @@ async fn main() {
             }
         }
     });
+
+    // Create a document.
+    {
+        let mut handle = repo_handle_clone.lock();
+        let mut doc_handle = handle.as_mut().unwrap().new_document();
+        let our_id = handle.as_mut().unwrap().get_repo_id();
+        doc_handle.with_doc_mut(|doc| {
+            doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
+                .expect("Failed to change the document.");
+            doc.commit();
+        });
+    }
 
     tokio::select! {
         _ = tokio::signal::ctrl_c().fuse() => {

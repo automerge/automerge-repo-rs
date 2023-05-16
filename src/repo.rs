@@ -418,11 +418,28 @@ impl Repo {
             }
             RepoEvent::ConnectNetworkAdapter(repo_id, adapter) => {
                 self.network_adapters
-                    .entry(repo_id)
+                    .entry(repo_id.clone())
                     .and_modify(|_| {
                         // TODO: close the existing stream/sink?
                     })
                     .or_insert(adapter);
+
+                // Try to sync all docs we know about.
+                let our_id = self.get_repo_id().clone();
+                for (document_id, info) in self.documents.iter_mut() {
+                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: our_id.clone(),
+                            to_repo_id: repo_id.clone(),
+                            document_id: document_id.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(repo_id.clone())
+                            .or_insert(Default::default())
+                            .push_back(outgoing);
+                    }
+                }
             }
             RepoEvent::Stop => {}
         }
