@@ -459,10 +459,8 @@ impl Repo {
         }
 
         // Notify the client of synced documents.
-        if let Some(observer) = self.sync_observer.as_ref() {
-            if !synced.is_empty() {
-                observer(synced);
-            }
+        if let Some(observer) = self.sync_observer.as_ref().filter(|_| synced.is_empty()) {
+            observer(synced);
         }
     }
 
