@@ -1,6 +1,7 @@
 use crate::interfaces::DocumentId;
 use crate::repo::RepoEvent;
-use automerge::AutoCommit;
+use automerge::transaction::Observed;
+use automerge::{AutoCommitWithObs, VecOpObserver};
 use crossbeam_channel::Sender;
 use parking_lot::{Condvar, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,7 +21,10 @@ pub(crate) enum DocState {
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
     /// Document used by the handle for local editing.
-    state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
+    state: Arc<(
+        Mutex<(DocState, AutoCommitWithObs<Observed<VecOpObserver>>)>,
+        Condvar,
+    )>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
@@ -59,7 +63,10 @@ impl DocHandle {
     pub(crate) fn new(
         repo_sender: Sender<RepoEvent>,
         document_id: DocumentId,
-        state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
+        state: Arc<(
+            Mutex<(DocState, AutoCommitWithObs<Observed<VecOpObserver>>)>,
+            Condvar,
+        )>,
         handle_count: Arc<AtomicUsize>,
         is_ready: bool,
     ) -> Self {
@@ -82,7 +89,7 @@ impl DocHandle {
     /// or only after having called `wait_ready`.
     pub fn with_doc_mut<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut AutoCommit),
+        F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>),
     {
         if !self.is_ready {
             self.wait_ready();

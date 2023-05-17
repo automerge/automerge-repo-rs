@@ -2,7 +2,9 @@ use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
-use automerge::AutoCommit;
+use automerge::transaction::Observed;
+use automerge::VecOpObserver;
+use automerge::{AutoCommit, AutoCommitWithObs};
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::stream::Stream;
@@ -34,6 +36,11 @@ pub struct RepoHandle {
 #[derive(Debug)]
 pub struct RepoError;
 
+fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
+    let document = AutoCommit::new();
+    document.with_observer(VecOpObserver::default())
+}
+
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
         self.repo_sender
@@ -54,7 +61,7 @@ impl RepoHandle {
             .checked_add(1)
             .expect("Overflowed when creating new document id.");
         let document_id = DocumentId((self.repo_id.clone(), self.document_id_counter));
-        let document = AutoCommit::new();
+        let document = new_document_with_observer();
         self.new_document_handle(None, document_id, document, DocState::Sync)
     }
 
@@ -66,7 +73,7 @@ impl RepoHandle {
         repo_id: Option<RepoId>,
         document_id: DocumentId,
     ) -> DocHandle {
-        let document = AutoCommit::new();
+        let document = new_document_with_observer();
         // If no repo id is provided, sync with the creator.
         let repo_id = repo_id.unwrap_or_else(|| document_id.get_repo_id().clone());
         self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
@@ -76,7 +83,7 @@ impl RepoHandle {
         &self,
         repo_id: Option<RepoId>,
         document_id: DocumentId,
-        document: AutoCommit,
+        document: AutoCommitWithObs<Observed<VecOpObserver>>,
         state: DocState,
     ) -> DocHandle {
         let is_ready = matches!(state, DocState::Sync);
@@ -94,6 +101,7 @@ impl RepoHandle {
             handle_count,
             sync_states: Default::default(),
             is_ready,
+            patches_since_last_save: 0,
         };
         self.repo_sender
             .send(RepoEvent::NewDocHandle(repo_id, document_id, doc_info))
@@ -131,13 +139,17 @@ pub(crate) enum RepoEvent {
 pub(crate) struct DocumentInfo {
     /// State of the document(shared with handles).
     /// Document used to apply and generate sync messages.
-    state: Arc<(Mutex<(DocState, AutoCommit)>, Condvar)>,
+    state: Arc<(
+        Mutex<(DocState, AutoCommitWithObs<Observed<VecOpObserver>>)>,
+        Condvar,
+    )>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
     /// Per repo automerge sync state.
     sync_states: HashMap<RepoId, SyncState>,
     /// Flag set to true once the doc reaches `DocState::Sync`.
     is_ready: bool,
+    patches_since_last_save: usize,
 }
 
 impl DocumentInfo {
@@ -152,6 +164,15 @@ impl DocumentInfo {
         state.0 = DocState::Sync;
         cvar.notify_all();
         self.is_ready = true;
+    }
+
+    fn note_changes(&mut self) {
+        let (lock, _cvar) = &*self.state;
+        let mut state = lock.lock();
+        let observer = state.1.observer();
+        let _ = self
+            .patches_since_last_save
+            .checked_add(observer.take_patches().len());
     }
 
     /// Apply incoming sync messages.
@@ -243,6 +264,8 @@ pub struct Repo {
     /// Sender and receiver of repo events.
     repo_sender: Sender<RepoEvent>,
     repo_receiver: Receiver<RepoEvent>,
+
+    pending_saves: Vec<DocumentId>,
 }
 
 impl Repo {
@@ -267,6 +290,7 @@ impl Repo {
             repo_sender,
             repo_receiver,
             sync_observer,
+            pending_saves: Default::default(),
         }
     }
 
@@ -416,6 +440,8 @@ impl Repo {
             RepoEvent::DocChange(doc_id) => {
                 // Handle doc changes: sync the document.
                 if let Some(info) = self.documents.get_mut(&doc_id) {
+                    info.note_changes();
+                    self.pending_saves.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: self.get_repo_id().clone(),
@@ -495,7 +521,7 @@ impl Repo {
                         .documents
                         .entry(document_id.clone())
                         .or_insert_with(|| {
-                            let document = AutoCommit::new();
+                            let document = new_document_with_observer();
                             let state = Arc::new((
                                 Mutex::new((DocState::Bootstrap, document)),
                                 Condvar::new(),
@@ -506,6 +532,7 @@ impl Repo {
                                 handle_count,
                                 sync_states: Default::default(),
                                 is_ready: false,
+                                patches_since_last_save: 0,
                             }
                         });
 
@@ -519,6 +546,8 @@ impl Repo {
                         info.is_ready,
                     );
                     synced.push(handle);
+                    info.note_changes();
+                    self.pending_saves.push(document_id.clone());
 
                     info.receive_sync_message(from_repo_id, message);
                     // Note: since receiving and generating sync messages is done
