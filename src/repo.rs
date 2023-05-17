@@ -10,8 +10,7 @@ use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll};
 use futures::Sink;
 use parking_lot::{Condvar, Mutex};
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -200,26 +199,44 @@ impl DocumentInfo {
     }
 }
 
-/// Signal that the stream or sink on the network adapter is ready to be polled.
-enum WakeSignal {
-    Stream,
-    Sink,
-}
-
 /// Waking mechanism for stream and sinks.
 enum RepoWaker {
-    Stream(Sender<WakeSignal>),
-    Sink(Sender<WakeSignal>),
+    Stream {
+        sender: Sender<()>,
+        repo_id: RepoId,
+        streams_to_poll: Arc<Mutex<HashSet<RepoId>>>,
+    },
+    Sink {
+        sender: Sender<()>,
+        repo_id: RepoId,
+        sinks_to_poll: Arc<Mutex<HashSet<RepoId>>>,
+    },
 }
 
 /// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
 impl ArcWake for RepoWaker {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        let err = match &**arc_self {
-            RepoWaker::Stream(sender) => sender.try_send(WakeSignal::Stream),
-            RepoWaker::Sink(sender) => sender.try_send(WakeSignal::Sink),
+        let res = match &**arc_self {
+            RepoWaker::Stream {
+                sender,
+                repo_id,
+                streams_to_poll,
+            } => {
+                let mut streams = streams_to_poll.lock();
+                streams.insert(repo_id.clone());
+                sender.send(())
+            }
+            RepoWaker::Sink {
+                sender,
+                repo_id,
+                sinks_to_poll,
+            } => {
+                let mut sinks = sinks_to_poll.lock();
+                sinks.insert(repo_id.clone());
+                sender.send(())
+            }
         };
-        if let Err(TrySendError::Disconnected(_)) = err {
+        if let Err(_) = res {
             panic!("Wake sender disconnected.");
         }
     }
@@ -233,8 +250,8 @@ pub struct Repo {
     network_adapters: HashMap<RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>>,
     documents: HashMap<DocumentId, DocumentInfo>,
 
-    stream_waker: Arc<RepoWaker>,
-    sink_waker: Arc<RepoWaker>,
+    streams_to_poll: Arc<Mutex<HashSet<RepoId>>>,
+    sinks_to_poll: Arc<Mutex<HashSet<RepoId>>>,
 
     /// Messages to send on the network adapter sink.
     pending_messages: HashMap<RepoId, VecDeque<NetworkMessage>>,
@@ -244,8 +261,9 @@ pub struct Repo {
     /// Callback on applying sync messages.
     sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
 
-    /// Receiver of network stream and sink readiness signals.
-    wake_receiver: Receiver<WakeSignal>,
+    /// Receiver and sender of network stream and sink readiness signals.
+    wake_receiver: Receiver<()>,
+    wake_sender: Sender<()>,
 
     /// Sender and receiver of repo events.
     repo_sender: Sender<RepoEvent>,
@@ -258,18 +276,17 @@ impl Repo {
         sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
         repo_id: Option<String>,
     ) -> Self {
-        let (wake_sender, wake_receiver) = bounded(2);
+        let (wake_sender, wake_receiver) = bounded(100);
         let (repo_sender, repo_receiver) = unbounded();
-        let stream_waker = Arc::new(RepoWaker::Stream(wake_sender.clone()));
-        let sink_waker = Arc::new(RepoWaker::Sink(wake_sender));
         let repo_id = repo_id.map_or_else(|| RepoId(Uuid::new_v4().to_string()), RepoId);
         Repo {
             repo_id,
             documents: Default::default(),
             network_adapters: Default::default(),
+            streams_to_poll: Arc::new(Mutex::new(Default::default())),
+            sinks_to_poll: Arc::new(Mutex::new(Default::default())),
             wake_receiver,
-            stream_waker,
-            sink_waker,
+            wake_sender,
             pending_messages: Default::default(),
             pending_events: Default::default(),
             repo_sender,
@@ -301,11 +318,21 @@ impl Repo {
     fn collect_network_events(&mut self) {
         // Receive incoming message on streams,
         // discarding streams that error.
+        let to_poll = mem::take(&mut *self.streams_to_poll.lock());
+        println!("Polling streams: {:?}", to_poll);
         self.network_adapters
-            .drain_filter(|_repo_id, mut network_adapter| {
+            .drain_filter(|repo_id, mut network_adapter| {
                 // Collect as many events as possible.
                 loop {
-                    let waker = waker_ref(&self.stream_waker);
+                    if !to_poll.contains(&repo_id) {
+                        //break false;
+                    }
+                    let stream_waker = Arc::new(RepoWaker::Stream {
+                        sender: self.wake_sender.clone(),
+                        repo_id: repo_id.clone(),
+                        streams_to_poll: self.streams_to_poll.clone(),
+                    });
+                    let waker = waker_ref(&stream_waker);
                     let pinned_stream = Pin::new(&mut network_adapter);
                     let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
                     match result {
@@ -321,12 +348,17 @@ impl Repo {
     fn process_outgoing_network_messages(&mut self) {
         // Send outgoing message on sinks,
         // discarding sinks that error.
+        let to_poll = mem::take(&mut *self.sinks_to_poll.lock());
+        println!("Polling sinks: {:?}", to_poll);
         self.network_adapters
             .drain_filter(|repo_id, mut network_adapter| {
                 // Send as many messages as possible.
                 let mut needs_flush = false;
                 let mut discard = false;
                 loop {
+                    if !to_poll.contains(&repo_id) {
+                        //break;
+                    }
                     let pending_messages = self
                         .pending_messages
                         .entry(repo_id.clone())
@@ -334,7 +366,12 @@ impl Repo {
                     if pending_messages.is_empty() {
                         break;
                     }
-                    let waker = waker_ref(&self.sink_waker);
+                    let sink_waker = Arc::new(RepoWaker::Sink {
+                        sender: self.wake_sender.clone(),
+                        repo_id: repo_id.clone(),
+                        sinks_to_poll: self.sinks_to_poll.clone(),
+                    });
+                    let waker = waker_ref(&sink_waker);
                     let pinned_sink = Pin::new(&mut network_adapter);
                     let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
                     match result {
@@ -363,7 +400,12 @@ impl Repo {
 
                 // Flusk the sink if any messages have been sent.
                 if needs_flush {
-                    let waker = waker_ref(&self.sink_waker);
+                    let sink_waker = Arc::new(RepoWaker::Sink {
+                        sender: self.wake_sender.clone(),
+                        repo_id: repo_id.clone(),
+                        sinks_to_poll: self.sinks_to_poll.clone(),
+                    });
+                    let waker = waker_ref(&sink_waker);
                     let pinned_sink = Pin::new(&mut network_adapter);
                     let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
                 }
@@ -449,6 +491,8 @@ impl Repo {
                             .push_back(outgoing);
                     }
                 }
+                self.sinks_to_poll.lock().insert(repo_id.clone());
+                self.streams_to_poll.lock().insert(repo_id);
             }
             RepoEvent::Stop => {
                 // Handled in the main run loop.
