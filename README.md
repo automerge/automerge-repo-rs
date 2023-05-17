@@ -20,3 +20,13 @@ Project goal: add an integration layer between automerge and client code, compat
 6. Check the document state at at one, or several, peers(s):
    - `curl --json '{document id}' 0.0.0.0:3000/print_doc`
 7. Make additional edits, at any peer, and repeat step 6. 
+
+
+### TCP peers, with hardcoded IPs.
+
+1. Start the two peers in two separate terminals:
+   - `cargo run --example tcp-example -- --run-ip 0.0.0.0:3001 --other-ip 0.0.0.0:3000`
+   - `cargo run --example tcp-example -- --run-ip 0.0.0.0:3000 --other-ip 0.0.0.0:3001`
+2. Wait until no messages are printed anymore.
+3. Press ctr-c. 
+4. A successful run prints out "Stopped", failure panics. 
