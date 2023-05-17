@@ -180,12 +180,11 @@ async fn main() {
     let other_ip_clone = other_ip.clone();
     Handle::current().spawn(async move {
         let listener = TcpListener::bind(run_ip).await.unwrap();
-
         loop {
             match listener.accept().await {
                 Ok((socket, _addr)) => {
                     let adapter = Network::new(sender.clone());
-                    // FIXME: use addr? Why does it not match other ip?
+                    // using an hardcoded IP. 
                     let repo_id = RepoId(other_ip_clone.clone());
                     repo_handle
                         .lock()

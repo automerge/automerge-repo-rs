@@ -25,8 +25,8 @@ Project goal: add an integration layer between automerge and client code, compat
 ### TCP peers, with hardcoded IPs.
 
 1. Start the two peers in two separate terminals:
-   - `cargo run --example tcp-example -- --run-ip 0.0.0.0:3001 --other-ip 0.0.0.0:3000`
-   - `cargo run --example tcp-example -- --run-ip 0.0.0.0:3000 --other-ip 0.0.0.0:3001`
+   - `cargo run --example tcp-example -- --run-ip 127.0.0.1:2345 --other-ip 127.0.0.1:2346`
+   - `cargo run --example tcp-example -- --run-ip 127.0.0.1:2346 --other-ip 127.0.0.1:2345`
 2. Wait until no messages are printed anymore.
 3. Press ctr-c. 
 4. A successful run prints out "Stopped", failure panics. 
