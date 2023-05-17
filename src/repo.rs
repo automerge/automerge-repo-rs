@@ -58,16 +58,6 @@ impl RepoHandle {
         self.new_document_handle(None, document_id, document, DocState::Sync)
     }
 
-    /// Load an existing document, assumed to be ready for editing.
-    pub fn load_existing_document(
-        &self,
-        repo_id: RepoId,
-        document_id: DocumentId,
-        document: AutoCommit,
-    ) -> DocHandle {
-        self.new_document_handle(Some(repo_id), document_id, document, DocState::Sync)
-    }
-
     /// Boostrap a document using it's ID only.
     /// The returned document should not be edited until ready,
     /// use `DocHandle.wait_ready` to wait for it.
