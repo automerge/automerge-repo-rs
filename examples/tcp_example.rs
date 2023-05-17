@@ -184,7 +184,7 @@ async fn main() {
             match listener.accept().await {
                 Ok((socket, _addr)) => {
                     let adapter = Network::new(sender.clone());
-                    // using an hardcoded IP. 
+                    // using an hardcoded IP.
                     let repo_id = RepoId(other_ip_clone.clone());
                     repo_handle
                         .lock()
