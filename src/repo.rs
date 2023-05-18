@@ -669,9 +669,7 @@ impl Repo {
         let handle = thread::spawn(move || {
             self.load_locally_stored_documents();
             loop {
-                // Poll streams and sinks at the start of each iteration.
-                // Required, in combination with `try_send` on the wakers,
-                // to prevent deadlock.
+                // Poll ready streams and sinks at the start of each iteration.
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
