@@ -58,6 +58,9 @@ impl Clone for DocHandle {
 impl Drop for DocHandle {
     fn drop(&mut self) {
         // Close the document when the last handle drops.
+        // TODO: turn this into a `delete` concept, 
+        // based on an explicit method call(not drop), 
+        // which would clear storage as well?
         if self.handle_count.fetch_sub(1, Ordering::SeqCst) == 0 {
             self.repo_sender
                 .send(RepoEvent::DocClosed(self.document_id.clone()))
