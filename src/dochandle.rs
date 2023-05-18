@@ -1,4 +1,4 @@
-use crate::interfaces::DocumentId;
+use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::RepoEvent;
 use automerge::transaction::Observed;
 use automerge::{AutoCommitWithObs, VecOpObserver};
@@ -28,14 +28,13 @@ pub(crate) struct SharedDocument {
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
     /// Document used by the handle for local editing.
-    shared_document: Arc<(Mutex<SharedDocument>, Condvar)>,
+    shared_document: Arc<Mutex<SharedDocument>>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
     repo_sender: Sender<RepoEvent>,
     document_id: DocumentId,
-    /// Flag set to true once the doc reaches `DocState::Sync`.
-    is_ready: bool,
+    local_repo_id: RepoId,
 }
 
 impl Clone for DocHandle {
@@ -47,7 +46,7 @@ impl Clone for DocHandle {
             self.document_id.clone(),
             self.shared_document.clone(),
             self.handle_count.clone(),
-            self.is_ready,
+            self.local_repo_id.clone(),
         )
     }
 }
@@ -67,17 +66,21 @@ impl DocHandle {
     pub(crate) fn new(
         repo_sender: Sender<RepoEvent>,
         document_id: DocumentId,
-        shared_document: Arc<(Mutex<SharedDocument>, Condvar)>,
+        shared_document: Arc<Mutex<SharedDocument>>,
         handle_count: Arc<AtomicUsize>,
-        is_ready: bool,
+        local_repo_id: RepoId,
     ) -> Self {
         DocHandle {
             shared_document,
             repo_sender,
             document_id,
             handle_count,
-            is_ready,
+            local_repo_id,
         }
+    }
+
+    pub fn local_repo_id(&self) -> RepoId {
+        self.local_repo_id.clone()
     }
 
     pub fn document_id(&self) -> DocumentId {
@@ -85,46 +88,16 @@ impl DocHandle {
     }
 
     /// Run a closure over a mutable reference to the document.
-    /// Note: blocks if called on a document that isn't ready,
-    /// should be called only from within a blocking task or thread,
-    /// or only after having called `wait_ready`.
     pub fn with_doc_mut<F>(&mut self, f: F)
     where
         F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>),
     {
-        if !self.is_ready {
-            self.wait_ready();
-        }
         {
-            let (lock, _cvar) = &*self.shared_document;
-            let mut state = lock.lock();
+            let mut state = self.shared_document.lock();
             f(&mut state.automerge);
         }
         self.repo_sender
             .send(RepoEvent::DocChange(self.document_id.clone()))
             .expect("Failed to send doc change event.");
-    }
-
-    /// Returns whether the document is ready for editing.
-    /// If false, `with_doc_mut` will block until the document is ready.
-    pub fn is_ready_for_editing(&self) -> bool {
-        self.is_ready
-    }
-
-    /// Wait for the document to be ready to be edited.
-    /// Note: blocks, should be called only from within a blocking task or thread.
-    pub fn wait_ready(&mut self) {
-        if self.is_ready {
-            return;
-        }
-        let (lock, cvar) = &*self.shared_document;
-        let mut state = lock.lock();
-        loop {
-            match state.state {
-                DocState::Sync => break,
-                DocState::Bootstrap => cvar.wait(&mut state),
-            }
-        }
-        self.is_ready = true;
     }
 }

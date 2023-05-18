@@ -8,7 +8,7 @@ use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::task::{Context, Poll, Waker};
 use parking_lot::Mutex;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
@@ -140,10 +140,24 @@ fn test_simple_sync() {
     let mut documents = vec![];
     let mut docs_to_sync = HashMap::new();
     let mut peers = HashMap::new();
+    let synced_docs = Arc::new(Mutex::new(HashMap::new()));
 
     for _ in 1..10 {
         // Create the repo.
-        let repo = Repo::new(None, None, Box::new(Storage));
+        let sync_docs_clone = synced_docs.clone();
+        let repo = Repo::new(
+            Some(Box::new(move |synced| {
+                let mut synced_docs = sync_docs_clone.lock();
+                for doc_handle in synced {
+                    let entry = synced_docs
+                        .entry(doc_handle.local_repo_id())
+                        .or_insert(HashMap::new());
+                    entry.insert(doc_handle.document_id(), doc_handle);
+                }
+            })),
+            None,
+            Box::new(Storage),
+        );
         let mut repo_handle = repo.run();
 
         // Create a document.
@@ -187,7 +201,8 @@ fn test_simple_sync() {
             if doc_id.get_repo_id() == &repo_id {
                 continue;
             }
-            doc_handles.push(repo_handle.bootstrap_document_from_id(None, doc_id));
+            repo_handle.bootstrap_document_from_id(None, doc_id.clone());
+            doc_handles.push(doc_id);
         }
         docs_to_sync.insert(repo_id, doc_handles);
     }
@@ -209,16 +224,22 @@ fn test_simple_sync() {
                     done_sync_sender.blocking_send(()).unwrap();
                     return;
                 }
-                for (_, doc_handles) in docs_to_sync.iter_mut() {
-                    for doc_handle in doc_handles {
-                        let expected_repo_id =
-                            format!("{}", doc_handle.document_id().get_repo_id());
-                        doc_handle.with_doc_mut(|doc| {
-                            let value = doc.get(automerge::ROOT, "repo_id");
-                            if value.unwrap().unwrap().0.to_str().unwrap() == expected_repo_id {
-                                synced = synced + 1;
+                for (_, doc_ids) in docs_to_sync.iter_mut() {
+                    for doc_id in doc_ids {
+                        let expected_repo_id = format!("{}", doc_id.get_repo_id());
+                        let mut synced_docs = synced_docs.lock();
+                        if let Some(mut per_repo) = synced_docs.get_mut(&doc_id.get_repo_id()) {
+                            if let Some(mut doc_handle) = per_repo.get_mut(&doc_id) {
+                                doc_handle.with_doc_mut(|doc| {
+                                    let value = doc.get(automerge::ROOT, "repo_id");
+                                    if value.unwrap().unwrap().0.to_str().unwrap()
+                                        == expected_repo_id
+                                    {
+                                        synced = synced + 1;
+                                    }
+                                });
                             }
-                        });
+                        }
                     }
                 }
             }

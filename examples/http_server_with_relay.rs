@@ -132,10 +132,14 @@ fn main() {
     let adapter = Network::new(sender.clone());
 
     // Create the repo.
+    let doc_handles_clone = doc_handles.clone();
     let repo = Repo::new(
         Some(Box::new(move |synced| {
             for doc_handle in synced {
                 println!("Synced {:?}", doc_handle.document_id());
+                doc_handles_clone
+                    .lock()
+                    .insert(doc_handle.document_id(), doc_handle);
             }
         })),
         None,
@@ -207,16 +211,12 @@ fn main() {
                 document_id.get_repo_id().clone(),
                 Box::new(state.adapter.clone()),
             );
-        let doc_handle = state
+        state
             .repo_handle
             .lock()
             .as_mut()
             .unwrap()
             .bootstrap_document_from_id(None, document_id);
-        state
-            .doc_handles
-            .lock()
-            .insert(doc_handle.document_id(), doc_handle);
     }
 
     async fn edit_doc(
@@ -224,33 +224,6 @@ fn main() {
         Path(string): Path<String>,
         Json(id): Json<DocumentId>,
     ) {
-        let mut handle_clone = {
-            let mut handles = state.doc_handles.lock();
-            let doc_handle = handles.get_mut(&id).unwrap();
-            if doc_handle.is_ready_for_editing() {
-                // Make the edit and return.
-                doc_handle.with_doc_mut(|doc| {
-                    doc.put(automerge::ROOT, "key", string)
-                        .expect("Failed to change the document.");
-                    doc.commit();
-                });
-                return;
-            } else {
-                // Clone the handle and wait for it to be ready.
-                // Need to clone so as not to hold the lock across await.
-                doc_handle.clone()
-            }
-        };
-        Handle::current()
-            .spawn_blocking(move || {
-                // Wait for the document
-                // to get into the `ready` state.
-                handle_clone.wait_ready();
-            })
-            .await
-            .unwrap();
-
-        // Here we are sure the doc is ready.
         let mut handles = state.doc_handles.lock();
         let doc_handle = handles.get_mut(&id).unwrap();
         doc_handle.with_doc_mut(|doc| {
