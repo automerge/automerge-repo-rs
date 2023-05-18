@@ -17,11 +17,11 @@ struct Network<NetworkMessage> {
     stream_waker: Arc<Mutex<Option<Waker>>>,
     outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
     sink_waker: Arc<Mutex<Option<Waker>>>,
-    sender: Sender<RepoId>,
+    sender: Sender<(RepoId, RepoId)>,
 }
 
 impl Network<NetworkMessage> {
-    pub fn new(sender: Sender<RepoId>) -> Self {
+    pub fn new(sender: Sender<(RepoId, RepoId)>) -> Self {
         let buffer = Arc::new(Mutex::new(VecDeque::new()));
         let stream_waker = Arc::new(Mutex::new(None));
         let sink_waker = Arc::new(Mutex::new(None));
@@ -77,12 +77,20 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
         }
     }
     fn start_send(self: Pin<&mut Self>, item: NetworkMessage) -> Result<(), Self::Error> {
-        let repo_id = match item {
-            NetworkMessage::Sync { from_repo_id, .. } => from_repo_id.clone(),
+        let (from_repo_id, to_repo_id) = match &item {
+            NetworkMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                ..
+            } => (from_repo_id.clone(), to_repo_id.clone()),
         };
 
         self.outgoing.lock().push_back(item);
-        if self.sender.blocking_send(repo_id).is_err() {
+        if self
+            .sender
+            .blocking_send((from_repo_id, to_repo_id))
+            .is_err()
+        {
             return Err(NetworkError::Error);
         }
         Ok(())
@@ -109,13 +117,8 @@ impl NetworkAdapter for Network<NetworkMessage> {}
 
 #[test]
 fn test_repo_stop() {
-    let (sender, _network_receiver) = channel(1);
-
-    // Create the network adapter.
-    let network = Network::new(sender.clone());
-
     // Create the repo.
-    let repo = Repo::new(network, None);
+    let repo = Repo::new(None, None);
 
     // Run the repo in the background.
     let repo_handle = repo.run();
@@ -133,11 +136,8 @@ fn test_simple_sync() {
     let mut peers = HashMap::new();
 
     for _ in 1..10 {
-        // Create the network adapter.
-        let network = Network::new(sender.clone());
-
         // Create the repo.
-        let repo = Repo::new(network.clone(), None);
+        let repo = Repo::new(None, None);
         let mut repo_handle = repo.run();
 
         // Create a document.
@@ -151,17 +151,31 @@ fn test_simple_sync() {
             .expect("Failed to change the document.");
             doc.commit();
         });
-
-        peers.insert(*repo_handle.get_repo_id(), network);
         documents.push(doc_handle);
 
         repo_handles.push(repo_handle);
     }
 
+    let repo_ids: Vec<RepoId> = repo_handles
+        .iter()
+        .map(|handle| handle.get_repo_id().clone())
+        .collect();
+    for repo_handle in repo_handles.iter() {
+        for id in repo_ids.iter() {
+            // Create the network adapter.
+            let network = Network::new(sender.clone());
+            repo_handle.new_network_adapter(id.clone(), Box::new(network.clone()));
+            let entry = peers
+                .entry(repo_handle.get_repo_id().clone())
+                .or_insert(HashMap::new());
+            entry.insert(id.clone(), network);
+        }
+    }
+
     // We want each repo to sync the documents created by all other repos.
     for repo_handle in repo_handles.iter_mut() {
         let mut doc_handles = vec![];
-        let repo_id = *repo_handle.get_repo_id();
+        let repo_id = repo_handle.get_repo_id().clone();
         for doc_handle in documents.iter() {
             let doc_id = doc_handle.document_id();
             if doc_id.get_repo_id() == &repo_id {
@@ -207,9 +221,11 @@ fn test_simple_sync() {
         // A router of network messages.
         loop {
             tokio::select! {
-               outgoing_repo = network_receiver.recv() => {
+               msg = network_receiver.recv() => {
+                   let (from_repo_id, to_repo_id) = msg.unwrap();
                    let incoming = {
-                       let peer = peers.get_mut(&outgoing_repo.unwrap()).unwrap();
+                       let peers = peers.get_mut(&from_repo_id).unwrap();
+                       let peer = peers.get_mut(&to_repo_id).unwrap();
                        peer.take_outgoing()
                    };
                    match incoming {
@@ -219,7 +235,8 @@ fn test_simple_sync() {
                            document_id,
                            message,
                        } => {
-                           let peer = peers.get_mut(&to_repo_id).unwrap();
+                           let peers = peers.get_mut(&to_repo_id).unwrap();
+                           let peer = peers.get_mut(&from_repo_id).unwrap();
                            peer.receive_incoming(NetworkEvent::Sync {
                                from_repo_id,
                                to_repo_id,

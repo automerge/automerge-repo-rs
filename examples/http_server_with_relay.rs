@@ -15,8 +15,7 @@ use futures::stream::Stream;
 use futures::task::{Context, Poll, Waker};
 use futures::FutureExt;
 use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
@@ -30,12 +29,44 @@ struct Args {
     relay_ip: String,
 }
 
+#[derive(Clone)]
 struct Network<NetworkMessage> {
     buffer: Arc<Mutex<VecDeque<NetworkEvent>>>,
     stream_waker: Arc<Mutex<Option<Waker>>>,
     outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
     sink_waker: Arc<Mutex<Option<Waker>>>,
     sender: Sender<()>,
+}
+
+impl Network<NetworkMessage> {
+    pub fn new(sender: Sender<()>) -> Self {
+        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let stream_waker = Arc::new(Mutex::new(None));
+        let sink_waker = Arc::new(Mutex::new(None));
+        let outgoing = Arc::new(Mutex::new(VecDeque::new()));
+        Network {
+            buffer: buffer.clone(),
+            stream_waker: stream_waker.clone(),
+            outgoing: outgoing.clone(),
+            sender,
+            sink_waker: sink_waker.clone(),
+        }
+    }
+
+    pub fn receive_incoming(&self, event: NetworkEvent) {
+        self.buffer.lock().push_back(event);
+        if let Some(waker) = self.stream_waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    pub fn take_outgoing(&self) -> Option<NetworkMessage> {
+        let message = self.outgoing.lock().pop_front();
+        if let Some(waker) = self.sink_waker.lock().take() {
+            waker.wake();
+        }
+        message
+    }
 }
 
 impl Stream for Network<NetworkMessage> {
@@ -90,33 +121,20 @@ impl NetworkAdapter for Network<NetworkMessage> {}
 
 fn main() {
     let args = Args::parse();
-    let buffer = Arc::new(Mutex::new(VecDeque::new()));
-    let stream_waker = Arc::new(Mutex::new(None));
-    let sink_waker = Arc::new(Mutex::new(None));
-    let outgoing = Arc::new(Mutex::new(VecDeque::new()));
     let (sender, mut network_receiver) = channel(1);
     let doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>> =
         Arc::new(Mutex::new(Default::default()));
     let peers = Arc::new(Mutex::new(Default::default()));
-    let network = Network {
-        buffer: buffer.clone(),
-        stream_waker: stream_waker.clone(),
-        outgoing: outgoing.clone(),
-        sender,
-        sink_waker: sink_waker.clone(),
-    };
+    let adapter = Network::new(sender.clone());
 
     // Create the repo.
-    let doc_handles_clone = doc_handles.clone();
     let repo = Repo::new(
-        network,
         Some(Box::new(move |synced| {
-            for doc_id in synced {
-                let handles = doc_handles_clone.lock();
-                let doc_handle = handles.get(&doc_id).unwrap();
+            for doc_handle in synced {
                 println!("Synced {:?}", doc_handle.document_id());
             }
         })),
+        None,
     );
 
     // Run the repo in the background.
@@ -130,6 +148,7 @@ fn main() {
 
     // Task that handles outgoing network messages,
     // which are all sent to the relay server.
+    let adapter_clone = adapter.clone();
     let relay_ip = args.relay_ip.clone();
     rt.spawn(async move {
         let client = reqwest::Client::new();
@@ -137,7 +156,8 @@ fn main() {
             if network_receiver.recv().await.is_none() {
                 return;
             }
-            let message = outgoing.lock().pop_front();
+            let message = adapter_clone.take_outgoing();
+            println!("Outoing message: {:?}", message);
             if let Some(NetworkMessage::Sync {
                 from_repo_id,
                 to_repo_id,
@@ -145,9 +165,6 @@ fn main() {
                 message,
             }) = message
             {
-                if let Some(waker) = sink_waker.lock().take() {
-                    waker.wake();
-                }
                 let message = message.encode();
                 let url = format!("http://{}/relay_sync", relay_ip);
                 client
@@ -161,21 +178,30 @@ fn main() {
     });
 
     struct AppState {
-        incoming: Arc<Mutex<VecDeque<NetworkEvent>>>,
         repo_handle: Arc<Mutex<Option<RepoHandle>>>,
         doc_handles: Arc<Mutex<HashMap<DocumentId, DocHandle>>>,
-        stream_waker: Arc<Mutex<Option<Waker>>>,
+        adapter: Network<NetworkMessage>,
+        connected_adapters: Arc<Mutex<HashSet<RepoId>>>,
         peers: Arc<Mutex<HashMap<RepoId, String>>>,
     }
 
     async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
         let doc_handle = state.repo_handle.lock().as_mut().unwrap().new_document();
         let doc_id = doc_handle.document_id();
-        state.doc_handles.lock().insert(doc_id, doc_handle);
+        state.doc_handles.lock().insert(doc_id.clone(), doc_handle);
         Json(doc_id)
     }
 
     async fn load_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
+        state
+            .repo_handle
+            .lock()
+            .as_mut()
+            .unwrap()
+            .new_network_adapter(
+                document_id.get_repo_id().clone(),
+                Box::new(state.adapter.clone()),
+            );
         let doc_handle = state
             .repo_handle
             .lock()
@@ -267,16 +293,22 @@ fn main() {
             Vec<u8>,
         )>,
     ) {
+        // Connect the adapter for the peer if we haven't already.
+        if state.connected_adapters.lock().insert(from_repo_id.clone()) {
+            state
+                .repo_handle
+                .lock()
+                .as_mut()
+                .unwrap()
+                .new_network_adapter(from_repo_id.clone(), Box::new(state.adapter.clone()));
+        }
         let message = SyncMessage::decode(&message).expect("Failed to decode sync mesage.");
-        state.incoming.lock().push_back(NetworkEvent::Sync {
+        state.adapter.receive_incoming(NetworkEvent::Sync {
             from_repo_id,
             to_repo_id,
             document_id,
             message,
         });
-        if let Some(waker) = state.stream_waker.lock().take() {
-            waker.wake();
-        }
     }
 
     async fn print_doc(State(state): State<Arc<AppState>>, Json(id): Json<DocumentId>) {
@@ -287,14 +319,14 @@ fn main() {
         });
     }
 
-    let repo_id = *repo_handle.get_repo_id();
+    let repo_id = repo_handle.get_repo_id().clone();
     let repo_handle = Arc::new(Mutex::new(Some(repo_handle)));
     let app_state = Arc::new(AppState {
-        incoming: buffer,
+        adapter,
         repo_handle: repo_handle.clone(),
         doc_handles,
-        stream_waker,
         peers,
+        connected_adapters: Arc::new(Mutex::new(Default::default())),
     });
 
     let (done_sender, mut done_receiver) = channel(1);

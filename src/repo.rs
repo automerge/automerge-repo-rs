@@ -1,17 +1,17 @@
 use crate::dochandle::{DocHandle, DocState};
 use crate::interfaces::{DocumentId, RepoId};
-use crate::interfaces::{NetworkAdapter, NetworkEvent, NetworkMessage};
+use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::AutoCommit;
 use core::pin::Pin;
-use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::stream::Stream;
 use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll};
 use futures::Sink;
 use parking_lot::{Condvar, Mutex};
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -36,7 +36,9 @@ pub struct RepoError;
 
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
-        drop(self.repo_sender);
+        self.repo_sender
+            .send(RepoEvent::Stop)
+            .expect("Failed to send repo event.");
         self.handle.join().expect("Failed to join on repo.");
         Ok(())
     }
@@ -51,7 +53,7 @@ impl RepoHandle {
             .document_id_counter
             .checked_add(1)
             .expect("Overflowed when creating new document id.");
-        let document_id = DocumentId((self.repo_id, self.document_id_counter));
+        let document_id = DocumentId((self.repo_id.clone(), self.document_id_counter));
         let document = AutoCommit::new();
         self.new_document_handle(None, document_id, document, DocState::Sync)
     }
@@ -76,7 +78,7 @@ impl RepoHandle {
     ) -> DocHandle {
         let document = AutoCommit::new();
         // If no repo id is provided, sync with the creator.
-        let repo_id = repo_id.unwrap_or_else(|| *document_id.get_repo_id());
+        let repo_id = repo_id.unwrap_or_else(|| document_id.get_repo_id().clone());
         self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
     }
 
@@ -92,7 +94,7 @@ impl RepoHandle {
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.repo_sender.clone(),
-            document_id,
+            document_id.clone(),
             state.clone(),
             handle_count.clone(),
             is_ready,
@@ -108,10 +110,19 @@ impl RepoHandle {
             .expect("Failed to send repo event.");
         handle
     }
+
+    pub fn new_network_adapter(
+        &self,
+        repo_id: RepoId,
+        network_adapter: Box<dyn NetworkAdapter<Error = NetworkError>>,
+    ) {
+        self.repo_sender
+            .send(RepoEvent::ConnectNetworkAdapter(repo_id, network_adapter))
+            .expect("Failed to send repo event.");
+    }
 }
 
 /// Events sent by repo or doc handles to the repo.
-#[derive(Debug)]
 pub(crate) enum RepoEvent {
     /// Load a document,
     // repo id is the repo to start syncing with,
@@ -121,6 +132,8 @@ pub(crate) enum RepoEvent {
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
+    ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
+    Stop,
 }
 
 /// Info about a document.
@@ -153,7 +166,10 @@ impl DocumentInfo {
 
     /// Apply incoming sync messages.
     fn receive_sync_message(&mut self, repo_id: RepoId, message: SyncMessage) {
-        let sync_state = self.sync_states.entry(repo_id).or_insert(SyncState::new());
+        let sync_state = self
+            .sync_states
+            .entry(repo_id)
+            .or_insert_with(SyncState::new);
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
         let mut sync = state.1.sync();
@@ -163,7 +179,10 @@ impl DocumentInfo {
 
     /// Potentially generate an outgoing sync message.
     fn generate_first_sync_message(&mut self, repo_id: RepoId) -> Option<SyncMessage> {
-        let sync_state = self.sync_states.entry(repo_id).or_insert(SyncState::new());
+        let sync_state = self
+            .sync_states
+            .entry(repo_id)
+            .or_insert_with(SyncState::new);
         let (lock, _cvar) = &*self.state;
         lock.lock().1.sync().generate_sync_message(sync_state)
     }
@@ -175,84 +194,87 @@ impl DocumentInfo {
             .filter_map(|(repo_id, sync_state)| {
                 let (lock, _cvar) = &*self.state;
                 let message = lock.lock().1.sync().generate_sync_message(sync_state);
-                message.map(|msg| (*repo_id, msg))
+                message.map(|msg| (repo_id.clone(), msg))
             })
             .collect()
     }
 }
 
 /// Signal that the stream or sink on the network adapter is ready to be polled.
+#[derive(Debug)]
 enum WakeSignal {
-    Stream,
-    Sink,
+    Stream(RepoId),
+    Sink(RepoId),
 }
 
 /// Waking mechanism for stream and sinks.
+#[derive(Debug)]
 enum RepoWaker {
-    Stream(Sender<WakeSignal>),
-    Sink(Sender<WakeSignal>),
+    Stream(Sender<WakeSignal>, RepoId),
+    Sink(Sender<WakeSignal>, RepoId),
 }
 
 /// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
 impl ArcWake for RepoWaker {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        let err = match &**arc_self {
-            RepoWaker::Stream(sender) => sender.try_send(WakeSignal::Stream),
-            RepoWaker::Sink(sender) => sender.try_send(WakeSignal::Sink),
+        let res = match &**arc_self {
+            RepoWaker::Stream(sender, repo_id) => sender.send(WakeSignal::Stream(repo_id.clone())),
+            RepoWaker::Sink(sender, repo_id) => sender.send(WakeSignal::Sink(repo_id.clone())),
         };
-        if let Err(TrySendError::Disconnected(_)) = err {
+        if res.is_err() {
             panic!("Wake sender disconnected.");
         }
     }
 }
 
 /// The backend of a repo: the repo runs an event-loop in a background thread.
-pub struct Repo<T: NetworkAdapter> {
+pub struct Repo {
     /// The Id of the repo.
     repo_id: RepoId,
 
-    network_adapter: Box<T>,
+    network_adapters: HashMap<RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>>,
     documents: HashMap<DocumentId, DocumentInfo>,
 
-    stream_waker: Arc<RepoWaker>,
-    sink_waker: Arc<RepoWaker>,
-
     /// Messages to send on the network adapter sink.
-    pending_messages: VecDeque<NetworkMessage>,
+    pending_messages: HashMap<RepoId, VecDeque<NetworkMessage>>,
     /// Events received on the network stream, pending processing.
     pending_events: VecDeque<NetworkEvent>,
 
     /// Callback on applying sync messages.
-    sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+    sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
 
     /// Receiver of network stream and sink readiness signals.
     wake_receiver: Receiver<WakeSignal>,
+    wake_sender: Sender<WakeSignal>,
+
+    streams_to_poll: HashSet<RepoId>,
+    sinks_to_poll: HashSet<RepoId>,
 
     /// Sender and receiver of repo events.
-    repo_sender: Option<Sender<RepoEvent>>,
+    repo_sender: Sender<RepoEvent>,
     repo_receiver: Receiver<RepoEvent>,
 }
 
-impl<T: NetworkAdapter + 'static> Repo<T> {
+impl Repo {
     /// Create a new repo.
     pub fn new(
-        network_adapter: T,
-        sync_observer: Option<Box<dyn Fn(Vec<DocumentId>) + Send>>,
+        sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
+        repo_id: Option<String>,
     ) -> Self {
-        let (wake_sender, wake_receiver) = bounded(2);
+        let (wake_sender, wake_receiver) = unbounded();
         let (repo_sender, repo_receiver) = unbounded();
-        let stream_waker = Arc::new(RepoWaker::Stream(wake_sender.clone()));
-        let sink_waker = Arc::new(RepoWaker::Sink(wake_sender));
+        let repo_id = repo_id.map_or_else(|| RepoId(Uuid::new_v4().to_string()), RepoId);
         Repo {
-            repo_id: RepoId(Uuid::new_v4()),
+            repo_id,
             documents: Default::default(),
-            network_adapter: Box::new(network_adapter),
+            network_adapters: Default::default(),
             wake_receiver,
-            stream_waker,
-            sink_waker,
+            wake_sender,
+            streams_to_poll: Default::default(),
+            sinks_to_poll: Default::default(),
             pending_messages: Default::default(),
             pending_events: Default::default(),
-            repo_sender: Some(repo_sender),
+            repo_sender,
             repo_receiver,
             sync_observer,
         }
@@ -262,55 +284,114 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
         &self.repo_id
     }
 
+    /// Remove sync states for repos for which we do not have an adapter anymore.
+    fn remove_unused_sync_states(&mut self) {
+        for document_info in self.documents.values_mut() {
+            document_info
+                .sync_states
+                .drain_filter(|repo_id, _| !self.network_adapters.contains_key(repo_id));
+        }
+    }
+
+    /// Remove pending messages for repos for which we do not have an adapter anymore.
+    fn remove_unused_pending_messages(&mut self) {
+        self.pending_messages
+            .drain_filter(|repo_id, _| !self.network_adapters.contains_key(repo_id));
+    }
+
     /// Poll the network adapter stream.
     fn collect_network_events(&mut self) {
-        // Collect as many events as possible.
-        loop {
-            let waker = waker_ref(&self.stream_waker);
-            let pinned_stream = Pin::new(&mut self.network_adapter);
-            let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Some(event)) => self.pending_events.push_back(event),
-                Poll::Ready(None) => return,
+        // Receive incoming message on streams,
+        // discarding streams that error.
+        let to_poll = mem::take(&mut self.streams_to_poll);
+        for repo_id in to_poll {
+            let should_be_removed =
+                if let Some(mut network_adapter) = self.network_adapters.get_mut(&repo_id) {
+                    // Collect as many events as possible.
+                    loop {
+                        let stream_waker =
+                            Arc::new(RepoWaker::Stream(self.wake_sender.clone(), repo_id.clone()));
+                        let waker = waker_ref(&stream_waker);
+                        let pinned_stream = Pin::new(&mut network_adapter);
+                        let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
+                        match result {
+                            Poll::Pending => break false,
+                            Poll::Ready(Some(event)) => self.pending_events.push_back(event),
+                            Poll::Ready(None) => break true,
+                        }
+                    }
+                } else {
+                    continue;
+                };
+            if should_be_removed {
+                self.network_adapters.remove(&repo_id);
             }
         }
     }
 
     /// Try to send pending messages on the network sink.
     fn process_outgoing_network_messages(&mut self) {
-        // Send as many messages as possible.
-        let mut needs_flush = false;
-        loop {
-            if self.pending_messages.is_empty() {
-                break;
-            }
-            let waker = waker_ref(&self.sink_waker);
-            let pinned_sink = Pin::new(&mut self.network_adapter);
-            let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
-            match result {
-                Poll::Pending => break,
-                Poll::Ready(Ok(())) => {
-                    let pinned_sink = Pin::new(&mut self.network_adapter);
-                    let result = pinned_sink.start_send(
-                        self.pending_messages
-                            .pop_front()
-                            .expect("Empty pending messages."),
-                    );
-                    if result.is_err() {
-                        return;
+        // Send outgoing message on sinks,
+        // discarding sinks that error.
+        let to_poll = mem::take(&mut self.sinks_to_poll);
+        for repo_id in to_poll {
+            let should_be_removed =
+                if let Some(mut network_adapter) = self.network_adapters.get_mut(&repo_id) {
+                    // Send as many messages as possible.
+                    let mut needs_flush = false;
+                    let mut discard = false;
+                    loop {
+                        let pending_messages = self
+                            .pending_messages
+                            .entry(repo_id.clone())
+                            .or_insert_with(Default::default);
+                        if pending_messages.is_empty() {
+                            break;
+                        }
+                        let sink_waker =
+                            Arc::new(RepoWaker::Sink(self.wake_sender.clone(), repo_id.clone()));
+                        let waker = waker_ref(&sink_waker);
+                        let pinned_sink = Pin::new(&mut network_adapter);
+                        let result = pinned_sink.poll_ready(&mut Context::from_waker(&waker));
+                        match result {
+                            Poll::Pending => break,
+                            Poll::Ready(Ok(())) => {
+                                let pinned_sink = Pin::new(&mut network_adapter);
+                                let result = pinned_sink.start_send(
+                                    pending_messages
+                                        .pop_front()
+                                        .expect("Empty pending messages."),
+                                );
+                                if result.is_err() {
+                                    discard = true;
+                                    needs_flush = false;
+                                    break;
+                                }
+                                needs_flush = true;
+                            }
+                            Poll::Ready(Err(_)) => {
+                                discard = true;
+                                needs_flush = false;
+                                break;
+                            }
+                        }
                     }
-                    needs_flush = true;
-                }
-                Poll::Ready(Err(_)) => return,
-            }
-        }
 
-        // Flusk the sink if any messages have been sent.
-        if needs_flush {
-            let waker = waker_ref(&self.sink_waker);
-            let pinned_sink = Pin::new(&mut self.network_adapter);
-            let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+                    // Flusk the sink if any messages have been sent.
+                    if needs_flush {
+                        let sink_waker =
+                            Arc::new(RepoWaker::Sink(self.wake_sender.clone(), repo_id.clone()));
+                        let waker = waker_ref(&sink_waker);
+                        let pinned_sink = Pin::new(&mut network_adapter);
+                        let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+                    }
+                    discard
+                } else {
+                    continue;
+                };
+            if should_be_removed {
+                self.network_adapters.remove(&repo_id);
+            }
         }
     }
 
@@ -318,16 +399,26 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     fn handle_repo_event(&mut self, event: RepoEvent) {
         match event {
             RepoEvent::NewDocHandle(repo_id, document_id, mut info) => {
-                // Send a sync message to the creator, unless it is the local repo.
+                // Send a sync message to the creator,
+                // unless it is the local repo,
+                // and all other repos we are connected with.
+                let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
                 if let Some(repo_id) = repo_id {
-                    if let Some(message) = info.generate_first_sync_message(repo_id) {
+                    repo_ids.push(repo_id);
+                }
+                for repo_id in repo_ids {
+                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
                         let outgoing = NetworkMessage::Sync {
-                            from_repo_id: *self.get_repo_id(),
-                            to_repo_id: repo_id,
-                            document_id,
+                            from_repo_id: self.get_repo_id().clone(),
+                            to_repo_id: repo_id.clone(),
+                            document_id: document_id.clone(),
                             message,
                         };
-                        self.pending_messages.push_back(outgoing);
+                        self.pending_messages
+                            .entry(repo_id.clone())
+                            .or_insert_with(Default::default)
+                            .push_back(outgoing);
+                        self.sinks_to_poll.insert(repo_id);
                     }
                 }
                 self.documents.insert(document_id, info);
@@ -337,12 +428,16 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
-                            from_repo_id: *self.get_repo_id(),
-                            to_repo_id,
-                            document_id: doc_id,
+                            from_repo_id: self.get_repo_id().clone(),
+                            to_repo_id: to_repo_id.clone(),
+                            document_id: doc_id.clone(),
                             message,
                         };
-                        self.pending_messages.push_back(outgoing);
+                        self.pending_messages
+                            .entry(to_repo_id.clone())
+                            .or_insert_with(Default::default)
+                            .push_back(outgoing);
+                        self.sinks_to_poll.insert(to_repo_id);
                     }
                 }
             }
@@ -355,6 +450,36 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
                     panic!("Document closed with outstanding handles.");
                 }
+            }
+            RepoEvent::ConnectNetworkAdapter(repo_id, adapter) => {
+                self.network_adapters
+                    .entry(repo_id.clone())
+                    .and_modify(|_| {
+                        // TODO: close the existing stream/sink?
+                    })
+                    .or_insert(adapter);
+
+                // Try to sync all docs we know about.
+                let our_id = self.get_repo_id().clone();
+                for (document_id, info) in self.documents.iter_mut() {
+                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: our_id.clone(),
+                            to_repo_id: repo_id.clone(),
+                            document_id: document_id.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(repo_id.clone())
+                            .or_insert_with(Default::default)
+                            .push_back(outgoing);
+                    }
+                }
+                self.sinks_to_poll.insert(repo_id.clone());
+                self.streams_to_poll.insert(repo_id);
+            }
+            RepoEvent::Stop => {
+                // Handled in the main run loop.
             }
         }
     }
@@ -372,35 +497,67 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                     document_id,
                     message,
                 } => {
-                    if let Some(info) = self.documents.get_mut(&document_id) {
-                        info.receive_sync_message(from_repo_id, message);
-                        synced.push(document_id);
-                        // Note: since receiving and generating sync messages is done
-                        // in two separate critical sections,
-                        // local changes could be made in between those,
-                        // which is a good thing(generated messages will include those changes).
-                        for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
-                            if !message.heads.is_empty() && message.need.is_empty() {
-                                info.set_ready();
+                    // If we don't know about the document,
+                    // create a new sync state and start syncing.
+                    // Note: this is the mirror of sending sync messages for
+                    // all known documents when a remote repo connects.
+                    let info = self
+                        .documents
+                        .entry(document_id.clone())
+                        .or_insert_with(|| {
+                            let document = AutoCommit::new();
+                            let state = Arc::new((
+                                Mutex::new((DocState::Bootstrap, document)),
+                                Condvar::new(),
+                            ));
+                            let handle_count = Arc::new(AtomicUsize::new(0));
+                            DocumentInfo {
+                                state,
+                                handle_count,
+                                sync_states: Default::default(),
+                                is_ready: false,
                             }
-                            let outgoing = NetworkMessage::Sync {
-                                from_repo_id: local_repo_id,
-                                to_repo_id,
-                                document_id,
-                                message,
-                            };
-                            self.pending_messages.push_back(outgoing);
+                        });
+
+                    // Create a handle and pass it to the sync observer.
+                    info.handle_count.fetch_add(1, Ordering::SeqCst);
+                    let handle = DocHandle::new(
+                        self.repo_sender.clone(),
+                        document_id.clone(),
+                        info.state.clone(),
+                        info.handle_count.clone(),
+                        info.is_ready,
+                    );
+                    synced.push(handle);
+
+                    info.receive_sync_message(from_repo_id, message);
+                    // Note: since receiving and generating sync messages is done
+                    // in two separate critical sections,
+                    // local changes could be made in between those,
+                    // which is a good thing(generated messages will include those changes).
+                    for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
+                        if !message.heads.is_empty() && message.need.is_empty() {
+                            info.set_ready();
                         }
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: local_repo_id.clone(),
+                            to_repo_id: to_repo_id.clone(),
+                            document_id: document_id.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(to_repo_id.clone())
+                            .or_insert_with(Default::default)
+                            .push_back(outgoing);
+                        self.sinks_to_poll.insert(to_repo_id);
                     }
                 }
             }
         }
 
         // Notify the client of synced documents.
-        if let Some(observer) = self.sync_observer.as_ref() {
-            if !synced.is_empty() {
-                observer(synced);
-            }
+        if let Some(observer) = self.sync_observer.as_ref().filter(|_| !synced.is_empty()) {
+            observer(synced);
         }
     }
 
@@ -408,11 +565,13 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
     /// Handles events from handles and adapters.
     /// Returns a handle for optional clean shutdown.
     pub fn run(mut self) -> RepoHandle {
-        let repo_sender = self.repo_sender.take().unwrap();
-        let repo_id = self.repo_id;
+        let repo_sender = self.repo_sender.clone();
+        let repo_id = self.repo_id.clone();
         let document_id_counter = Default::default();
 
         // Run the repo's event-loop in a thread.
+        // The repo shuts down
+        // when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
             loop {
                 // Poll streams and sinks at the start of each iteration.
@@ -421,23 +580,35 @@ impl<T: NetworkAdapter + 'static> Repo<T> {
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
+                self.remove_unused_sync_states();
+                self.remove_unused_pending_messages();
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
-                            self.handle_repo_event(event);
+                            match event {
+                                RepoEvent::Stop => break,
+                                event => self.handle_repo_event(event),
+                            }
                         } else {
-                            // The repo shuts down
-                            // once all handles and collections drop.
-                            break;
+                            panic!("Repo handle dropped before calling `stop`");
                         }
                     },
                     recv(self.wake_receiver) -> event => {
                         if event.is_err() {
                             panic!("Wake senders dropped");
                         }
+                        match event.unwrap() {
+                            WakeSignal::Stream(repo_id) => {
+                                self.streams_to_poll.insert(repo_id);
+                            },
+                            WakeSignal::Sink(repo_id) => {
+                                self.sinks_to_poll.insert(repo_id);
+                            },
+                        }
                     },
                 }
             }
+            // TODO: close sinks and streams?
         });
         RepoHandle {
             handle,

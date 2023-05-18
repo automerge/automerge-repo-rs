@@ -8,6 +8,10 @@ path = "src/lib.rs"
 name = "http-server-with-relay"
 path = "examples/http_server_with_relay.rs"
 
+[[example]]
+name = "tcp-example"
+path = "examples/tcp_example.rs"
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -24,3 +28,6 @@ clap = { version = "4.2.5", features = ["derive"] }
 reqwest = { version = "0.11.17", features = ["json"] }
 axum = { version = "0.6.18" }
 tokio = { version = "1.27", features = ["full"] }
+tokio-util = "0.7.8"
+tokio-serde = {version = "0.8.0", features = ["json"]}
+serde_json = "1.0.96"

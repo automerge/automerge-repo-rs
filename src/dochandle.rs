@@ -36,7 +36,7 @@ impl Clone for DocHandle {
         self.handle_count.fetch_add(1, Ordering::SeqCst);
         DocHandle::new(
             self.repo_sender.clone(),
-            self.document_id,
+            self.document_id.clone(),
             self.state.clone(),
             self.handle_count.clone(),
             self.is_ready,
@@ -49,7 +49,7 @@ impl Drop for DocHandle {
         // Close the document when the last handle drops.
         if self.handle_count.fetch_sub(1, Ordering::SeqCst) == 0 {
             self.repo_sender
-                .send(RepoEvent::DocClosed(self.document_id))
+                .send(RepoEvent::DocClosed(self.document_id.clone()))
                 .expect("Failed to send doc close event.");
         }
     }
@@ -73,7 +73,7 @@ impl DocHandle {
     }
 
     pub fn document_id(&self) -> DocumentId {
-        self.document_id
+        self.document_id.clone()
     }
 
     /// Run a closure over a mutable reference to the document.
@@ -93,7 +93,7 @@ impl DocHandle {
             f(&mut state.1);
         }
         self.repo_sender
-            .send(RepoEvent::DocChange(self.document_id))
+            .send(RepoEvent::DocChange(self.document_id.clone()))
             .expect("Failed to send doc change event.");
     }
 
