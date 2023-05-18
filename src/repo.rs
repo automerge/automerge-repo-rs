@@ -84,7 +84,6 @@ impl RepoHandle {
         document: AutoCommitWithObs<Observed<VecOpObserver>>,
         state: DocState,
     ) -> DocHandle {
-        let is_ready = matches!(state, DocState::Sync);
         let shared_document = SharedDocument {
             state: DocState::Bootstrap,
             automerge: document,
@@ -102,7 +101,6 @@ impl RepoHandle {
             state,
             handle_count,
             sync_states: Default::default(),
-            is_ready,
             patches_since_last_save: 0,
         };
         self.repo_sender
@@ -146,21 +144,13 @@ pub(crate) struct DocumentInfo {
     handle_count: Arc<AtomicUsize>,
     /// Per repo automerge sync state.
     sync_states: HashMap<RepoId, SyncState>,
-    /// Flag set to true once the doc reaches `DocState::Sync`.
-    is_ready: bool,
     patches_since_last_save: usize,
 }
 
 impl DocumentInfo {
-    /// Mark the document as ready for editing,
-    /// wakes-up all doc handles that are waiting inside `wait_ready`.
-    fn set_ready(&mut self) {
-        if self.is_ready {
-            return;
-        }
+    fn is_boostrapping(&self) -> bool {
         let mut state = self.state.lock();
-        state.state = DocState::Sync;
-        self.is_ready = true;
+        state.state == DocState::Bootstrap
     }
 
     fn note_changes(&mut self) {
@@ -335,7 +325,6 @@ impl Repo {
                     state,
                     handle_count,
                     sync_states: Default::default(),
-                    is_ready: true,
                     patches_since_last_save: 0,
                 };
                 self.documents.insert(doc_id, doc_info);
@@ -470,7 +459,7 @@ impl Repo {
         match event {
             RepoEvent::NewDoc(repo_id, document_id, mut info) => {
                 // If this is a bootsrapped document.
-                if !(document_id.get_repo_id() == self.get_repo_id()) {
+                if info.is_boostrapping() {
                     // Send a sync message to all other repos we are connected with.
                     let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
                     if let Some(repo_id) = repo_id {
@@ -588,21 +577,10 @@ impl Repo {
                                 state,
                                 handle_count,
                                 sync_states: Default::default(),
-                                is_ready: true,
                                 patches_since_last_save: 0,
                             }
                         });
 
-                    // Create a handle and pass it to the sync observer.
-                    info.handle_count.fetch_add(1, Ordering::SeqCst);
-                    let handle = DocHandle::new(
-                        self.repo_sender.clone(),
-                        document_id.clone(),
-                        info.state.clone(),
-                        info.handle_count.clone(),
-                        self.repo_id.clone(),
-                    );
-                    synced.push(handle);
                     info.note_changes();
                     self.pending_saves.push(document_id.clone());
 
@@ -611,9 +589,10 @@ impl Repo {
                     // in two separate critical sections,
                     // local changes could be made in between those,
                     // which is a good thing(generated messages will include those changes).
+                    let mut ready = true;
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
-                        if !message.heads.is_empty() && message.need.is_empty() {
-                            info.set_ready();
+                        if message.heads.is_empty() && !message.need.is_empty() {
+                            ready = false;
                         }
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -626,6 +605,18 @@ impl Repo {
                             .or_insert_with(Default::default)
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
+                    }
+                    if ready {
+                        // Create a handle and pass it to the sync observer.
+                        info.handle_count.fetch_add(1, Ordering::SeqCst);
+                        let handle = DocHandle::new(
+                            self.repo_sender.clone(),
+                            document_id.clone(),
+                            info.state.clone(),
+                            info.handle_count.clone(),
+                            self.repo_id.clone(),
+                        );
+                        synced.push(handle);
                     }
                 }
             }
