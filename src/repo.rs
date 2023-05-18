@@ -1,4 +1,4 @@
-use crate::dochandle::{DocHandle, DocState};
+use crate::dochandle::{DocHandle, DocState, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
@@ -87,7 +87,11 @@ impl RepoHandle {
         state: DocState,
     ) -> DocHandle {
         let is_ready = matches!(state, DocState::Sync);
-        let state = Arc::new((Mutex::new((state, document)), Condvar::new()));
+        let shared_document = SharedDocument {
+            state: DocState::Bootstrap,
+            automerge: document,
+        };
+        let state = Arc::new((Mutex::new(shared_document), Condvar::new()));
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.repo_sender.clone(),
@@ -139,10 +143,7 @@ pub(crate) enum RepoEvent {
 pub(crate) struct DocumentInfo {
     /// State of the document(shared with handles).
     /// Document used to apply and generate sync messages.
-    state: Arc<(
-        Mutex<(DocState, AutoCommitWithObs<Observed<VecOpObserver>>)>,
-        Condvar,
-    )>,
+    state: Arc<(Mutex<SharedDocument>, Condvar)>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
     /// Per repo automerge sync state.
@@ -161,7 +162,7 @@ impl DocumentInfo {
         }
         let (lock, cvar) = &*self.state;
         let mut state = lock.lock();
-        state.0 = DocState::Sync;
+        state.state = DocState::Sync;
         cvar.notify_all();
         self.is_ready = true;
     }
@@ -169,7 +170,7 @@ impl DocumentInfo {
     fn note_changes(&mut self) {
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
-        let observer = state.1.observer();
+        let observer = state.automerge.observer();
         let _ = self
             .patches_since_last_save
             .checked_add(observer.take_patches().len());
@@ -183,7 +184,7 @@ impl DocumentInfo {
             .or_insert_with(SyncState::new);
         let (lock, _cvar) = &*self.state;
         let mut state = lock.lock();
-        let mut sync = state.1.sync();
+        let mut sync = state.automerge.sync();
         sync.receive_sync_message(sync_state, message)
             .expect("Failed to apply sync message.");
     }
@@ -195,7 +196,10 @@ impl DocumentInfo {
             .entry(repo_id)
             .or_insert_with(SyncState::new);
         let (lock, _cvar) = &*self.state;
-        lock.lock().1.sync().generate_sync_message(sync_state)
+        lock.lock()
+            .automerge
+            .sync()
+            .generate_sync_message(sync_state)
     }
 
     /// Generate outgoing sync message for all repos we are syncing with.
@@ -204,7 +208,11 @@ impl DocumentInfo {
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
                 let (lock, _cvar) = &*self.state;
-                let message = lock.lock().1.sync().generate_sync_message(sync_state);
+                let message = lock
+                    .lock()
+                    .automerge
+                    .sync()
+                    .generate_sync_message(sync_state);
                 message.map(|msg| (repo_id.clone(), msg))
             })
             .collect()
@@ -521,11 +529,11 @@ impl Repo {
                         .documents
                         .entry(document_id.clone())
                         .or_insert_with(|| {
-                            let document = new_document_with_observer();
-                            let state = Arc::new((
-                                Mutex::new((DocState::Bootstrap, document)),
-                                Condvar::new(),
-                            ));
+                            let shared_document = SharedDocument {
+                                state: DocState::Bootstrap,
+                                automerge: new_document_with_observer(),
+                            };
+                            let state = Arc::new((Mutex::new(shared_document), Condvar::new()));
                             let handle_count = Arc::new(AtomicUsize::new(0));
                             DocumentInfo {
                                 state,

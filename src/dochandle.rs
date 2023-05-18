@@ -16,15 +16,19 @@ pub(crate) enum DocState {
     Sync,
 }
 
+/// A wrapper around a document shared between a handle and the repo.
+#[derive(Clone, Debug)]
+pub(crate) struct SharedDocument {
+    pub state: DocState,
+    pub automerge: AutoCommitWithObs<Observed<VecOpObserver>>,
+}
+
 #[derive(Debug)]
 /// A handle to a document, held by the client.
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
     /// Document used by the handle for local editing.
-    state: Arc<(
-        Mutex<(DocState, AutoCommitWithObs<Observed<VecOpObserver>>)>,
-        Condvar,
-    )>,
+    shared_document: Arc<(Mutex<SharedDocument>, Condvar)>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
@@ -41,7 +45,7 @@ impl Clone for DocHandle {
         DocHandle::new(
             self.repo_sender.clone(),
             self.document_id.clone(),
-            self.state.clone(),
+            self.shared_document.clone(),
             self.handle_count.clone(),
             self.is_ready,
         )
@@ -63,15 +67,12 @@ impl DocHandle {
     pub(crate) fn new(
         repo_sender: Sender<RepoEvent>,
         document_id: DocumentId,
-        state: Arc<(
-            Mutex<(DocState, AutoCommitWithObs<Observed<VecOpObserver>>)>,
-            Condvar,
-        )>,
+        shared_document: Arc<(Mutex<SharedDocument>, Condvar)>,
         handle_count: Arc<AtomicUsize>,
         is_ready: bool,
     ) -> Self {
         DocHandle {
-            state,
+            shared_document,
             repo_sender,
             document_id,
             handle_count,
@@ -95,9 +96,9 @@ impl DocHandle {
             self.wait_ready();
         }
         {
-            let (lock, _cvar) = &*self.state;
+            let (lock, _cvar) = &*self.shared_document;
             let mut state = lock.lock();
-            f(&mut state.1);
+            f(&mut state.automerge);
         }
         self.repo_sender
             .send(RepoEvent::DocChange(self.document_id.clone()))
@@ -116,10 +117,10 @@ impl DocHandle {
         if self.is_ready {
             return;
         }
-        let (lock, cvar) = &*self.state;
+        let (lock, cvar) = &*self.shared_document;
         let mut state = lock.lock();
         loop {
-            match state.0 {
+            match state.state {
                 DocState::Sync => break,
                 DocState::Bootstrap => cvar.wait(&mut state),
             }
