@@ -1,6 +1,8 @@
 use crate::dochandle::{DocHandle, DocState, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
-use crate::interfaces::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage};
+use crate::interfaces::{
+    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter,
+};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::transaction::Observed;
 use automerge::VecOpObserver;
@@ -274,6 +276,7 @@ pub struct Repo {
     repo_receiver: Receiver<RepoEvent>,
 
     pending_saves: Vec<DocumentId>,
+    storage: Box<dyn StorageAdapter>,
 }
 
 impl Repo {
@@ -281,6 +284,7 @@ impl Repo {
     pub fn new(
         sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
         repo_id: Option<String>,
+        storage: Box<dyn StorageAdapter>,
     ) -> Self {
         let (wake_sender, wake_receiver) = unbounded();
         let (repo_sender, repo_receiver) = unbounded();
@@ -299,6 +303,7 @@ impl Repo {
             repo_receiver,
             sync_observer,
             pending_saves: Default::default(),
+            storage,
         }
     }
 

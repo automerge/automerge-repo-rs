@@ -3,7 +3,7 @@ use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{
     DocHandle, DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo,
-    RepoHandle, RepoId,
+    RepoHandle, RepoId, StorageAdapter,
 };
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
@@ -119,6 +119,10 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
 
 impl NetworkAdapter for Network<NetworkMessage> {}
 
+struct Storage;
+
+impl StorageAdapter for Storage {}
+
 fn main() {
     let args = Args::parse();
     let (sender, mut network_receiver) = channel(1);
@@ -135,6 +139,7 @@ fn main() {
             }
         })),
         None,
+        Box::new(Storage),
     );
 
     // Run the repo in the background.

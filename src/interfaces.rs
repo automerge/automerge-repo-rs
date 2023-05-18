@@ -65,3 +65,13 @@ pub trait NetworkAdapter:
     Send + Unpin + Stream<Item = NetworkEvent> + Sink<NetworkMessage>
 {
 }
+
+pub trait StorageAdapter: Send {
+    fn get(&self, id: DocumentId) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn append(&self, id: DocumentId, changes: Vec<u8>) {}
+
+    fn compact(&self, id: DocumentId) {}
+}

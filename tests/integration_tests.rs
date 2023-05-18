@@ -1,6 +1,8 @@
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo, RepoId};
+use automerge_repo::{
+    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo, RepoId, StorageAdapter,
+};
 use core::pin::Pin;
 use futures::sink::Sink;
 use futures::stream::Stream;
@@ -115,10 +117,14 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
 
 impl NetworkAdapter for Network<NetworkMessage> {}
 
+struct Storage;
+
+impl StorageAdapter for Storage {}
+
 #[test]
 fn test_repo_stop() {
     // Create the repo.
-    let repo = Repo::new(None, None);
+    let repo = Repo::new(None, None, Box::new(Storage));
 
     // Run the repo in the background.
     let repo_handle = repo.run();
@@ -137,7 +143,7 @@ fn test_simple_sync() {
 
     for _ in 1..10 {
         // Create the repo.
-        let repo = Repo::new(None, None);
+        let repo = Repo::new(None, None, Box::new(Storage));
         let mut repo_handle = repo.run();
 
         // Create a document.

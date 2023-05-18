@@ -6,6 +6,6 @@ mod repo;
 
 pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{
-    DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, RepoId,
+    DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, RepoId, StorageAdapter,
 };
 pub use crate::repo::{Repo, RepoHandle};
