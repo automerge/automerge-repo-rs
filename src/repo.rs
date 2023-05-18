@@ -178,6 +178,20 @@ impl DocumentInfo {
             .checked_add(observer.take_patches().len());
     }
 
+    fn save_document(&mut self, document_id: DocumentId, storage: &dyn StorageAdapter) {
+        if self.patches_since_last_save > 10 {
+            storage.compact(document_id);
+        } else {
+            let to_save = {
+                let (lock, cvar) = &*self.state;
+                let mut state = lock.lock();
+                state.automerge.save_incremental()
+            };
+            storage.append(document_id, to_save);
+        }
+        self.patches_since_last_save = 0;
+    }
+
     /// Apply incoming sync messages.
     fn receive_sync_message(&mut self, repo_id: RepoId, message: SyncMessage) {
         let sync_state = self
@@ -309,6 +323,50 @@ impl Repo {
 
     fn get_repo_id(&self) -> &RepoId {
         &self.repo_id
+    }
+
+    /// Called on start-up.
+    fn load_locally_stored_documents(&mut self) {
+        let new_docs = self
+            .storage
+            .load_all()
+            .into_iter()
+            .map(|(doc_id, data)| {
+                let document = new_document_with_observer();
+                let shared_document = SharedDocument {
+                    state: DocState::Sync,
+                    automerge: document,
+                };
+                let state = Arc::new((Mutex::new(shared_document), Condvar::new()));
+                let handle_count = Arc::new(AtomicUsize::new(1));
+                let handle = DocHandle::new(
+                    self.repo_sender.clone(),
+                    doc_id.clone(),
+                    state.clone(),
+                    handle_count.clone(),
+                    true,
+                );
+                let doc_info = DocumentInfo {
+                    state,
+                    handle_count,
+                    sync_states: Default::default(),
+                    is_ready: true,
+                    patches_since_last_save: 0,
+                };
+                self.documents.insert(doc_id, doc_info);
+                handle
+            })
+            .collect();
+        self.notify_synced(new_docs);
+    }
+
+    /// Save documents that have changed to storage.
+    fn save_changed_document(&mut self) {
+        for doc_id in mem::take(&mut self.pending_saves) {
+            if let Some(info) = self.documents.get_mut(&doc_id) {
+                info.save_document(doc_id, self.storage.as_ref());
+            }
+        }
     }
 
     /// Remove sync states for repos for which we do not have an adapter anymore.
@@ -586,7 +644,11 @@ impl Repo {
                 }
             }
         }
+        self.notify_synced(synced);
+    }
 
+    // TODO: better name? Also called when loading from storage on startup.
+    fn notify_synced(&self, synced: Vec<DocHandle>) {
         // Notify the client of synced documents.
         if let Some(observer) = self.sync_observer.as_ref().filter(|_| !synced.is_empty()) {
             observer(synced);
@@ -605,6 +667,7 @@ impl Repo {
         // The repo shuts down
         // when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
+            self.load_locally_stored_documents();
             loop {
                 // Poll streams and sinks at the start of each iteration.
                 // Required, in combination with `try_send` on the wakers,

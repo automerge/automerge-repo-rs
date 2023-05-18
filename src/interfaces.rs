@@ -71,6 +71,10 @@ pub trait StorageAdapter: Send {
         None
     }
 
+    fn load_all(&self) -> Vec<(DocumentId, Vec<u8>)> {
+        vec![]
+    }
+
     fn append(&self, id: DocumentId, changes: Vec<u8>) {}
 
     fn compact(&self, id: DocumentId) {}
