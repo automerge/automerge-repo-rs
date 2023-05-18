@@ -522,7 +522,10 @@ impl Repo {
                         // TODO: close the existing stream/sink?
                     })
                     .or_insert(adapter);
-
+                    
+                // TODO: do not sync docs that have been locally created
+                // and not locally edited yet. 
+                
                 // Try to sync all docs we know about.
                 let our_id = self.get_repo_id().clone();
                 for (document_id, info) in self.documents.iter_mut() {
