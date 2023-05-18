@@ -138,21 +138,32 @@ fn test_simple_sync() {
     let (sender, mut network_receiver) = channel(1);
     let mut repo_handles = vec![];
     let mut documents = vec![];
-    let mut docs_to_sync = HashMap::new();
     let mut peers = HashMap::new();
-    let synced_docs = Arc::new(Mutex::new(HashMap::new()));
+    let synced = Arc::new(Mutex::new(0));
+    let (done_sync_sender, mut done_sync_receiver) = channel(1);
 
     for _ in 1..10 {
         // Create the repo.
-        let sync_docs_clone = synced_docs.clone();
+        let synced_clone = synced.clone();
+        let done_sync_sender = done_sync_sender.clone();
         let repo = Repo::new(
             Some(Box::new(move |synced| {
-                let mut synced_docs = sync_docs_clone.lock();
-                for doc_handle in synced {
-                    let entry = synced_docs
-                        .entry(doc_handle.local_repo_id())
-                        .or_insert(HashMap::new());
-                    entry.insert(doc_handle.document_id(), doc_handle);
+                let mut sync_count = synced_clone.lock();
+                for mut doc_handle in synced {
+                    let expected_repo_id = format!("{}", doc_handle.document_id().get_repo_id());
+                    doc_handle.with_doc_mut(|doc| {
+                        let value = doc.get(automerge::ROOT, "repo_id");
+                        if let Ok(val) = value {
+                            if let Some(inner) = val {
+                                if inner.0.to_str().unwrap() == expected_repo_id {
+                                    *sync_count = *sync_count + 1;
+                                }
+                            }
+                        }
+                    });
+                }
+                if *sync_count > 72 {
+                    done_sync_sender.try_send(());
                 }
             })),
             None,
@@ -191,60 +202,11 @@ fn test_simple_sync() {
             entry.insert(id.clone(), network);
         }
     }
-
-    // We want each repo to sync the documents created by all other repos.
-    for repo_handle in repo_handles.iter_mut() {
-        let mut doc_handles = vec![];
-        let repo_id = repo_handle.get_repo_id().clone();
-        for doc_handle in documents.iter() {
-            let doc_id = doc_handle.document_id();
-            if doc_id.get_repo_id() == &repo_id {
-                continue;
-            }
-            repo_handle.bootstrap_document_from_id(None, doc_id.clone());
-            doc_handles.push(doc_id);
-        }
-        docs_to_sync.insert(repo_id, doc_handles);
-    }
-
-    let (done_sync_sender, mut done_sync_receiver) = channel(1);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     rt.spawn(async move {
-        Handle::current().spawn_blocking(move || {
-            // Keep looping until all docs are in sync.
-            let mut synced = 0;
-            let total_expected = docs_to_sync
-                .iter()
-                .fold(0, |acc, (_, docs)| acc + docs.len());
-            loop {
-                if synced == total_expected {
-                    done_sync_sender.blocking_send(()).unwrap();
-                    return;
-                }
-                for (_, doc_ids) in docs_to_sync.iter_mut() {
-                    for doc_id in doc_ids {
-                        let expected_repo_id = format!("{}", doc_id.get_repo_id());
-                        let mut synced_docs = synced_docs.lock();
-                        if let Some(mut per_repo) = synced_docs.get_mut(&doc_id.get_repo_id()) {
-                            if let Some(mut doc_handle) = per_repo.get_mut(&doc_id) {
-                                doc_handle.with_doc_mut(|doc| {
-                                    let value = doc.get(automerge::ROOT, "repo_id");
-                                    if value.unwrap().unwrap().0.to_str().unwrap()
-                                        == expected_repo_id
-                                    {
-                                        synced = synced + 1;
-                                    }
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
         // A router of network messages.
         loop {
             tokio::select! {
@@ -278,6 +240,7 @@ fn test_simple_sync() {
     });
 
     done_sync_receiver.blocking_recv().unwrap();
+    println!("Done");
 
     // Drop all doc handles:
     // repo should stop running.
