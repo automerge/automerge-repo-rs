@@ -460,6 +460,8 @@ impl Repo {
             RepoEvent::NewDoc(repo_id, document_id, mut info) => {
                 // If this is a bootsrapped document.
                 if info.is_boostrapping() {
+                    // TODO: check local storage first.
+                    
                     // Send a sync message to all other repos we are connected with.
                     let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
                     if let Some(repo_id) = repo_id {
