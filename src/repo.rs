@@ -378,42 +378,6 @@ impl Repo {
         &self.repo_id
     }
 
-    /// Called on start-up.
-    fn load_locally_stored_documents(&mut self) {
-        let new_docs = self
-            .storage
-            .load_all()
-            .into_iter()
-            .map(|(doc_id, _data)| {
-                let document = new_document_with_observer();
-                // TODO: document.load(&data);
-                let state = DocState::Sync;
-                let shared_document = SharedDocument {
-                    automerge: document,
-                };
-                let document = Arc::new(Mutex::new(shared_document));
-                let handle_count = Arc::new(AtomicUsize::new(1));
-                let handle = DocHandle::new(
-                    self.repo_sender.clone(),
-                    doc_id.clone(),
-                    document.clone(),
-                    handle_count.clone(),
-                    self.repo_id.clone(),
-                );
-                let doc_info = DocumentInfo {
-                    state,
-                    document,
-                    handle_count,
-                    sync_states: Default::default(),
-                    patches_since_last_save: 0,
-                };
-                self.documents.insert(doc_id, doc_info);
-                handle
-            })
-            .collect();
-        self.notify_synced(new_docs);
-    }
-
     /// Save documents that have changed to storage.
     fn save_changed_document(&mut self) {
         for doc_id in mem::take(&mut self.pending_saves) {
@@ -733,7 +697,6 @@ impl Repo {
         // The repo shuts down
         // when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
-            self.load_locally_stored_documents();
             loop {
                 // Poll ready streams and sinks at the start of each iteration.
                 self.collect_network_events();
