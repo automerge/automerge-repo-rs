@@ -145,30 +145,7 @@ fn test_simple_sync() {
         // Create the repo.
         let synced_clone = synced.clone();
         let done_sync_sender = done_sync_sender.clone();
-        let repo = Repo::new(
-            Some(Box::new(move |synced| {
-                let mut sync_count = synced_clone.lock();
-                for mut doc_handle in synced {
-                    let expected_repo_id = format!("{}", doc_handle.document_id().get_repo_id());
-                    doc_handle.with_doc_mut(|doc| {
-                        let value = doc.get(automerge::ROOT, "repo_id");
-                        if let Ok(val) = value {
-                            if let Some(inner) = val {
-                                if inner.0.to_str().unwrap() == expected_repo_id {
-                                    *sync_count = *sync_count + 1;
-                                }
-                            }
-                        }
-                    });
-                }
-                // TODO: look into the number of handles here.
-                if *sync_count > 72 {
-                    let _ = done_sync_sender.try_send(());
-                }
-            })),
-            None,
-            Box::new(Storage),
-        );
+        let repo = Repo::new(Some(Box::new(move |_synced| {})), None, Box::new(Storage));
         let mut repo_handle = repo.run();
 
         // Create a document.
@@ -186,6 +163,8 @@ fn test_simple_sync() {
 
         repo_handles.push(repo_handle);
     }
+
+    let repo_handles_clone = repo_handles.clone();
 
     let repo_ids: Vec<RepoId> = repo_handles
         .iter()
@@ -239,11 +218,24 @@ fn test_simple_sync() {
         }
     });
 
+    rt.spawn(async move {
+        let mut synced = 0;
+        for doc_handle in documents {
+            for repo_handle in repo_handles_clone.iter() {
+                if doc_handle.document_id().get_repo_id() == repo_handle.get_repo_id() {
+                    continue;
+                }
+                repo_handle.request_document(doc_handle.document_id()).await;
+                synced = synced + 1;
+            }
+        }
+        assert_eq!(synced, 72);
+        let _ = done_sync_sender.try_send(());
+    });
+
     done_sync_receiver.blocking_recv().unwrap();
 
-    // Drop all doc handles:
-    // repo should stop running.
-    drop(documents);
+    // Stop repo.
     for handle in repo_handles.into_iter() {
         handle.stop().unwrap();
     }

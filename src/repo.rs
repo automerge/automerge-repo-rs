@@ -18,22 +18,22 @@ use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::mem;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
 
 /// Front-end of the repo.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RepoHandle {
-    handle: JoinHandle<()>,
+    handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Channel used to send events back to the repo,
     /// such as when a doc is created, and a doc handle acquired.
     repo_sender: Sender<RepoEvent>,
     repo_id: RepoId,
 
     /// Counter to generate unique document ids.
-    document_id_counter: u64,
+    document_id_counter: Arc<AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -69,10 +69,10 @@ impl Future for DocHandleFuture {
 
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
-        self.repo_sender
-            .send(RepoEvent::Stop)
-            .expect("Failed to send repo event.");
-        self.handle.join().expect("Failed to join on repo.");
+        let _ = self.repo_sender.send(RepoEvent::Stop);
+        if let Some(handle) = self.handle.lock().take() {
+            handle.join().expect("Failed to join on repo.");
+        }
         Ok(())
     }
 
@@ -82,11 +82,8 @@ impl RepoHandle {
 
     /// Create a new document.
     pub fn new_document(&mut self) -> DocHandle {
-        self.document_id_counter = self
-            .document_id_counter
-            .checked_add(1)
-            .expect("Overflowed when creating new document id.");
-        let document_id = DocumentId((self.repo_id.clone(), self.document_id_counter));
+        let counter = self.document_id_counter.fetch_add(1, Ordering::SeqCst);
+        let document_id = DocumentId((self.repo_id.clone(), counter));
         let document = new_document_with_observer();
         let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
         let handle = DocHandle::new(
@@ -734,8 +731,8 @@ impl Repo {
             // TODO: close sinks and streams?
         });
         RepoHandle {
-            handle,
-            document_id_counter,
+            handle: Arc::new(Mutex::new(Some(handle))),
+            document_id_counter: Arc::new(document_id_counter),
             repo_id,
             repo_sender,
         }
