@@ -325,9 +325,6 @@ pub struct Repo {
     /// Events received on the network stream, pending processing.
     pending_events: VecDeque<NetworkEvent>,
 
-    /// Callback on applying sync messages.
-    sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
-
     /// Receiver of network stream and sink readiness signals.
     wake_receiver: Receiver<WakeSignal>,
     wake_sender: Sender<WakeSignal>,
@@ -345,11 +342,7 @@ pub struct Repo {
 
 impl Repo {
     /// Create a new repo.
-    pub fn new(
-        sync_observer: Option<Box<dyn Fn(Vec<DocHandle>) + Send>>,
-        repo_id: Option<String>,
-        storage: Box<dyn StorageAdapter>,
-    ) -> Self {
+    pub fn new(repo_id: Option<String>, storage: Box<dyn StorageAdapter>) -> Self {
         let (wake_sender, wake_receiver) = unbounded();
         let (repo_sender, repo_receiver) = unbounded();
         let repo_id = repo_id.map_or_else(|| RepoId(Uuid::new_v4().to_string()), RepoId);
@@ -365,7 +358,6 @@ impl Repo {
             pending_events: Default::default(),
             repo_sender,
             repo_receiver,
-            sync_observer,
             pending_saves: Default::default(),
             storage,
         }
@@ -596,7 +588,6 @@ impl Repo {
     fn sync_documents(&mut self) {
         // Process incoming events.
         // Handle events.
-        let mut synced = vec![];
         for event in mem::take(&mut self.pending_events) {
             match event {
                 NetworkEvent::Sync {
@@ -663,22 +654,12 @@ impl Repo {
                             info.handle_count.clone(),
                             self.repo_id.clone(),
                         );
-                        synced.push(handle.clone());
                         if info.state.is_bootstrapping() {
                             info.state.resolve_fut(handle);
                         }
                     }
                 }
             }
-        }
-        self.notify_synced(synced);
-    }
-
-    // TODO: better name? Also called when loading from storage on startup.
-    fn notify_synced(&self, synced: Vec<DocHandle>) {
-        // Notify the client of synced documents.
-        if let Some(observer) = self.sync_observer.as_ref().filter(|_| !synced.is_empty()) {
-            observer(synced);
         }
     }
 

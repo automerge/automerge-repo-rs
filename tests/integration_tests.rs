@@ -1,5 +1,4 @@
 use automerge::transaction::Transactable;
-use automerge::ReadDoc;
 use automerge_repo::{
     NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo, RepoId, StorageAdapter,
 };
@@ -123,7 +122,7 @@ impl StorageAdapter for Storage {}
 #[test]
 fn test_repo_stop() {
     // Create the repo.
-    let repo = Repo::new(None, None, Box::new(Storage));
+    let repo = Repo::new(None, Box::new(Storage));
 
     // Run the repo in the background.
     let repo_handle = repo.run();
@@ -138,14 +137,11 @@ fn test_simple_sync() {
     let mut repo_handles = vec![];
     let mut documents = vec![];
     let mut peers = HashMap::new();
-    let synced = Arc::new(Mutex::new(0));
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
 
     for _ in 1..10 {
         // Create the repo.
-        let synced_clone = synced.clone();
-        let done_sync_sender = done_sync_sender.clone();
-        let repo = Repo::new(Some(Box::new(move |_synced| {})), None, Box::new(Storage));
+        let repo = Repo::new(None, Box::new(Storage));
         let mut repo_handle = repo.run();
 
         // Create a document.
@@ -244,8 +240,8 @@ fn test_simple_sync() {
 #[test]
 fn test_requesting_document_connected_peers() {
     // Create two repos.
-    let repo_1 = Repo::new(None, None, Box::new(Storage));
-    let repo_2 = Repo::new(None, None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(Storage));
+    let repo_2 = Repo::new(None, Box::new(Storage));
 
     // Run the repos in the background.
     let mut repo_handle_1 = repo_1.run();
@@ -337,8 +333,8 @@ fn test_requesting_document_connected_peers() {
 #[test]
 fn test_requesting_document_unconnected_peers() {
     // Create two repos.
-    let repo_1 = Repo::new(None, None, Box::new(Storage));
-    let repo_2 = Repo::new(None, None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(Storage));
+    let repo_2 = Repo::new(None, Box::new(Storage));
 
     // Run the repos in the background.
     let mut repo_handle_1 = repo_1.run();
