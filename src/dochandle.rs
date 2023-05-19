@@ -7,19 +7,6 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// The doc handle state machine.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum DocState {
-    /// While in bootstrap, the doc should not be edited locally.
-    Bootstrap,
-    /// A document that has been locally created,
-    /// and not edited yet,
-    /// should not be synced until it has been.
-    LocallyCreatedNotEdited,
-    /// The doc is syncing(can be edited locally).
-    Sync,
-}
-
 /// A wrapper around a document shared between a handle and the repo.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedDocument {

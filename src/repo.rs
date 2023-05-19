@@ -1,4 +1,4 @@
-use crate::dochandle::{DocHandle, DocState, SharedDocument};
+use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{
     NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter,
@@ -9,9 +9,10 @@ use automerge::VecOpObserver;
 use automerge::{AutoCommit, AutoCommitWithObs};
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
+use futures::future::Future;
 use futures::stream::Stream;
 use futures::task::ArcWake;
-use futures::task::{waker_ref, Context, Poll};
+use futures::task::{waker_ref, Context, Poll, Waker};
 use futures::Sink;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -43,6 +44,28 @@ fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
     document.with_observer(VecOpObserver::default())
 }
 
+#[derive(Debug)]
+pub struct DocHandleFuture {
+    doc_handle: Arc<Mutex<Option<DocHandle>>>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl DocHandleFuture {
+    fn new(doc_handle: Arc<Mutex<Option<DocHandle>>>, waker: Arc<Mutex<Option<Waker>>>) -> Self {
+        DocHandleFuture { doc_handle, waker }
+    }
+}
+
+impl Future for DocHandleFuture {
+    type Output = DocHandle;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        *self.waker.lock() = Some(cx.waker().clone());
+        let mut result = self.doc_handle.lock();
+        result.take().map_or(Poll::Pending, Poll::Ready)
+    }
+}
+
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
         self.repo_sender
@@ -64,49 +87,62 @@ impl RepoHandle {
             .expect("Overflowed when creating new document id.");
         let document_id = DocumentId((self.repo_id.clone(), self.document_id_counter));
         let document = new_document_with_observer();
-        self.new_document_handle(None, document_id, document, DocState::Sync)
+        let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
+        let handle = DocHandle::new(
+            self.repo_sender.clone(),
+            document_id.clone(),
+            doc_info.document.clone(),
+            doc_info.handle_count.clone(),
+            self.repo_id.clone(),
+        );
+        self.repo_sender
+            .send(RepoEvent::NewDoc(document_id, doc_info))
+            .expect("Failed to send repo event.");
+        handle
     }
 
     /// Boostrap a document using it's ID only.
     /// The returned document should not be edited until ready,
     /// use `DocHandle.wait_ready` to wait for it.
-    pub fn bootstrap_document_from_id(&self, repo_id: Option<RepoId>, document_id: DocumentId) {
+    pub fn request_document(
+        &self,
+        // TODO: use PeerSpec concept.
+        document_id: DocumentId,
+    ) -> DocHandleFuture {
         let document = new_document_with_observer();
-        // If no repo id is provided, sync with the creator.
-        let repo_id = repo_id.unwrap_or_else(|| document_id.get_repo_id().clone());
-        let _ = self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap);
+        let fut_doc_handle = Arc::new(Mutex::new(None));
+        let fut_waker = Arc::new(Mutex::new(None));
+        let future_handle = DocHandleFuture::new(fut_doc_handle.clone(), fut_waker.clone());
+        let doc_info = self.new_document_info(
+            document,
+            DocState::Bootstrap {
+                fut_doc_handle,
+                fut_waker,
+            },
+        );
+        self.repo_sender
+            .send(RepoEvent::NewDoc(document_id, doc_info))
+            .expect("Failed to send repo event.");
+        future_handle
     }
 
-    fn new_document_handle(
+    fn new_document_info(
         &self,
-        repo_id: Option<RepoId>,
-        document_id: DocumentId,
         document: AutoCommitWithObs<Observed<VecOpObserver>>,
         state: DocState,
-    ) -> DocHandle {
+    ) -> DocumentInfo {
         let document = SharedDocument {
             automerge: document,
         };
         let document = Arc::new(Mutex::new(document));
         let handle_count = Arc::new(AtomicUsize::new(1));
-        let handle = DocHandle::new(
-            self.repo_sender.clone(),
-            document_id.clone(),
-            document.clone(),
-            handle_count.clone(),
-            self.repo_id.clone(),
-        );
-        let doc_info = DocumentInfo {
+        DocumentInfo {
             state,
             document,
             handle_count,
             sync_states: Default::default(),
             patches_since_last_save: 0,
-        };
-        self.repo_sender
-            .send(RepoEvent::NewDoc(repo_id, document_id, doc_info))
-            .expect("Failed to send repo event.");
-        handle
+        }
     }
 
     pub fn new_network_adapter(
@@ -122,16 +158,56 @@ impl RepoHandle {
 
 /// Events sent by repo or doc handles to the repo.
 pub(crate) enum RepoEvent {
-    /// Load a document,
-    // repo id is the repo to start syncing with,
-    // none if locally created.
-    NewDoc(Option<RepoId>, DocumentId, DocumentInfo),
+    /// Start processing a new document.
+    NewDoc(DocumentId, DocumentInfo),
     /// A document changed.
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
     Stop,
+}
+
+/// The doc info state machine.
+#[derive(Clone, Debug)]
+pub(crate) enum DocState {
+    /// Bootstrapping will resolve into a future doc handle.
+    Bootstrap {
+        fut_doc_handle: Arc<Mutex<Option<DocHandle>>>,
+        fut_waker: Arc<Mutex<Option<Waker>>>,
+    },
+    /// A document that has been locally created,
+    /// and not edited yet,
+    /// should not be synced until it has been.
+    LocallyCreatedNotEdited,
+    /// The doc is syncing(can be edited locally).
+    Sync,
+}
+
+impl DocState {
+    fn is_bootstrapping(&self) -> bool {
+        matches!(self, DocState::Bootstrap { .. })
+    }
+
+    fn should_sync(&self) -> bool {
+        matches!(self, DocState::Sync)
+    }
+
+    fn resolve_fut(&mut self, doc_handle: DocHandle) {
+        match self {
+            DocState::Bootstrap {
+                fut_doc_handle,
+                fut_waker,
+            } => {
+                *fut_doc_handle.lock() = Some(doc_handle);
+                if let Some(fut_waker) = fut_waker.lock().take() {
+                    fut_waker.wake();
+                }
+            }
+            _ => panic!("Trying to resolve a future for a document that is not boostrapping."),
+        }
+        *self = DocState::Sync
+    }
 }
 
 /// Info about a document.
@@ -150,7 +226,7 @@ pub(crate) struct DocumentInfo {
 
 impl DocumentInfo {
     fn is_boostrapping(&self) -> bool {
-        self.state == DocState::Bootstrap
+        self.state.is_bootstrapping()
     }
 
     fn note_changes(&mut self) {
@@ -232,7 +308,8 @@ impl ArcWake for RepoWaker {
             RepoWaker::Sink(sender, repo_id) => sender.send(WakeSignal::Sink(repo_id.clone())),
         };
         if res.is_err() {
-            panic!("Wake sender disconnected.");
+            // TODO: clean shutdown.
+            println!("Wake sender disconnected.");
         }
     }
 }
@@ -459,17 +536,13 @@ impl Repo {
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
         match event {
-            RepoEvent::NewDoc(repo_id, document_id, mut info) => {
+            RepoEvent::NewDoc(document_id, mut info) => {
                 // If this is a bootsrapped document.
                 if info.is_boostrapping() {
                     // TODO: check local storage first.
 
                     // Send a sync message to all other repos we are connected with.
-                    let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
-                    if let Some(repo_id) = repo_id {
-                        repo_ids.push(repo_id);
-                    }
-                    for repo_id in repo_ids {
+                    for repo_id in self.network_adapters.keys() {
                         if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
                             let outgoing = NetworkMessage::Sync {
                                 from_repo_id: self.get_repo_id().clone(),
@@ -481,7 +554,7 @@ impl Repo {
                                 .entry(repo_id.clone())
                                 .or_insert_with(Default::default)
                                 .push_back(outgoing);
-                            self.sinks_to_poll.insert(repo_id);
+                            self.sinks_to_poll.insert(repo_id.clone());
                         }
                     }
                 }
@@ -529,9 +602,10 @@ impl Repo {
                 // Try to sync all docs we know about.
                 let our_id = self.get_repo_id().clone();
                 for (document_id, info) in self.documents.iter_mut() {
-                    if info.state == DocState::LocallyCreatedNotEdited {
+                    if !info.state.should_sync() {
                         // Do not sync docs that have been locally created
-                        // and not locally edited yet.
+                        // and not locally edited yet,
+                        // as well as those that are bootstrapping.
                         continue;
                     }
                     if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
@@ -580,7 +654,7 @@ impl Repo {
                             let shared_document = SharedDocument {
                                 automerge: new_document_with_observer(),
                             };
-                            let state = DocState::Bootstrap;
+                            let state = DocState::Sync;
                             let document = Arc::new(Mutex::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
                             DocumentInfo {
@@ -627,7 +701,10 @@ impl Repo {
                             info.handle_count.clone(),
                             self.repo_id.clone(),
                         );
-                        synced.push(handle);
+                        synced.push(handle.clone());
+                        if info.state.is_bootstrapping() {
+                            info.state.resolve_fut(handle);
+                        }
                     }
                 }
             }

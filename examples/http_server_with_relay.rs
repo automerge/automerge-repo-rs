@@ -215,7 +215,7 @@ fn main() {
             .lock()
             .as_mut()
             .unwrap()
-            .bootstrap_document_from_id(None, document_id);
+            .request_document(document_id);
     }
 
     async fn edit_doc(
