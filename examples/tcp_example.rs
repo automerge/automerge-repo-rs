@@ -3,6 +3,7 @@ use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{
     DocumentId, NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Repo, RepoId,
+    StorageAdapter,
 };
 use clap::Parser;
 use core::pin::Pin;
@@ -135,6 +136,10 @@ impl Sink<NetworkMessage> for Network<NetworkMessage> {
 
 impl NetworkAdapter for Network<NetworkMessage> {}
 
+struct Storage;
+
+impl StorageAdapter for Storage {}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -168,6 +173,7 @@ async fn main() {
             }
         })),
         Some(run_ip.clone()),
+        Box::new(Storage),
     );
     let repo_handle = Arc::new(Mutex::new(Some(repo.run())));
     let repo_handle_clone = repo_handle.clone();
