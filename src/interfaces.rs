@@ -66,6 +66,7 @@ pub trait NetworkAdapter:
 {
 }
 
+// TODO: return futures.
 pub trait StorageAdapter: Send {
     fn get(&self, _id: DocumentId) -> Option<Vec<u8>> {
         None
