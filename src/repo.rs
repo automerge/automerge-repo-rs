@@ -13,7 +13,7 @@ use futures::stream::Stream;
 use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll};
 use futures::Sink;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -70,15 +70,11 @@ impl RepoHandle {
     /// Boostrap a document using it's ID only.
     /// The returned document should not be edited until ready,
     /// use `DocHandle.wait_ready` to wait for it.
-    pub fn bootstrap_document_from_id(
-        &self,
-        repo_id: Option<RepoId>,
-        document_id: DocumentId,
-    ) -> DocHandle {
+    pub fn bootstrap_document_from_id(&self, repo_id: Option<RepoId>, document_id: DocumentId) {
         let document = new_document_with_observer();
         // If no repo id is provided, sync with the creator.
         let repo_id = repo_id.unwrap_or_else(|| document_id.get_repo_id().clone());
-        self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap)
+        let _ = self.new_document_handle(Some(repo_id), document_id, document, DocState::Bootstrap);
     }
 
     fn new_document_handle(
@@ -88,29 +84,27 @@ impl RepoHandle {
         document: AutoCommitWithObs<Observed<VecOpObserver>>,
         state: DocState,
     ) -> DocHandle {
-        let is_ready = matches!(state, DocState::Sync);
-        let shared_document = SharedDocument {
-            state: DocState::Bootstrap,
+        let document = SharedDocument {
             automerge: document,
         };
-        let state = Arc::new((Mutex::new(shared_document), Condvar::new()));
+        let document = Arc::new(Mutex::new(document));
         let handle_count = Arc::new(AtomicUsize::new(1));
         let handle = DocHandle::new(
             self.repo_sender.clone(),
             document_id.clone(),
-            state.clone(),
+            document.clone(),
             handle_count.clone(),
-            is_ready,
+            self.repo_id.clone(),
         );
         let doc_info = DocumentInfo {
             state,
+            document,
             handle_count,
             sync_states: Default::default(),
-            is_ready,
             patches_since_last_save: 0,
         };
         self.repo_sender
-            .send(RepoEvent::NewDocHandle(repo_id, document_id, doc_info))
+            .send(RepoEvent::NewDoc(repo_id, document_id, doc_info))
             .expect("Failed to send repo event.");
         handle
     }
@@ -131,7 +125,7 @@ pub(crate) enum RepoEvent {
     /// Load a document,
     // repo id is the repo to start syncing with,
     // none if locally created.
-    NewDocHandle(Option<RepoId>, DocumentId, DocumentInfo),
+    NewDoc(Option<RepoId>, DocumentId, DocumentInfo),
     /// A document changed.
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
@@ -143,36 +137,25 @@ pub(crate) enum RepoEvent {
 /// Info about a document.
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
-    /// State of the document(shared with handles).
-    /// Document used to apply and generate sync messages.
-    state: Arc<(Mutex<SharedDocument>, Condvar)>,
+    /// State of the document.
+    state: DocState,
+    /// Document used to apply and generate sync messages(shared with handles).
+    document: Arc<Mutex<SharedDocument>>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
     /// Per repo automerge sync state.
     sync_states: HashMap<RepoId, SyncState>,
-    /// Flag set to true once the doc reaches `DocState::Sync`.
-    is_ready: bool,
     patches_since_last_save: usize,
 }
 
 impl DocumentInfo {
-    /// Mark the document as ready for editing,
-    /// wakes-up all doc handles that are waiting inside `wait_ready`.
-    fn set_ready(&mut self) {
-        if self.is_ready {
-            return;
-        }
-        let (lock, cvar) = &*self.state;
-        let mut state = lock.lock();
-        state.state = DocState::Sync;
-        cvar.notify_all();
-        self.is_ready = true;
+    fn is_boostrapping(&self) -> bool {
+        self.state == DocState::Bootstrap
     }
 
     fn note_changes(&mut self) {
-        let (lock, _cvar) = &*self.state;
-        let mut state = lock.lock();
-        let observer = state.automerge.observer();
+        let mut doc = self.document.lock();
+        let observer = doc.automerge.observer();
         let _ = self
             .patches_since_last_save
             .checked_add(observer.take_patches().len());
@@ -183,9 +166,8 @@ impl DocumentInfo {
             storage.compact(document_id);
         } else {
             let to_save = {
-                let (lock, cvar) = &*self.state;
-                let mut state = lock.lock();
-                state.automerge.save_incremental()
+                let mut doc = self.document.lock();
+                doc.automerge.save_incremental()
             };
             storage.append(document_id, to_save);
         }
@@ -198,9 +180,8 @@ impl DocumentInfo {
             .sync_states
             .entry(repo_id)
             .or_insert_with(SyncState::new);
-        let (lock, _cvar) = &*self.state;
-        let mut state = lock.lock();
-        let mut sync = state.automerge.sync();
+        let mut document = self.document.lock();
+        let mut sync = document.automerge.sync();
         sync.receive_sync_message(sync_state, message)
             .expect("Failed to apply sync message.");
     }
@@ -211,11 +192,9 @@ impl DocumentInfo {
             .sync_states
             .entry(repo_id)
             .or_insert_with(SyncState::new);
-        let (lock, _cvar) = &*self.state;
-        lock.lock()
-            .automerge
-            .sync()
-            .generate_sync_message(sync_state)
+        let mut document = self.document.lock();
+        let msg = document.automerge.sync().generate_sync_message(sync_state);
+        msg
     }
 
     /// Generate outgoing sync message for all repos we are syncing with.
@@ -223,12 +202,8 @@ impl DocumentInfo {
         self.sync_states
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
-                let (lock, _cvar) = &*self.state;
-                let message = lock
-                    .lock()
-                    .automerge
-                    .sync()
-                    .generate_sync_message(sync_state);
+                let mut document = self.document.lock();
+                let message = document.automerge.sync().generate_sync_message(sync_state);
                 message.map(|msg| (repo_id.clone(), msg))
             })
             .collect()
@@ -331,26 +306,27 @@ impl Repo {
             .storage
             .load_all()
             .into_iter()
-            .map(|(doc_id, data)| {
+            .map(|(doc_id, _data)| {
                 let document = new_document_with_observer();
+                // TODO: document.load(&data);
+                let state = DocState::Sync;
                 let shared_document = SharedDocument {
-                    state: DocState::Sync,
                     automerge: document,
                 };
-                let state = Arc::new((Mutex::new(shared_document), Condvar::new()));
+                let document = Arc::new(Mutex::new(shared_document));
                 let handle_count = Arc::new(AtomicUsize::new(1));
                 let handle = DocHandle::new(
                     self.repo_sender.clone(),
                     doc_id.clone(),
-                    state.clone(),
+                    document.clone(),
                     handle_count.clone(),
-                    true,
+                    self.repo_id.clone(),
                 );
                 let doc_info = DocumentInfo {
                     state,
+                    document,
                     handle_count,
                     sync_states: Default::default(),
-                    is_ready: true,
                     patches_since_last_save: 0,
                 };
                 self.documents.insert(doc_id, doc_info);
@@ -483,27 +459,30 @@ impl Repo {
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
         match event {
-            RepoEvent::NewDocHandle(repo_id, document_id, mut info) => {
-                // Send a sync message to the creator,
-                // unless it is the local repo,
-                // and all other repos we are connected with.
-                let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
-                if let Some(repo_id) = repo_id {
-                    repo_ids.push(repo_id);
-                }
-                for repo_id in repo_ids {
-                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
-                        let outgoing = NetworkMessage::Sync {
-                            from_repo_id: self.get_repo_id().clone(),
-                            to_repo_id: repo_id.clone(),
-                            document_id: document_id.clone(),
-                            message,
-                        };
-                        self.pending_messages
-                            .entry(repo_id.clone())
-                            .or_insert_with(Default::default)
-                            .push_back(outgoing);
-                        self.sinks_to_poll.insert(repo_id);
+            RepoEvent::NewDoc(repo_id, document_id, mut info) => {
+                // If this is a bootsrapped document.
+                if info.is_boostrapping() {
+                    // TODO: check local storage first.
+
+                    // Send a sync message to all other repos we are connected with.
+                    let mut repo_ids: Vec<RepoId> = self.network_adapters.keys().cloned().collect();
+                    if let Some(repo_id) = repo_id {
+                        repo_ids.push(repo_id);
+                    }
+                    for repo_id in repo_ids {
+                        if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
+                            let outgoing = NetworkMessage::Sync {
+                                from_repo_id: self.get_repo_id().clone(),
+                                to_repo_id: repo_id.clone(),
+                                document_id: document_id.clone(),
+                                message,
+                            };
+                            self.pending_messages
+                                .entry(repo_id.clone())
+                                .or_insert_with(Default::default)
+                                .push_back(outgoing);
+                            self.sinks_to_poll.insert(repo_id);
+                        }
                     }
                 }
                 self.documents.insert(document_id, info);
@@ -511,6 +490,7 @@ impl Repo {
             RepoEvent::DocChange(doc_id) => {
                 // Handle doc changes: sync the document.
                 if let Some(info) = self.documents.get_mut(&doc_id) {
+                    info.state = DocState::Sync;
                     info.note_changes();
                     self.pending_saves.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
@@ -549,6 +529,11 @@ impl Repo {
                 // Try to sync all docs we know about.
                 let our_id = self.get_repo_id().clone();
                 for (document_id, info) in self.documents.iter_mut() {
+                    if info.state == DocState::LocallyCreatedNotEdited {
+                        // Do not sync docs that have been locally created
+                        // and not locally edited yet.
+                        continue;
+                    }
                     if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: our_id.clone(),
@@ -593,30 +578,20 @@ impl Repo {
                         .entry(document_id.clone())
                         .or_insert_with(|| {
                             let shared_document = SharedDocument {
-                                state: DocState::Bootstrap,
                                 automerge: new_document_with_observer(),
                             };
-                            let state = Arc::new((Mutex::new(shared_document), Condvar::new()));
+                            let state = DocState::Bootstrap;
+                            let document = Arc::new(Mutex::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
                             DocumentInfo {
                                 state,
+                                document,
                                 handle_count,
                                 sync_states: Default::default(),
-                                is_ready: false,
                                 patches_since_last_save: 0,
                             }
                         });
 
-                    // Create a handle and pass it to the sync observer.
-                    info.handle_count.fetch_add(1, Ordering::SeqCst);
-                    let handle = DocHandle::new(
-                        self.repo_sender.clone(),
-                        document_id.clone(),
-                        info.state.clone(),
-                        info.handle_count.clone(),
-                        info.is_ready,
-                    );
-                    synced.push(handle);
                     info.note_changes();
                     self.pending_saves.push(document_id.clone());
 
@@ -625,9 +600,10 @@ impl Repo {
                     // in two separate critical sections,
                     // local changes could be made in between those,
                     // which is a good thing(generated messages will include those changes).
+                    let mut ready = true;
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
-                        if !message.heads.is_empty() && message.need.is_empty() {
-                            info.set_ready();
+                        if message.heads.is_empty() && !message.need.is_empty() {
+                            ready = false;
                         }
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -640,6 +616,18 @@ impl Repo {
                             .or_insert_with(Default::default)
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
+                    }
+                    if ready {
+                        // Create a handle and pass it to the sync observer.
+                        info.handle_count.fetch_add(1, Ordering::SeqCst);
+                        let handle = DocHandle::new(
+                            self.repo_sender.clone(),
+                            document_id.clone(),
+                            info.document.clone(),
+                            info.handle_count.clone(),
+                            self.repo_id.clone(),
+                        );
+                        synced.push(handle);
                     }
                 }
             }
@@ -673,6 +661,7 @@ impl Repo {
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
+                self.save_changed_document();
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
                 select! {
