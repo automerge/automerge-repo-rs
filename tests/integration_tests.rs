@@ -8,9 +8,8 @@ use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::task::{Context, Poll, Waker};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 
 #[derive(Debug, Clone)]
@@ -162,8 +161,9 @@ fn test_simple_sync() {
                         }
                     });
                 }
+                // TODO: look into the number of handles here.
                 if *sync_count > 72 {
-                    done_sync_sender.try_send(());
+                    let _ = done_sync_sender.try_send(());
                 }
             })),
             None,

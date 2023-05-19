@@ -67,7 +67,7 @@ pub trait NetworkAdapter:
 }
 
 pub trait StorageAdapter: Send {
-    fn get(&self, id: DocumentId) -> Option<Vec<u8>> {
+    fn get(&self, _id: DocumentId) -> Option<Vec<u8>> {
         None
     }
 
@@ -75,7 +75,7 @@ pub trait StorageAdapter: Send {
         vec![]
     }
 
-    fn append(&self, id: DocumentId, changes: Vec<u8>) {}
+    fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}
 
-    fn compact(&self, id: DocumentId) {}
+    fn compact(&self, _id: DocumentId) {}
 }

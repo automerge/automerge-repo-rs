@@ -3,7 +3,7 @@ use crate::repo::RepoEvent;
 use automerge::transaction::Observed;
 use automerge::{AutoCommitWithObs, VecOpObserver};
 use crossbeam_channel::Sender;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub(crate) enum DocState {
     /// While in bootstrap, the doc should not be edited locally.
     Bootstrap,
-    /// A document that has been locally created, 
+    /// A document that has been locally created,
     /// and not edited yet,
     /// should not be synced until it has been.
     LocallyCreatedNotEdited,
@@ -23,7 +23,6 @@ pub(crate) enum DocState {
 /// A wrapper around a document shared between a handle and the repo.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedDocument {
-    pub state: DocState,
     pub automerge: AutoCommitWithObs<Observed<VecOpObserver>>,
 }
 
@@ -58,8 +57,8 @@ impl Clone for DocHandle {
 impl Drop for DocHandle {
     fn drop(&mut self) {
         // Close the document when the last handle drops.
-        // TODO: turn this into a `delete` concept, 
-        // based on an explicit method call(not drop), 
+        // TODO: turn this into a `delete` concept,
+        // based on an explicit method call(not drop),
         // which would clear storage as well?
         if self.handle_count.fetch_sub(1, Ordering::SeqCst) == 0 {
             self.repo_sender

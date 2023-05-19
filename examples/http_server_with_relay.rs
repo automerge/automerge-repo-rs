@@ -17,7 +17,6 @@ use futures::FutureExt;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 
 #[derive(Parser, Debug)]
