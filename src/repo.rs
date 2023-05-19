@@ -39,6 +39,7 @@ pub struct RepoHandle {
 #[derive(Debug)]
 pub struct RepoError;
 
+// TODO: remove observer.
 fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
     let document = AutoCommit::new();
     document.with_observer(VecOpObserver::default())
