@@ -170,6 +170,7 @@ pub(crate) enum RepoEvent {
 #[derive(Clone, Debug)]
 pub(crate) enum DocState {
     /// Bootstrapping will resolve into a future doc handle.
+    /// TODO: clean shutdown, resolving to None.
     Bootstrap {
         fut_doc_handle: Arc<Mutex<Option<DocHandle>>>,
         fut_waker: Arc<Mutex<Option<Waker>>>,
