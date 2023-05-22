@@ -1,5 +1,5 @@
 use crate::interfaces::{DocumentId, RepoId};
-use crate::repo::RepoEvent;
+use crate::repo::{ChangeObserver, RepoEvent, RepoFuture};
 use automerge::transaction::Observed;
 use automerge::{AutoCommitWithObs, VecOpObserver};
 use crossbeam_channel::Sender;
@@ -80,6 +80,20 @@ impl DocHandle {
         self.document_id.clone()
     }
 
+    pub fn changed(&self) -> RepoFuture<()> {
+        let result = Arc::new(Mutex::new(None));
+        let waker = Arc::new(Mutex::new(None));
+        let fut = RepoFuture::new(result.clone(), waker.clone());
+        let observer = ChangeObserver::new(result, waker);
+        self.repo_sender
+            .send(RepoEvent::AddChangeObserver(
+                self.document_id.clone(),
+                observer,
+            ))
+            .expect("Failed to send doc change event.");
+        fut
+    }
+
     /// Run a closure over a mutable reference to the document,
     /// returns the result of calling the closure.
     pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
@@ -94,6 +108,19 @@ impl DocHandle {
         self.repo_sender
             .send(RepoEvent::DocChange(self.document_id.clone()))
             .expect("Failed to send doc change event.");
+        res
+    }
+
+    /// Run a closure over a immutable reference to the document,
+    /// returns the result of calling the closure.
+    pub fn with_doc<F, T>(&mut self, f: F) -> T
+    where
+        F: FnOnce(&AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
+    {
+        let res = {
+            let state = self.shared_document.lock();
+            f(&state.automerge)
+        };
         res
     }
 }

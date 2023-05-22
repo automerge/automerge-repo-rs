@@ -36,8 +36,11 @@ pub struct RepoHandle {
     document_id_counter: Arc<AtomicU64>,
 }
 
-#[derive(Debug)]
-pub struct RepoError;
+#[derive(Debug, Clone)]
+pub enum RepoError {
+    /// The repo is shutting down.
+    ShutDown,
+}
 
 // TODO: remove observer.
 fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
@@ -84,11 +87,11 @@ impl RepoHandle {
         &self,
         // TODO: use PeerSpec concept.
         document_id: DocumentId,
-    ) -> DocHandleFuture {
+    ) -> RepoFuture<DocHandle> {
         let document = new_document_with_observer();
         let fut_doc_handle = Arc::new(Mutex::new(None));
         let fut_waker = Arc::new(Mutex::new(None));
-        let future_handle = DocHandleFuture::new(fut_doc_handle.clone(), fut_waker.clone());
+        let future_handle = RepoFuture::new(fut_doc_handle.clone(), fut_waker.clone());
         let doc_info = self.new_document_info(
             document,
             DocState::Bootstrap {
@@ -112,13 +115,7 @@ impl RepoHandle {
         };
         let document = Arc::new(Mutex::new(document));
         let handle_count = Arc::new(AtomicUsize::new(1));
-        DocumentInfo {
-            state,
-            document,
-            handle_count,
-            sync_states: Default::default(),
-            patches_since_last_save: 0,
-        }
+        DocumentInfo::new(state, document, handle_count)
     }
 
     pub fn new_network_adapter(
@@ -132,6 +129,29 @@ impl RepoHandle {
     }
 }
 
+/// Used to resolve futures for DocHandle::changed.
+#[derive(Debug)]
+pub(crate) struct ChangeObserver {
+    result: Arc<Mutex<Option<Result<(), RepoError>>>>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl ChangeObserver {
+    pub fn new(
+        result: Arc<Mutex<Option<Result<(), RepoError>>>>,
+        waker: Arc<Mutex<Option<Waker>>>,
+    ) -> Self {
+        ChangeObserver { result, waker }
+    }
+
+    fn resolve_fut(self, result: Result<(), RepoError>) {
+        *self.result.lock() = Some(result);
+        if let Some(waker) = self.waker.lock().take() {
+            waker.wake();
+        }
+    }
+}
+
 /// Events sent by repo or doc handles to the repo.
 pub(crate) enum RepoEvent {
     /// Start processing a new document.
@@ -140,31 +160,33 @@ pub(crate) enum RepoEvent {
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
+    /// Add a new change observer to a document.
+    AddChangeObserver(DocumentId, ChangeObserver),
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
     Stop,
 }
 
 #[derive(Debug)]
-pub struct DocHandleFuture {
-    doc_handle: Arc<Mutex<Option<Result<DocHandle, RepoError>>>>,
+pub struct RepoFuture<T> {
+    result: Arc<Mutex<Option<Result<T, RepoError>>>>,
     waker: Arc<Mutex<Option<Waker>>>,
 }
 
-impl DocHandleFuture {
-    fn new(
-        doc_handle: Arc<Mutex<Option<Result<DocHandle, RepoError>>>>,
+impl<T> RepoFuture<T> {
+    pub fn new(
+        result: Arc<Mutex<Option<Result<T, RepoError>>>>,
         waker: Arc<Mutex<Option<Waker>>>,
     ) -> Self {
-        DocHandleFuture { doc_handle, waker }
+        RepoFuture { result, waker }
     }
 }
 
-impl Future for DocHandleFuture {
-    type Output = Result<DocHandle, RepoError>;
+impl<T> Future for RepoFuture<T> {
+    type Output = Result<T, RepoError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         *self.waker.lock() = Some(cx.waker().clone());
-        let mut result = self.doc_handle.lock();
+        let mut result = self.result.lock();
         result.take().map_or(Poll::Pending, Poll::Ready)
     }
 }
@@ -223,10 +245,27 @@ pub(crate) struct DocumentInfo {
     handle_count: Arc<AtomicUsize>,
     /// Per repo automerge sync state.
     sync_states: HashMap<RepoId, SyncState>,
+    /// Used to resolve futures for DocHandle::changed.
+    change_observers: Vec<ChangeObserver>,
     patches_since_last_save: usize,
 }
 
 impl DocumentInfo {
+    fn new(
+        state: DocState,
+        document: Arc<Mutex<SharedDocument>>,
+        handle_count: Arc<AtomicUsize>,
+    ) -> Self {
+        DocumentInfo {
+            state,
+            document,
+            handle_count,
+            sync_states: Default::default(),
+            change_observers: Default::default(),
+            patches_since_last_save: 0,
+        }
+    }
+
     fn is_boostrapping(&self) -> bool {
         self.state.is_bootstrapping()
     }
@@ -237,6 +276,12 @@ impl DocumentInfo {
         let _ = self
             .patches_since_last_save
             .checked_add(observer.take_patches().len());
+    }
+
+    fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
+        for observer in mem::take(&mut self.change_observers) {
+            observer.resolve_fut(result.clone());
+        }
     }
 
     fn save_document(&mut self, document_id: DocumentId, storage: &dyn StorageAdapter) {
@@ -371,10 +416,12 @@ impl Repo {
         &self.repo_id
     }
 
-    /// Save documents that have changed to storage.
-    fn save_changed_document(&mut self) {
+    /// Save documents that have changed to storage,
+    /// resolve change observers.
+    fn process_changed_document(&mut self) {
         for doc_id in mem::take(&mut self.pending_saves) {
             if let Some(info) = self.documents.get_mut(&doc_id) {
+                info.resolve_change_observers(Ok(()));
                 info.save_document(doc_id, self.storage.as_ref());
             }
         }
@@ -549,6 +596,11 @@ impl Repo {
                     panic!("Document closed with outstanding handles.");
                 }
             }
+            RepoEvent::AddChangeObserver(doc_id, observer) => {
+                if let Some(info) = self.documents.get_mut(&doc_id) {
+                    info.change_observers.push(observer);
+                }
+            }
             RepoEvent::ConnectNetworkAdapter(repo_id, adapter) => {
                 self.network_adapters
                     .entry(repo_id.clone())
@@ -614,15 +666,10 @@ impl Repo {
                             let state = DocState::Sync;
                             let document = Arc::new(Mutex::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
-                            DocumentInfo {
-                                state,
-                                document,
-                                handle_count,
-                                sync_states: Default::default(),
-                                patches_since_last_save: 0,
-                            }
+                            DocumentInfo::new(state, document, handle_count)
                         });
 
+                    // TODO: only do if applying the sync message changed the doc.
                     info.note_changes();
                     self.pending_saves.push(document_id.clone());
 
@@ -684,7 +731,7 @@ impl Repo {
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
-                self.save_changed_document();
+                self.process_changed_document();
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
                 select! {
@@ -721,7 +768,8 @@ impl Repo {
                 .iter_mut()
                 .filter(|(_, info)| info.state.is_bootstrapping())
             {
-                info.state.resolve_fut(Err(RepoError));
+                info.state.resolve_fut(Err(RepoError::ShutDown));
+                info.resolve_change_observers(Err(RepoError::ShutDown));
             }
         });
         RepoHandle {
