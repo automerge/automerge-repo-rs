@@ -144,26 +144,6 @@ impl RepoHandle {
     }
 }
 
-/// Used to resolve futures.
-#[derive(Debug, Clone)]
-pub(crate) struct RepoFutureResolver<T> {
-    result: Arc<Mutex<Option<T>>>,
-    waker: Arc<Mutex<Option<Waker>>>,
-}
-
-impl<T> RepoFutureResolver<T> {
-    pub fn new(result: Arc<Mutex<Option<T>>>, waker: Arc<Mutex<Option<Waker>>>) -> Self {
-        RepoFutureResolver { result, waker }
-    }
-
-    fn resolve_fut(self, result: T) {
-        *self.result.lock() = Some(result);
-        if let Some(waker) = self.waker.lock().take() {
-            waker.wake();
-        }
-    }
-}
-
 /// Events sent by repo or doc handles to the repo.
 pub(crate) enum RepoEvent {
     /// Start processing a new document.
@@ -181,6 +161,26 @@ pub(crate) enum RepoEvent {
     ),
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
     Stop,
+}
+
+/// Used to resolve repo futures.
+#[derive(Debug, Clone)]
+pub(crate) struct RepoFutureResolver<T> {
+    result: Arc<Mutex<Option<T>>>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl<T> RepoFutureResolver<T> {
+    pub fn new(result: Arc<Mutex<Option<T>>>, waker: Arc<Mutex<Option<Waker>>>) -> Self {
+        RepoFutureResolver { result, waker }
+    }
+
+    fn resolve_fut(&mut self, result: T) {
+        *self.result.lock() = Some(result);
+        if let Some(waker) = self.waker.lock().take() {
+            waker.wake();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -240,8 +240,7 @@ impl DocState {
 
     fn resolve_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
         match self {
-            // TODO: remove clone.
-            DocState::Bootstrap(observer) => observer.clone().resolve_fut(doc_handle),
+            DocState::Bootstrap(observer) => observer.resolve_fut(doc_handle),
             _ => panic!("Trying to resolve a future for a document that is not boostrapping."),
         }
         *self = DocState::Sync
@@ -283,10 +282,7 @@ impl StorageOperation {
             StorageOperation::Load {
                 resolver,
                 storage_fut: _,
-            } => {
-                // TODO: remove clone.
-                resolver.clone().resolve_fut(doc_handle)
-            }
+            } => resolver.resolve_fut(doc_handle),
         }
     }
 }
@@ -403,7 +399,7 @@ impl DocumentInfo {
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
-        for observer in mem::take(&mut self.change_observers) {
+        for mut observer in mem::take(&mut self.change_observers) {
             observer.resolve_fut(result.clone());
         }
     }
@@ -725,7 +721,7 @@ impl Repo {
                     panic!("Document closed with outstanding handles.");
                 }
             }
-            RepoEvent::LoadDoc(doc_id, resolver) => {
+            RepoEvent::LoadDoc(doc_id, mut resolver) => {
                 let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
                     let shared_document = SharedDocument {
                         automerge: new_document_with_observer(),
