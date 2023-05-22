@@ -212,7 +212,6 @@ impl<T> Future for RepoFuture<T> {
 #[derive(Clone, Debug)]
 pub(crate) enum DocState {
     /// Bootstrapping will resolve into a future doc handle.
-    /// TODO: clean shutdown, resolving to None.
     Bootstrap(RepoFutureResolver<Result<DocHandle, RepoError>>),
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending,
@@ -222,13 +221,15 @@ pub(crate) enum DocState {
     LocallyCreatedNotEdited,
     /// The doc is syncing(can be edited locally).
     Sync,
+    /// The document is in a corrupted state.
+    Error,
 }
 
 impl DocState {
     fn is_bootstrapping(&self) -> bool {
         matches!(self, DocState::Bootstrap(_))
     }
-    
+
     fn is_pending_load(&self) -> bool {
         matches!(self, DocState::LoadPending)
     }
@@ -259,17 +260,17 @@ impl fmt::Debug for StorageOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StorageOperation::Load { .. } => f.write_str("StorageOperation::Load"),
-        };
-        Ok(())
+        }
     }
 }
 
 impl StorageOperation {
     fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Option<Vec<u8>>> {
+        assert!(matches!(*waker, RepoWaker::Storage { .. }));
         let waker = waker_ref(&waker);
         match self {
             StorageOperation::Load {
-                resolver,
+                resolver: _,
                 storage_fut,
             } => {
                 let pinned = Pin::new(storage_fut);
@@ -331,12 +332,12 @@ impl DocumentInfo {
     fn is_boostrapping(&self) -> bool {
         self.state.is_bootstrapping()
     }
-    
+
     fn is_pending_load(&self) -> bool {
         self.state.is_pending_load()
     }
 
-    fn add_pending_storage_operation(&mut self, mut operation: StorageOperation) -> u64 {
+    fn add_pending_storage_operation(&mut self, operation: StorageOperation) -> u64 {
         let counter = self.storage_counter;
         self.storage_counter = self.storage_counter.checked_add(1).unwrap_or(0);
         self.pending_storage_operations.insert(counter, operation);
@@ -347,27 +348,32 @@ impl DocumentInfo {
         &mut self,
         document_id: DocumentId,
         counter: u64,
-        wake_sender: Sender<WakeSignal>,
-        // TODO: add sender and id to info, 
-        // so they don't have to be cloned at each call.
-        repo_sender: Sender<RepoEvent>,
-        repo_id: RepoId,
+        wake_sender: &Sender<WakeSignal>,
+        repo_sender: &Sender<RepoEvent>,
+        repo_id: &RepoId,
     ) {
         if let Some(operation) = self.pending_storage_operations.get_mut(&counter) {
-            let waker = Arc::new(RepoWaker::Stream(wake_sender, repo_id.clone()));
+            let waker = Arc::new(RepoWaker::Storage(
+                wake_sender.clone(),
+                document_id.clone(),
+                counter,
+            ));
             match operation.poll(waker) {
                 Poll::Ready(Some(val)) => {
                     {
                         let mut doc = self.document.lock();
-                        doc.automerge.load_incremental(&val);
+                        if doc.automerge.load_incremental(&val).is_err() {
+                            operation.resolve_fut(Err(RepoError::Incorrect));
+                            self.state = DocState::Error;
+                        }
                     }
                     self.handle_count.fetch_add(1, Ordering::SeqCst);
                     let handle = DocHandle::new(
-                        repo_sender,
+                        repo_sender.clone(),
                         document_id.clone(),
                         self.document.clone(),
                         self.handle_count.clone(),
-                        repo_id,
+                        repo_id.clone(),
                     );
                     operation.resolve_fut(Ok(Some(handle)));
                     // TODO: send sync messages?
@@ -720,7 +726,6 @@ impl Repo {
                 }
             }
             RepoEvent::LoadDoc(doc_id, resolver) => {
-                // TODO: handle doc already present.
                 let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
                     let shared_document = SharedDocument {
                         automerge: new_document_with_observer(),
@@ -730,6 +735,7 @@ impl Repo {
                     let handle_count = Arc::new(AtomicUsize::new(0));
                     DocumentInfo::new(state, document, handle_count)
                 });
+                // If a doc is present in another state, error.
                 if !info.is_pending_load() {
                     resolver.resolve_fut(Err(RepoError::Incorrect));
                     return;
@@ -742,9 +748,9 @@ impl Repo {
                 info.poll_storage_operation(
                     doc_id,
                     counter,
-                    self.wake_sender.clone(),
-                    self.repo_sender.clone(),
-                    self.repo_id.clone(),
+                    &self.wake_sender,
+                    &self.repo_sender,
+                    &self.repo_id,
                 );
             }
             RepoEvent::AddChangeObserver(doc_id, observer) => {
@@ -903,15 +909,21 @@ impl Repo {
                         match event.unwrap() {
                             WakeSignal::Stream(repo_id) => {
                                 self.streams_to_poll.insert(repo_id);
-                            },
+                            }
                             WakeSignal::Sink(repo_id) => {
                                 self.sinks_to_poll.insert(repo_id);
-                            },
+                            }
                             WakeSignal::Storage(doc_id, counter) => {
                                 if let Some(info) = self.documents.get_mut(&doc_id) {
-                                    info.poll_storage_operation(doc_id, counter, self.wake_sender.clone(), self.repo_sender.clone(), self.repo_id.clone());
+                                    info.poll_storage_operation(
+                                        doc_id,
+                                        counter,
+                                        &self.wake_sender,
+                                        &self.repo_sender,
+                                        &self.repo_id,
+                                    );
                                 }
-                            },
+                            }
                         }
                     },
                 }
