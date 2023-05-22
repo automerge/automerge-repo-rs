@@ -376,7 +376,7 @@ impl DocumentInfo {
                     self.state = DocState::Sync;
                 }
                 Poll::Ready(None) => {
-                    // TODO: what do do now? Start syncing after all?
+                    self.state = DocState::Error;
                     operation.resolve_fut(Ok(None));
                 }
                 Poll::Pending => {}
@@ -559,6 +559,12 @@ impl Repo {
                 .sync_states
                 .drain_filter(|repo_id, _| !self.network_adapters.contains_key(repo_id));
         }
+    }
+
+    /// Remove docs in error states.
+    fn remove_errored_docs(&mut self) {
+        self.documents
+            .drain_filter(|_, info| matches!(info.state, DocState::Error));
     }
 
     /// Remove pending messages for repos for which we do not have an adapter anymore.
@@ -883,6 +889,7 @@ impl Repo {
                 self.process_changed_document();
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
+                self.remove_errored_docs();
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
