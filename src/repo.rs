@@ -45,28 +45,6 @@ fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
     document.with_observer(VecOpObserver::default())
 }
 
-#[derive(Debug)]
-pub struct DocHandleFuture {
-    doc_handle: Arc<Mutex<Option<DocHandle>>>,
-    waker: Arc<Mutex<Option<Waker>>>,
-}
-
-impl DocHandleFuture {
-    fn new(doc_handle: Arc<Mutex<Option<DocHandle>>>, waker: Arc<Mutex<Option<Waker>>>) -> Self {
-        DocHandleFuture { doc_handle, waker }
-    }
-}
-
-impl Future for DocHandleFuture {
-    type Output = DocHandle;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        *self.waker.lock() = Some(cx.waker().clone());
-        let mut result = self.doc_handle.lock();
-        result.take().map_or(Poll::Pending, Poll::Ready)
-    }
-}
-
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
         let _ = self.repo_sender.send(RepoEvent::Stop);
@@ -166,13 +144,38 @@ pub(crate) enum RepoEvent {
     Stop,
 }
 
+#[derive(Debug)]
+pub struct DocHandleFuture {
+    doc_handle: Arc<Mutex<Option<Result<DocHandle, RepoError>>>>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl DocHandleFuture {
+    fn new(
+        doc_handle: Arc<Mutex<Option<Result<DocHandle, RepoError>>>>,
+        waker: Arc<Mutex<Option<Waker>>>,
+    ) -> Self {
+        DocHandleFuture { doc_handle, waker }
+    }
+}
+
+impl Future for DocHandleFuture {
+    type Output = Result<DocHandle, RepoError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        *self.waker.lock() = Some(cx.waker().clone());
+        let mut result = self.doc_handle.lock();
+        result.take().map_or(Poll::Pending, Poll::Ready)
+    }
+}
+
 /// The doc info state machine.
 #[derive(Clone, Debug)]
 pub(crate) enum DocState {
     /// Bootstrapping will resolve into a future doc handle.
     /// TODO: clean shutdown, resolving to None.
     Bootstrap {
-        fut_doc_handle: Arc<Mutex<Option<DocHandle>>>,
+        fut_doc_handle: Arc<Mutex<Option<Result<DocHandle, RepoError>>>>,
         fut_waker: Arc<Mutex<Option<Waker>>>,
     },
     /// A document that has been locally created,
@@ -192,7 +195,7 @@ impl DocState {
         matches!(self, DocState::Sync)
     }
 
-    fn resolve_fut(&mut self, doc_handle: DocHandle) {
+    fn resolve_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
         match self {
             DocState::Bootstrap {
                 fut_doc_handle,
@@ -656,7 +659,7 @@ impl Repo {
                             self.repo_id.clone(),
                         );
                         if info.state.is_bootstrapping() {
-                            info.state.resolve_fut(handle);
+                            info.state.resolve_fut(Ok(handle));
                         }
                     }
                 }
@@ -711,6 +714,15 @@ impl Repo {
                 }
             }
             // TODO: close sinks and streams?
+
+            // Error all bootstrapping documents
+            for (_document_id, info) in self
+                .documents
+                .iter_mut()
+                .filter(|(_, info)| info.state.is_bootstrapping())
+            {
+                info.state.resolve_fut(Err(RepoError));
+            }
         });
         RepoHandle {
             handle: Arc::new(Mutex::new(Some(handle))),
