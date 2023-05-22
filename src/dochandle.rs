@@ -80,17 +80,20 @@ impl DocHandle {
         self.document_id.clone()
     }
 
-    /// Run a closure over a mutable reference to the document.
-    pub fn with_doc_mut<F>(&mut self, f: F)
+    /// Run a closure over a mutable reference to the document,
+    /// returns the result of calling the closure.
+    pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
     where
-        F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>),
+        F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
     {
-        {
+        let res = {
             let mut state = self.shared_document.lock();
-            f(&mut state.automerge);
-        }
+            f(&mut state.automerge)
+        };
+        // TODO: check the document and only send below message if there was a change.
         self.repo_sender
             .send(RepoEvent::DocChange(self.document_id.clone()))
             .expect("Failed to send doc change event.");
+        res
     }
 }
