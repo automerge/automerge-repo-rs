@@ -472,17 +472,15 @@ enum RepoWaker {
 /// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
 impl ArcWake for RepoWaker {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        let res = match &**arc_self {
+        // Ignore errors, 
+        // other side may try to wake after repo shut-down.
+        let _ = match &**arc_self {
             RepoWaker::Stream(sender, repo_id) => sender.send(WakeSignal::Stream(repo_id.clone())),
             RepoWaker::Sink(sender, repo_id) => sender.send(WakeSignal::Sink(repo_id.clone())),
             RepoWaker::Storage(sender, doc_id, counter) => {
                 sender.send(WakeSignal::Storage(doc_id.clone(), *counter))
             }
         };
-        if res.is_err() {
-            // TODO: clean shutdown.
-            println!("Wake sender disconnected.");
-        }
     }
 }
 
