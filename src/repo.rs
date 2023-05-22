@@ -17,6 +17,7 @@ use futures::Sink;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::mem;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -40,6 +41,8 @@ pub struct RepoHandle {
 pub enum RepoError {
     /// The repo is shutting down.
     ShutDown,
+    /// Incorrect use of API. TODO: specify.
+    Incorrect,
 }
 
 // TODO: remove observer.
@@ -89,20 +92,32 @@ impl RepoHandle {
         document_id: DocumentId,
     ) -> RepoFuture<DocHandle> {
         let document = new_document_with_observer();
-        let fut_doc_handle = Arc::new(Mutex::new(None));
-        let fut_waker = Arc::new(Mutex::new(None));
-        let future_handle = RepoFuture::new(fut_doc_handle.clone(), fut_waker.clone());
-        let doc_info = self.new_document_info(
-            document,
-            DocState::Bootstrap {
-                fut_doc_handle,
-                fut_waker,
-            },
-        );
+        let result = Arc::new(Mutex::new(None));
+        let waker = Arc::new(Mutex::new(None));
+        let fut = RepoFuture::new(result.clone(), waker.clone());
+        let observer = RepoFutureResolver::new(result, waker);
+        let doc_info = self.new_document_info(document, DocState::Bootstrap(observer));
         self.repo_sender
             .send(RepoEvent::NewDoc(document_id, doc_info))
             .expect("Failed to send repo event.");
-        future_handle
+        fut
+    }
+
+    /// Attempt to load the document given by `id` from storage
+    ///
+    /// If the document is not found in storage then `Ok(None)` is returned.
+    ///
+    /// Note that this _does not_ attempt to fetch the document from the
+    /// network.
+    pub fn load(&self, id: DocumentId) -> RepoFuture<Option<DocHandle>> {
+        let result = Arc::new(Mutex::new(None));
+        let waker = Arc::new(Mutex::new(None));
+        let fut = RepoFuture::new(result.clone(), waker.clone());
+        let observer = RepoFutureResolver::new(result, waker);
+        self.repo_sender
+            .send(RepoEvent::LoadDoc(id, observer))
+            .expect("Failed to send repo event.");
+        fut
     }
 
     fn new_document_info(
@@ -129,22 +144,19 @@ impl RepoHandle {
     }
 }
 
-/// Used to resolve futures for DocHandle::changed.
-#[derive(Debug)]
-pub(crate) struct ChangeObserver {
-    result: Arc<Mutex<Option<Result<(), RepoError>>>>,
+/// Used to resolve futures.
+#[derive(Debug, Clone)]
+pub(crate) struct RepoFutureResolver<T> {
+    result: Arc<Mutex<Option<T>>>,
     waker: Arc<Mutex<Option<Waker>>>,
 }
 
-impl ChangeObserver {
-    pub fn new(
-        result: Arc<Mutex<Option<Result<(), RepoError>>>>,
-        waker: Arc<Mutex<Option<Waker>>>,
-    ) -> Self {
-        ChangeObserver { result, waker }
+impl<T> RepoFutureResolver<T> {
+    pub fn new(result: Arc<Mutex<Option<T>>>, waker: Arc<Mutex<Option<Waker>>>) -> Self {
+        RepoFutureResolver { result, waker }
     }
 
-    fn resolve_fut(self, result: Result<(), RepoError>) {
+    fn resolve_fut(self, result: T) {
         *self.result.lock() = Some(result);
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
@@ -161,7 +173,12 @@ pub(crate) enum RepoEvent {
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
     /// Add a new change observer to a document.
-    AddChangeObserver(DocumentId, ChangeObserver),
+    AddChangeObserver(DocumentId, RepoFutureResolver<Result<(), RepoError>>),
+    /// Load a document from storage.
+    LoadDoc(
+        DocumentId,
+        RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
+    ),
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
     Stop,
 }
@@ -196,10 +213,9 @@ impl<T> Future for RepoFuture<T> {
 pub(crate) enum DocState {
     /// Bootstrapping will resolve into a future doc handle.
     /// TODO: clean shutdown, resolving to None.
-    Bootstrap {
-        fut_doc_handle: Arc<Mutex<Option<Result<DocHandle, RepoError>>>>,
-        fut_waker: Arc<Mutex<Option<Waker>>>,
-    },
+    Bootstrap(RepoFutureResolver<Result<DocHandle, RepoError>>),
+    /// Pending a load from storage, not attempting to sync over network.
+    LoadPending,
     /// A document that has been locally created,
     /// and not edited yet,
     /// should not be synced until it has been.
@@ -210,7 +226,11 @@ pub(crate) enum DocState {
 
 impl DocState {
     fn is_bootstrapping(&self) -> bool {
-        matches!(self, DocState::Bootstrap { .. })
+        matches!(self, DocState::Bootstrap(_))
+    }
+    
+    fn is_pending_load(&self) -> bool {
+        matches!(self, DocState::LoadPending)
     }
 
     fn should_sync(&self) -> bool {
@@ -219,18 +239,54 @@ impl DocState {
 
     fn resolve_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
         match self {
-            DocState::Bootstrap {
-                fut_doc_handle,
-                fut_waker,
-            } => {
-                *fut_doc_handle.lock() = Some(doc_handle);
-                if let Some(fut_waker) = fut_waker.lock().take() {
-                    fut_waker.wake();
-                }
-            }
+            // TODO: remove clone.
+            DocState::Bootstrap(observer) => observer.clone().resolve_fut(doc_handle),
             _ => panic!("Trying to resolve a future for a document that is not boostrapping."),
         }
         *self = DocState::Sync
+    }
+}
+
+/// Info about pending storage operations.
+enum StorageOperation {
+    Load {
+        resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
+        storage_fut: Box<dyn Future<Output = Option<Vec<u8>>> + Send + Unpin>,
+    },
+}
+
+impl fmt::Debug for StorageOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StorageOperation::Load { .. } => f.write_str("StorageOperation::Load"),
+        };
+        Ok(())
+    }
+}
+
+impl StorageOperation {
+    fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Option<Vec<u8>>> {
+        let waker = waker_ref(&waker);
+        match self {
+            StorageOperation::Load {
+                resolver,
+                storage_fut,
+            } => {
+                let pinned = Pin::new(storage_fut);
+                return pinned.poll(&mut Context::from_waker(&waker));
+            }
+        }
+    }
+    fn resolve_fut(&mut self, doc_handle: Result<Option<DocHandle>, RepoError>) {
+        match self {
+            StorageOperation::Load {
+                resolver,
+                storage_fut: _,
+            } => {
+                // TODO: remove clone.
+                resolver.clone().resolve_fut(doc_handle)
+            }
+        }
     }
 }
 
@@ -246,8 +302,12 @@ pub(crate) struct DocumentInfo {
     /// Per repo automerge sync state.
     sync_states: HashMap<RepoId, SyncState>,
     /// Used to resolve futures for DocHandle::changed.
-    change_observers: Vec<ChangeObserver>,
+    change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
     patches_since_last_save: usize,
+    /// Used to number unique storage operations.
+    storage_counter: u64,
+    /// Backing for storage operations.
+    pending_storage_operations: HashMap<u64, StorageOperation>,
 }
 
 impl DocumentInfo {
@@ -263,11 +323,69 @@ impl DocumentInfo {
             sync_states: Default::default(),
             change_observers: Default::default(),
             patches_since_last_save: 0,
+            storage_counter: 0,
+            pending_storage_operations: Default::default(),
         }
     }
 
     fn is_boostrapping(&self) -> bool {
         self.state.is_bootstrapping()
+    }
+    
+    fn is_pending_load(&self) -> bool {
+        self.state.is_pending_load()
+    }
+
+    fn add_pending_storage_operation(&mut self, mut operation: StorageOperation) -> u64 {
+        let counter = self.storage_counter;
+        self.storage_counter = self.storage_counter.checked_add(1).unwrap_or(0);
+        self.pending_storage_operations.insert(counter, operation);
+        counter
+    }
+
+    fn poll_storage_operation(
+        &mut self,
+        document_id: DocumentId,
+        counter: u64,
+        wake_sender: Sender<WakeSignal>,
+        // TODO: add sender and id to info, 
+        // so they don't have to be cloned at each call.
+        repo_sender: Sender<RepoEvent>,
+        repo_id: RepoId,
+    ) {
+        if let Some(operation) = self.pending_storage_operations.get_mut(&counter) {
+            let waker = Arc::new(RepoWaker::Stream(wake_sender, repo_id.clone()));
+            match operation.poll(waker) {
+                Poll::Ready(Some(val)) => {
+                    {
+                        let mut doc = self.document.lock();
+                        doc.automerge.load_incremental(&val);
+                    }
+                    self.handle_count.fetch_add(1, Ordering::SeqCst);
+                    let handle = DocHandle::new(
+                        repo_sender,
+                        document_id.clone(),
+                        self.document.clone(),
+                        self.handle_count.clone(),
+                        repo_id,
+                    );
+                    operation.resolve_fut(Ok(Some(handle)));
+                    // TODO: send sync messages?
+                    self.state = DocState::Sync;
+                }
+                Poll::Ready(None) => {
+                    // TODO: what do do now? Start syncing after all?
+                    operation.resolve_fut(Ok(None));
+                }
+                Poll::Pending => {}
+            }
+        }
+    }
+
+    fn cancel_storage_operations(&mut self) {
+        for operation in self.pending_storage_operations.values_mut() {
+            operation.resolve_fut(Err(RepoError::ShutDown));
+        }
     }
 
     fn note_changes(&mut self) {
@@ -338,6 +456,7 @@ impl DocumentInfo {
 enum WakeSignal {
     Stream(RepoId),
     Sink(RepoId),
+    Storage(DocumentId, u64),
 }
 
 /// Waking mechanism for stream and sinks.
@@ -345,6 +464,7 @@ enum WakeSignal {
 enum RepoWaker {
     Stream(Sender<WakeSignal>, RepoId),
     Sink(Sender<WakeSignal>, RepoId),
+    Storage(Sender<WakeSignal>, DocumentId, u64),
 }
 
 /// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
@@ -353,6 +473,9 @@ impl ArcWake for RepoWaker {
         let res = match &**arc_self {
             RepoWaker::Stream(sender, repo_id) => sender.send(WakeSignal::Stream(repo_id.clone())),
             RepoWaker::Sink(sender, repo_id) => sender.send(WakeSignal::Sink(repo_id.clone())),
+            RepoWaker::Storage(sender, doc_id, counter) => {
+                sender.send(WakeSignal::Storage(doc_id.clone(), *counter))
+            }
         };
         if res.is_err() {
             // TODO: clean shutdown.
@@ -596,6 +719,34 @@ impl Repo {
                     panic!("Document closed with outstanding handles.");
                 }
             }
+            RepoEvent::LoadDoc(doc_id, resolver) => {
+                // TODO: handle doc already present.
+                let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
+                    let shared_document = SharedDocument {
+                        automerge: new_document_with_observer(),
+                    };
+                    let state = DocState::LoadPending;
+                    let document = Arc::new(Mutex::new(shared_document));
+                    let handle_count = Arc::new(AtomicUsize::new(0));
+                    DocumentInfo::new(state, document, handle_count)
+                });
+                if !info.is_pending_load() {
+                    resolver.resolve_fut(Err(RepoError::Incorrect));
+                    return;
+                }
+                let storage_fut = self.storage.get(doc_id.clone());
+                let counter = info.add_pending_storage_operation(StorageOperation::Load {
+                    storage_fut,
+                    resolver,
+                });
+                info.poll_storage_operation(
+                    doc_id,
+                    counter,
+                    self.wake_sender.clone(),
+                    self.repo_sender.clone(),
+                    self.repo_id.clone(),
+                );
+            }
             RepoEvent::AddChangeObserver(doc_id, observer) => {
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     info.change_observers.push(observer);
@@ -756,13 +907,18 @@ impl Repo {
                             WakeSignal::Sink(repo_id) => {
                                 self.sinks_to_poll.insert(repo_id);
                             },
+                            WakeSignal::Storage(doc_id, counter) => {
+                                if let Some(info) = self.documents.get_mut(&doc_id) {
+                                    info.poll_storage_operation(doc_id, counter, self.wake_sender.clone(), self.repo_sender.clone(), self.repo_id.clone());
+                                }
+                            },
                         }
                     },
                 }
             }
             // TODO: close sinks and streams?
 
-            // Error all bootstrapping documents
+            // Error all futures for all docs.
             for (_document_id, info) in self
                 .documents
                 .iter_mut()
@@ -770,6 +926,7 @@ impl Repo {
             {
                 info.state.resolve_fut(Err(RepoError::ShutDown));
                 info.resolve_change_observers(Err(RepoError::ShutDown));
+                info.cancel_storage_operations()
             }
         });
         RepoHandle {

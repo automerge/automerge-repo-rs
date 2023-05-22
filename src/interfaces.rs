@@ -1,6 +1,7 @@
 use automerge::sync::Message as SyncMessage;
 use futures::sink::Sink;
 use futures::stream::Stream;
+use futures::Future;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter, Result};
 use std::marker::Unpin;
@@ -68,12 +69,12 @@ pub trait NetworkAdapter:
 
 // TODO: return futures.
 pub trait StorageAdapter: Send {
-    fn get(&self, _id: DocumentId) -> Option<Vec<u8>> {
-        None
+    fn get(&self, _id: DocumentId) -> Box<dyn Future<Output = Option<Vec<u8>>> + Send + Unpin> {
+        Box::new(futures::future::ready(None))
     }
 
-    fn load_all(&self) -> Vec<(DocumentId, Vec<u8>)> {
-        vec![]
+    fn list_all(&self) -> Box<dyn Future<Output = Vec<DocumentId>>> {
+        Box::new(futures::future::ready(vec![]))
     }
 
     fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}
