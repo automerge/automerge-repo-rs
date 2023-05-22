@@ -731,7 +731,6 @@ impl Repo {
                     let handle_count = Arc::new(AtomicUsize::new(0));
                     DocumentInfo::new(state, document, handle_count)
                 });
-                // If a doc is present in another state, error.
                 if !info.is_pending_load() {
                     resolver.resolve_fut(Err(RepoError::Incorrect));
                     return;
@@ -766,9 +765,6 @@ impl Repo {
                 let our_id = self.get_repo_id().clone();
                 for (document_id, info) in self.documents.iter_mut() {
                     if !info.state.should_sync() {
-                        // Do not sync docs that have been locally created
-                        // and not locally edited yet,
-                        // as well as those that are bootstrapping.
                         continue;
                     }
                     if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
