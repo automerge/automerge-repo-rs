@@ -903,6 +903,7 @@ impl Repo {
                     },
                     recv(self.wake_receiver) -> event => {
                         if event.is_err() {
+                            // Repo keeps a sender around, should never happen.
                             panic!("Wake senders dropped");
                         }
                         match event.unwrap() {
