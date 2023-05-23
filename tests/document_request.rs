@@ -1,20 +1,17 @@
-mod common;
+extern crate test_utils;
 
+use test_utils::network_utils::Network;
+use test_utils::storage_utils::SimpleStorage;
 use automerge::transaction::Transactable;
-use automerge_repo::{NetworkEvent, NetworkMessage, Repo, StorageAdapter};
-use common::network_utils::Network;
+use automerge_repo::{NetworkEvent, NetworkMessage, Repo};
 use std::collections::HashMap;
 use tokio::sync::mpsc::channel;
-
-struct Storage;
-
-impl StorageAdapter for Storage {}
 
 #[test]
 fn test_requesting_document_connected_peers() {
     // Create two repos.
-    let repo_1 = Repo::new(None, Box::new(Storage));
-    let repo_2 = Repo::new(None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
+    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
     let mut repo_handle_1 = repo_1.run();
@@ -106,8 +103,8 @@ fn test_requesting_document_connected_peers() {
 #[test]
 fn test_requesting_document_unconnected_peers() {
     // Create two repos.
-    let repo_1 = Repo::new(None, Box::new(Storage));
-    let repo_2 = Repo::new(None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
+    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
     let mut repo_handle_1 = repo_1.run();
@@ -201,8 +198,8 @@ fn test_requesting_document_unconnected_peers() {
 #[test]
 fn test_request_with_repo_stop() {
     // Create two repos.
-    let repo_1 = Repo::new(None, Box::new(Storage));
-    let repo_2 = Repo::new(None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
+    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
     let mut repo_handle_1 = repo_1.run();

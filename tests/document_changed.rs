@@ -1,21 +1,18 @@
-mod common;
+extern crate test_utils;
 
+use test_utils::network_utils::Network;
+use test_utils::storage_utils::SimpleStorage;
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{NetworkEvent, NetworkMessage, Repo, StorageAdapter};
-use common::network_utils::Network;
+use automerge_repo::{NetworkEvent, NetworkMessage, Repo};
 use std::collections::HashMap;
 use tokio::sync::mpsc::channel;
-
-struct Storage;
-
-impl StorageAdapter for Storage {}
 
 #[test]
 fn test_document_changed_over_sync() {
     // Create two repos.
-    let repo_1 = Repo::new(None, Box::new(Storage));
-    let repo_2 = Repo::new(None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
+    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
     let mut repo_handle_1 = repo_1.run();
@@ -132,7 +129,7 @@ fn test_document_changed_over_sync() {
 #[test]
 fn test_document_changed_locally() {
     // Create two repos.
-    let repo_1 = Repo::new(None, Box::new(Storage));
+    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repo in the background.
     let mut repo_handle_1 = repo_1.run();

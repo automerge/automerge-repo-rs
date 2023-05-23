@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 #[derive(Debug, Clone)]
-pub(crate) struct Network<NetworkMessage> {
+pub struct Network<NetworkMessage> {
     buffer: Arc<Mutex<VecDeque<NetworkEvent>>>,
     stream_waker: Arc<Mutex<Option<Waker>>>,
     outgoing: Arc<Mutex<VecDeque<NetworkMessage>>>,
