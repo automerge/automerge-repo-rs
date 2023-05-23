@@ -1,11 +1,11 @@
 extern crate test_utils;
 
-use test_utils::network_utils::Network;
-use test_utils::storage_utils::SimpleStorage;
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{NetworkEvent, NetworkMessage, Repo};
 use std::collections::HashMap;
+use test_utils::network_utils::Network;
+use test_utils::storage_utils::SimpleStorage;
 use tokio::sync::mpsc::channel;
 
 #[test]
