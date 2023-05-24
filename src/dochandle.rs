@@ -1,7 +1,5 @@
 use crate::interfaces::{DocumentId, RepoId};
-use crate::repo::{
-    new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture, RepoFutureResolver,
-};
+use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
 use automerge::transaction::Observed;
 use automerge::{AutoCommitWithObs, VecOpObserver};
 use crossbeam_channel::Sender;
@@ -111,7 +109,7 @@ impl DocHandle {
         };
         res
     }
-    
+
     /// Returns a future that will resolve when the document has changed,
     /// either via another handle, or by applying a sync messsage.
     /// TODO: check sync message and docs following mutable calls,

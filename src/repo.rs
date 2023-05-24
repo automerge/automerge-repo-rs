@@ -290,13 +290,13 @@ impl DocState {
     }
 
     fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
-        assert!(matches!(*waker, RepoWaker::Storage { .. }));
-        let waker = waker_ref(&waker);
         match self {
             DocState::LoadPending {
                 resolver: _,
                 storage_fut,
             } => {
+                assert!(matches!(*waker, RepoWaker::Storage { .. }));
+                let waker = waker_ref(&waker);
                 let pinned = Pin::new(storage_fut);
                 return pinned.poll(&mut Context::from_waker(&waker));
             }
