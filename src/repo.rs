@@ -259,13 +259,7 @@ impl DocState {
     }
 
     fn should_sync(&self) -> bool {
-        // FIXME: remove DocState::LocallyCreatedNotEdited.
-        // In order to make the `test_document_changed_over_sync` without it,
-        // add a `connected` api that awaits
-        // that the local repo is connected to at least one peer.
-        matches!(self, DocState::Sync)
-            || matches!(self, DocState::Bootstrap { .. })
-            || matches!(self, DocState::LocallyCreatedNotEdited)
+        matches!(self, DocState::Sync) || matches!(self, DocState::Bootstrap { .. })
     }
 
     fn resolve_bootstrap_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
@@ -678,8 +672,7 @@ impl Repo {
             RepoEvent::NewDoc(document_id, mut info) => {
                 // If this is a bootsrapped document.
                 if info.is_boostrapping() {
-                    // TODO: check local storage first.
-
+                    // TODO: check local storage.
                     // Send a sync message to all other repos we are connected with.
                     for repo_id in self.network_adapters.keys() {
                         if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
@@ -701,13 +694,15 @@ impl Repo {
             }
             RepoEvent::DocChange(doc_id) => {
                 // Handle doc changes: sync the document.
+                let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
+                    let should_announce = matches!(info.state, DocState::LocallyCreatedNotEdited);
                     info.state = DocState::Sync;
                     info.note_changes();
                     self.pending_saves.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
-                            from_repo_id: self.get_repo_id().clone(),
+                            from_repo_id: local_repo_id.clone(),
                             to_repo_id: to_repo_id.clone(),
                             document_id: doc_id.clone(),
                             message,
@@ -717,6 +712,25 @@ impl Repo {
                             .or_insert_with(Default::default)
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
+                    }
+                    if should_announce {
+                        // Send a sync message to all other repos we are connected with.
+                        for repo_id in self.network_adapters.keys() {
+                            if let Some(message) = info.generate_first_sync_message(repo_id.clone())
+                            {
+                                let outgoing = NetworkMessage::Sync {
+                                    from_repo_id: local_repo_id.clone(),
+                                    to_repo_id: repo_id.clone(),
+                                    document_id: doc_id.clone(),
+                                    message,
+                                };
+                                self.pending_messages
+                                    .entry(repo_id.clone())
+                                    .or_insert_with(Default::default)
+                                    .push_back(outgoing);
+                                self.sinks_to_poll.insert(repo_id.clone());
+                            }
+                        }
                     }
                 }
             }
