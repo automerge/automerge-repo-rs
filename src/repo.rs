@@ -815,6 +815,10 @@ impl Repo {
                             DocumentInfo::new(state, document, handle_count)
                         });
 
+                    if info.state.is_pending_load() {
+                        continue;
+                    }
+
                     // TODO: only do if applying the sync message changed the doc.
                     info.note_changes();
                     self.pending_saves.push(document_id.clone());
