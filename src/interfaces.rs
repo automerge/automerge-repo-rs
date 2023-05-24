@@ -3,14 +3,14 @@ use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::Future;
 use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter, Result};
+use std::fmt::{Display, Formatter};
 use std::marker::Unpin;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct RepoId(pub String);
 
 impl Display for RepoId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
@@ -19,7 +19,7 @@ impl Display for RepoId {
 pub struct DocumentId(pub (RepoId, u64));
 
 impl Display for DocumentId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}::{}", self.0 .0, self.0 .1)
     }
 }
@@ -67,14 +67,23 @@ pub trait NetworkAdapter:
 {
 }
 
+/// Errors used by storage.
+#[derive(Clone, Debug)]
+pub enum StorageError {
+    Error,
+}
+
 // TODO: return futures.
 pub trait StorageAdapter: Send {
-    fn get(&self, _id: DocumentId) -> Box<dyn Future<Output = Option<Vec<u8>>> + Send + Unpin> {
-        Box::new(futures::future::ready(None))
+    fn get(
+        &self,
+        _id: DocumentId,
+    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
+        Box::new(futures::future::ready(Ok(None)))
     }
 
-    fn list_all(&self) -> Box<dyn Future<Output = Vec<DocumentId>>> {
-        Box::new(futures::future::ready(vec![]))
+    fn list_all(&self) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>>> {
+        Box::new(futures::future::ready(Ok(vec![])))
     }
 
     fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}

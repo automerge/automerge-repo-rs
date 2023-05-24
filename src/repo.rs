@@ -1,7 +1,7 @@
 use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{
-    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter,
+    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter, StorageError,
 };
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::transaction::Observed;
@@ -43,6 +43,8 @@ pub enum RepoError {
     Shutdown,
     /// Incorrect use of API. TODO: specify.
     Incorrect,
+    /// Error coming from storage.
+    StorageError(StorageError),
 }
 
 // TODO: remove observer.
@@ -215,7 +217,7 @@ pub(crate) enum DocState {
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending {
         resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
-        storage_fut: Box<dyn Future<Output = Option<Vec<u8>>> + Send + Unpin>,
+        storage_fut: Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>,
     },
     /// A document that has been locally created,
     /// and not edited yet,
@@ -285,7 +287,7 @@ impl DocState {
         *self = DocState::Sync
     }
 
-    fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Option<Vec<u8>>> {
+    fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
         assert!(matches!(*waker, RepoWaker::Storage { .. }));
         let waker = waker_ref(&waker);
         match self {
@@ -350,7 +352,7 @@ impl DocumentInfo {
     ) {
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id.clone()));
         match self.state.poll(waker) {
-            Poll::Ready(Some(val)) => {
+            Poll::Ready(Ok(Some(val))) => {
                 {
                     let mut doc = self.document.lock();
                     if doc.automerge.load_incremental(&val).is_err() {
@@ -370,9 +372,13 @@ impl DocumentInfo {
                 self.state.resolve_load_fut(Ok(Some(handle)));
                 // TODO: send sync messages?
             }
-            Poll::Ready(None) => {
-                self.state = DocState::Error;
+            Poll::Ready(Ok(None)) => {
                 self.state.resolve_load_fut(Ok(None));
+            }
+            Poll::Ready(Err(err)) => {
+                self.state = DocState::Error;
+                self.state
+                    .resolve_load_fut(Err(RepoError::StorageError(err)));
             }
             Poll::Pending => {}
         }

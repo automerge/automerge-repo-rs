@@ -1,4 +1,4 @@
-use automerge_repo::{DocumentId, StorageAdapter};
+use automerge_repo::{DocumentId, StorageAdapter, StorageError};
 use futures::future::TryFutureExt;
 use futures::Future;
 use parking_lot::Mutex;
@@ -30,16 +30,24 @@ impl InMemoryStorage {
 }
 
 impl StorageAdapter for InMemoryStorage {
-    fn get(&self, id: DocumentId) -> Box<dyn Future<Output = Option<Vec<u8>>> + Send + Unpin> {
-        Box::new(futures::future::ready(
-            self.documents.lock().get(&id).cloned(),
-        ))
+    fn get(
+        &self,
+        id: DocumentId,
+    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
+        Box::new(futures::future::ready(Ok(self
+            .documents
+            .lock()
+            .get(&id)
+            .cloned())))
     }
 
-    fn list_all(&self) -> Box<dyn Future<Output = Vec<DocumentId>>> {
-        Box::new(futures::future::ready(
-            self.documents.lock().keys().cloned().collect(),
-        ))
+    fn list_all(&self) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>>> {
+        Box::new(futures::future::ready(Ok(self
+            .documents
+            .lock()
+            .keys()
+            .cloned()
+            .collect())))
     }
 
     fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}
@@ -72,14 +80,17 @@ impl AsyncInMemoryStorage {
 }
 
 impl StorageAdapter for AsyncInMemoryStorage {
-    fn get(&self, id: DocumentId) -> Box<dyn Future<Output = Option<Vec<u8>>> + Send + Unpin> {
+    fn get(
+        &self,
+        id: DocumentId,
+    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
         let (tx, rx) = oneshot();
         self.chan.blocking_send((id, tx)).unwrap();
-        Box::new(rx.unwrap_or_else(|_| None))
+        Box::new(rx.map_err(|_| StorageError::Error))
     }
 
-    fn list_all(&self) -> Box<dyn Future<Output = Vec<DocumentId>>> {
-        Box::new(futures::future::ready(vec![]))
+    fn list_all(&self) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>>> {
+        Box::new(futures::future::ready(Ok(vec![])))
     }
 
     fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}

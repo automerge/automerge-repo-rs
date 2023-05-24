@@ -114,13 +114,18 @@ fn test_loading_document_found_async() {
 
         // Spawn a task that awaits the requested doc handle.
         tokio::spawn(async move {
-            let equals = repo_handle.load(doc_id).await.unwrap().unwrap().with_doc(|doc| {
-                let val = doc
-                    .get(automerge::ROOT, "repo_id")
-                    .expect("Failed to read the document.")
-                    .unwrap();
-                val.0.to_str().clone().unwrap() == format!("{}", expected_repo_id)
-            });
+            let equals = repo_handle
+                .load(doc_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .with_doc(|doc| {
+                    let val = doc
+                        .get(automerge::ROOT, "repo_id")
+                        .expect("Failed to read the document.")
+                        .unwrap();
+                    val.0.to_str().clone().unwrap() == format!("{}", expected_repo_id)
+                });
             if equals {
                 // Shut down the repo.
                 repo_handle.stop().unwrap();
