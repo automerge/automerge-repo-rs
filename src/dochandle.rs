@@ -1,5 +1,7 @@
 use crate::interfaces::{DocumentId, RepoId};
-use crate::repo::{RepoEvent, RepoFuture, RepoFutureResolver};
+use crate::repo::{
+    new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture, RepoFutureResolver,
+};
 use automerge::transaction::Observed;
 use automerge::{AutoCommitWithObs, VecOpObserver};
 use crossbeam_channel::Sender;
@@ -80,11 +82,8 @@ impl DocHandle {
         self.document_id.clone()
     }
 
-    pub fn changed(&self) -> RepoFuture<()> {
-        let result = Arc::new(Mutex::new(None));
-        let waker = Arc::new(Mutex::new(None));
-        let fut = RepoFuture::new(result.clone(), waker.clone());
-        let observer = RepoFutureResolver::new(result, waker);
+    pub fn changed(&self) -> RepoFuture<Result<(), RepoError>> {
+        let (fut, observer) = new_repo_future_with_resolver();
         self.repo_sender
             .send(RepoEvent::AddChangeObserver(
                 self.document_id.clone(),

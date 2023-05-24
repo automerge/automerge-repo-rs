@@ -53,6 +53,15 @@ fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
     document.with_observer(VecOpObserver::default())
 }
 
+/// Create a pair of repo future and resolver.
+pub(crate) fn new_repo_future_with_resolver<F>() -> (RepoFuture<F>, RepoFutureResolver<F>) {
+    let result = Arc::new(Mutex::new(None));
+    let waker = Arc::new(Mutex::new(None));
+    let fut = RepoFuture::new(result.clone(), waker.clone());
+    let resolver = RepoFutureResolver::new(result, waker);
+    (fut, resolver)
+}
+
 impl RepoHandle {
     pub fn stop(self) -> Result<(), RepoError> {
         let _ = self.repo_sender.send(RepoEvent::Stop);
@@ -85,20 +94,14 @@ impl RepoHandle {
         handle
     }
 
-    /// Boostrap a document using it's ID only.
-    /// The returned document should not be edited until ready,
-    /// use `DocHandle.wait_ready` to wait for it.
+    /// Boostrap a document using it's ID only
     pub fn request_document(
         &self,
-        // TODO: use PeerSpec concept.
         document_id: DocumentId,
-    ) -> RepoFuture<DocHandle> {
+    ) -> RepoFuture<Result<DocHandle, RepoError>> {
         let document = new_document_with_observer();
-        let result = Arc::new(Mutex::new(None));
-        let waker = Arc::new(Mutex::new(None));
-        let fut = RepoFuture::new(result.clone(), waker.clone());
-        let observer = RepoFutureResolver::new(result, waker);
-        let doc_info = self.new_document_info(document, DocState::Bootstrap(observer));
+        let (fut, resolver) = new_repo_future_with_resolver();
+        let doc_info = self.new_document_info(document, DocState::Bootstrap(resolver));
         self.repo_sender
             .send(RepoEvent::NewDoc(document_id, doc_info))
             .expect("Failed to send repo event.");
@@ -111,13 +114,10 @@ impl RepoHandle {
     ///
     /// Note that this _does not_ attempt to fetch the document from the
     /// network.
-    pub fn load(&self, id: DocumentId) -> RepoFuture<Option<DocHandle>> {
-        let result = Arc::new(Mutex::new(None));
-        let waker = Arc::new(Mutex::new(None));
-        let fut = RepoFuture::new(result.clone(), waker.clone());
-        let observer = RepoFutureResolver::new(result, waker);
+    pub fn load(&self, id: DocumentId) -> RepoFuture<Result<Option<DocHandle>, RepoError>> {
+        let (fut, resolver) = new_repo_future_with_resolver();
         self.repo_sender
-            .send(RepoEvent::LoadDoc(id, observer))
+            .send(RepoEvent::LoadDoc(id, resolver))
             .expect("Failed to send repo event.");
         fut
     }
@@ -187,21 +187,18 @@ impl<T> RepoFutureResolver<T> {
 
 #[derive(Debug)]
 pub struct RepoFuture<T> {
-    result: Arc<Mutex<Option<Result<T, RepoError>>>>,
+    result: Arc<Mutex<Option<T>>>,
     waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl<T> RepoFuture<T> {
-    pub fn new(
-        result: Arc<Mutex<Option<Result<T, RepoError>>>>,
-        waker: Arc<Mutex<Option<Waker>>>,
-    ) -> Self {
+    pub fn new(result: Arc<Mutex<Option<T>>>, waker: Arc<Mutex<Option<Waker>>>) -> Self {
         RepoFuture { result, waker }
     }
 }
 
 impl<T> Future for RepoFuture<T> {
-    type Output = Result<T, RepoError>;
+    type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         *self.waker.lock() = Some(cx.waker().clone());
