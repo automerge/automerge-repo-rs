@@ -227,7 +227,9 @@ pub(crate) enum DocState {
     LocallyCreatedNotEdited,
     /// The doc is syncing(can be edited locally).
     Sync,
-    /// The document is in a corrupted state.
+    /// The document is in a corrupted state,
+    /// prune it from memory.
+    /// TODO: prune it from storage as well?
     Error,
 }
 
@@ -263,7 +265,6 @@ impl DocState {
                 panic!("Trying to resolve a boostrap future for a document that does not have one.")
             }
         }
-        *self = DocState::Sync
     }
 
     fn resolve_load_fut(&mut self, doc_handle: Result<Option<DocHandle>, RepoError>) {
@@ -274,7 +275,6 @@ impl DocState {
             } => resolver.resolve_fut(doc_handle),
             _ => panic!("Trying to resolve a load future for a document that does not have one."),
         }
-        *self = DocState::Sync
     }
 
     fn resolve_any_fut_for_shutdown(&mut self) {
@@ -286,7 +286,6 @@ impl DocState {
             DocState::Bootstrap(observer) => observer.resolve_fut(Err(RepoError::Shutdown)),
             _ => {}
         }
-        *self = DocState::Sync
     }
 
     fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
@@ -372,15 +371,17 @@ impl DocumentInfo {
                     repo_id.clone(),
                 );
                 self.state.resolve_load_fut(Ok(Some(handle)));
+                self.state = DocState::Sync;
                 // TODO: send sync messages?
             }
             Poll::Ready(Ok(None)) => {
                 self.state.resolve_load_fut(Ok(None));
+                self.state = DocState::Error;
             }
             Poll::Ready(Err(err)) => {
-                self.state = DocState::Error;
                 self.state
                     .resolve_load_fut(Err(RepoError::StorageError(err)));
+                self.state = DocState::Error;
             }
             Poll::Pending => {}
         }
@@ -852,6 +853,7 @@ impl Repo {
                         );
                         if info.state.is_bootstrapping() {
                             info.state.resolve_bootstrap_fut(Ok(handle));
+                            info.state = DocState::Sync;
                         }
                     }
                 }
