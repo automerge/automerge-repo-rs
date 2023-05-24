@@ -922,11 +922,7 @@ impl Repo {
             // TODO: close sinks and streams?
 
             // Error all futures for all docs.
-            for (_document_id, info) in self
-                .documents
-                .iter_mut()
-                .filter(|(_, info)| info.state.is_bootstrapping())
-            {
+            for (_document_id, info) in self.documents.iter_mut() {
                 info.state.resolve_any_fut_for_shutdown();
                 info.resolve_change_observers(Err(RepoError::Shutdown));
             }
