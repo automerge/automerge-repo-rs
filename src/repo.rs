@@ -135,6 +135,7 @@ impl RepoHandle {
         DocumentInfo::new(state, document, handle_count)
     }
 
+    /// Add a network adapter, representing a connection with a remote repo.
     pub fn new_network_adapter(
         &self,
         repo_id: RepoId,
@@ -161,7 +162,9 @@ pub(crate) enum RepoEvent {
         DocumentId,
         RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
     ),
+    /// Connect with a remote repo.
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
+    /// Stop the repo.
     Stop,
 }
 
@@ -185,6 +188,7 @@ impl<T> RepoFutureResolver<T> {
     }
 }
 
+/// Futures returned by the public API fo the repo and doc handle.
 #[derive(Debug)]
 pub struct RepoFuture<T> {
     result: Arc<Mutex<Option<T>>>,
@@ -218,7 +222,8 @@ pub(crate) enum DocState {
     },
     /// A document that has been locally created,
     /// and not edited yet,
-    /// should not be synced until it has been.
+    /// should not be synced
+    /// until it has been locally edited.
     LocallyCreatedNotEdited,
     /// The doc is syncing(can be edited locally).
     Sync,

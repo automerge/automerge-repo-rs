@@ -82,17 +82,6 @@ impl DocHandle {
         self.document_id.clone()
     }
 
-    pub fn changed(&self) -> RepoFuture<Result<(), RepoError>> {
-        let (fut, observer) = new_repo_future_with_resolver();
-        self.repo_sender
-            .send(RepoEvent::AddChangeObserver(
-                self.document_id.clone(),
-                observer,
-            ))
-            .expect("Failed to send doc change event.");
-        fut
-    }
-
     /// Run a closure over a mutable reference to the document,
     /// returns the result of calling the closure.
     pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
@@ -121,5 +110,20 @@ impl DocHandle {
             f(&state.automerge)
         };
         res
+    }
+    
+    /// Returns a future that will resolve when the document has changed,
+    /// either via another handle, or by applying a sync messsage.
+    /// TODO: check sync message and docs following mutable calls,
+    /// and only resolve the future when there was an actual change.
+    pub fn changed(&self) -> RepoFuture<Result<(), RepoError>> {
+        let (fut, observer) = new_repo_future_with_resolver();
+        self.repo_sender
+            .send(RepoEvent::AddChangeObserver(
+                self.document_id.clone(),
+                observer,
+            ))
+            .expect("Failed to send doc change event.");
+        fut
     }
 }
