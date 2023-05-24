@@ -254,8 +254,18 @@ impl DocState {
         matches!(self, DocState::LoadPending { .. })
     }
 
-    fn should_sync(&self) -> bool {
+    fn should_announce(&self) -> bool {
         matches!(self, DocState::Sync)
+    }
+
+    fn should_sync(&self) -> bool {
+        // FIXME: remove DocState::LocallyCreatedNotEdited.
+        // In order to make the `test_document_changed_over_sync` without it,
+        // add a `connected` api that awaits
+        // that the local repo is connected to at least one peer.
+        matches!(self, DocState::Sync)
+            || matches!(self, DocState::Bootstrap { .. })
+            || matches!(self, DocState::LocallyCreatedNotEdited)
     }
 
     fn resolve_bootstrap_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
@@ -761,7 +771,7 @@ impl Repo {
                 // Try to sync all docs we know about.
                 let our_id = self.get_repo_id().clone();
                 for (document_id, info) in self.documents.iter_mut() {
-                    if !info.state.should_sync() {
+                    if !info.state.should_announce() {
                         continue;
                     }
                     if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
@@ -815,7 +825,7 @@ impl Repo {
                             DocumentInfo::new(state, document, handle_count)
                         });
 
-                    if info.state.is_pending_load() {
+                    if !info.state.should_sync() {
                         continue;
                     }
 
