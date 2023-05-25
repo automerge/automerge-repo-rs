@@ -1,4 +1,3 @@
-use automerge::sync::Message as SyncMessage;
 use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::Future;
@@ -30,41 +29,48 @@ impl DocumentId {
     }
 }
 
-/// Events sent by the network adapter.
-#[derive(Debug, Clone)]
-pub enum NetworkEvent {
-    /// A repo sent us a sync message,
-    // to be applied to a given document.
-    Sync {
-        from_repo_id: RepoId,
-        to_repo_id: RepoId,
-        document_id: DocumentId,
-        message: SyncMessage,
-    },
-}
-
-/// Messages sent into the network sink.
-#[derive(Debug, Clone)]
-pub enum NetworkMessage {
-    /// We're sending a sync message,
-    // to be applied by a given repo to a given document.
-    Sync {
-        from_repo_id: RepoId,
-        to_repo_id: RepoId,
-        document_id: DocumentId,
-        message: SyncMessage,
-    },
-}
-
 /// Network errors used by the sink.
 #[derive(Debug)]
 pub enum NetworkError {
     Error,
 }
 
-pub trait NetworkAdapter:
-    Send + Unpin + Stream<Item = NetworkEvent> + Sink<NetworkMessage>
-{
+pub trait NetworkAdapter: Send + Unpin + Stream<Item = RepoMessage> + Sink<RepoMessage> {}
+
+#[derive(Debug, Clone)]
+pub enum RepoMessage {
+    /// A sync message for a particular document
+    Sync {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: Vec<u8>,
+    },
+    /// An ephemeral message for a particular document.
+    Ephemeral {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: Vec<u8>,
+    },
+}
+
+/// The messages of the multi-document sync protocol
+///
+/// The multi-doc sync protocol works like this:
+///
+/// 1. The connecting peer sends a `Message::Join` containing its repo ID
+/// 2. The accepting peer sends a `Message::Peer` containing its repo ID
+/// 3. Sync message exchange can proceed, by exchanging Message::Repo(_).
+pub enum Message {
+    /// Sent by the connecting peer on opening a connection to tell the other
+    /// end their repo ID
+    Join(RepoId),
+    /// Sent by the accepting peer after having received [`Join`] to tell the
+    /// connecting peer their repo ID.
+    Joined(RepoId),
+    /// A repo message for a particular document
+    Repo(RepoMessage),
 }
 
 /// Errors used by storage.

@@ -2,7 +2,7 @@ extern crate test_utils;
 
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{NetworkEvent, NetworkMessage, Repo};
+use automerge_repo::{Repo, RepoMessage};
 use std::collections::HashMap;
 use test_utils::network_utils::Network;
 use test_utils::storage_utils::SimpleStorage;
@@ -99,20 +99,21 @@ fn test_document_changed_over_sync() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       NetworkMessage::Sync {
+                       RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
                        } => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(NetworkEvent::Sync {
+                           peer.receive_incoming(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
                            });
                        }
+                       _ => todo!(),
                    }
                },
             }

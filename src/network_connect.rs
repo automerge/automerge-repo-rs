@@ -1,6 +1,5 @@
 use crate::repo::RepoHandle;
 
-
 /// Which direction a connection passed to [`Repo::connect`] is going
 pub enum ConnDirection {
     Incoming,
@@ -11,7 +10,6 @@ pub enum ConnDirection {
 pub enum CodecError {}
 
 impl RepoHandle {
-
     /// Connect a tokio io object
     ///
     /// This implements a simple length prefixed framing protocol and is intended for use with

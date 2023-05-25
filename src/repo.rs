@@ -1,8 +1,6 @@
 use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
-use crate::interfaces::{
-    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Storage, StorageError,
-};
+use crate::interfaces::{NetworkAdapter, NetworkError, RepoMessage, Storage, StorageError};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::transaction::Observed;
 use automerge::VecOpObserver;
@@ -51,6 +49,32 @@ pub enum RepoError {
 fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
     let document = AutoCommit::new();
     document.with_observer(VecOpObserver::default())
+}
+
+/// Incoming event from the network.
+#[derive(Debug, Clone)]
+enum NetworkEvent {
+    /// A repo sent us a sync message,
+    // to be applied to a given document.
+    Sync {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: SyncMessage,
+    },
+}
+
+/// Outgoing network message.
+#[derive(Debug, Clone)]
+enum NetworkMessage {
+    /// We're sending a sync message,
+    // to be applied by a given repo to a given document.
+    Sync {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: SyncMessage,
+    },
 }
 
 /// Create a pair of repo future and resolver.
@@ -898,7 +922,29 @@ impl Repo {
                         let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
                         match result {
                             Poll::Pending => break false,
-                            Poll::Ready(Some(event)) => self.pending_events.push_back(event),
+                            Poll::Ready(Some(repo_message)) => {
+                                match repo_message {
+                                    RepoMessage::Sync {
+                                        from_repo_id,
+                                        to_repo_id,
+                                        document_id,
+                                        message,
+                                    } => {
+                                        let event = NetworkEvent::Sync {
+                                            from_repo_id,
+                                            to_repo_id,
+                                            document_id,
+                                            // TODO: handle failure, disconnect/ban peer?
+                                            message: SyncMessage::decode(&message)
+                                                .expect("Failed to decode message."),
+                                        };
+                                        self.pending_events.push_back(event);
+                                    }
+                                    RepoMessage::Ephemeral { .. } => {
+                                        todo!()
+                                    }
+                                }
+                            }
                             Poll::Ready(None) => break true,
                         }
                     }
@@ -965,11 +1011,21 @@ impl Repo {
                             Poll::Pending => break,
                             Poll::Ready(Ok(())) => {
                                 let pinned_sink = Pin::new(&mut network_adapter);
-                                let result = pinned_sink.start_send(
-                                    pending_messages
-                                        .pop_front()
-                                        .expect("Empty pending messages."),
-                                );
+                                let NetworkMessage::Sync {
+                                    from_repo_id,
+                                    to_repo_id,
+                                    document_id,
+                                    message,
+                                } = pending_messages
+                                    .pop_front()
+                                    .expect("Empty pending messages.");
+                                let outgoing = RepoMessage::Sync {
+                                    from_repo_id,
+                                    to_repo_id,
+                                    document_id,
+                                    message: message.encode(),
+                                };
+                                let result = pinned_sink.start_send(outgoing);
                                 if result.is_err() {
                                     discard = true;
                                     needs_flush = false;
