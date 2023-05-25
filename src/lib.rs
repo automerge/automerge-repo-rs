@@ -3,6 +3,7 @@
 mod dochandle;
 mod interfaces;
 mod repo;
+mod network_connect;
 
 pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{
