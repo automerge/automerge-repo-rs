@@ -34,64 +34,46 @@ impl RepoHandle {
     {
         let codec = Codec::new();
         let framed = tokio_util::codec::Framed::new(io, codec);
-        self.connect(source, framed, direction).await
-    }
-
-    /// Connect a stream and sink of `crate::Message`
-    ///
-    /// Driving this future will drive the connection until there is an error or one or the other
-    /// end drops
-    ///
-    /// The `direction` argument determines which side will send the initial `crate::Message::Join`
-    /// message. If the direction is `ConnDirection::Outgoing` then this side will send the
-    /// message, otherwise this side will wait for the other side to send the join message.
-    pub async fn connect<RecvErr, SendErr, S, Source>(
-        &self,
-        source: Source,
-        stream: S,
-        direction: ConnDirection,
-    ) -> Result<(), CodecError>
-    where
-        RecvErr: std::error::Error,
-        SendErr: std::error::Error,
-        S: Sink<Message, Error = SendErr> + Stream<Item = Result<Message, RecvErr>>,
-        Source: ToSocketAddrs,
-    {
-        let (mut sink, mut stream) = stream.split();
+        let (mut sink, mut stream) = framed.split();
 
         let other_id = match direction {
             ConnDirection::Incoming => {
-                let msg = stream.next().await.unwrap().unwrap();
-                match msg {
-                    Message::Join(other_id) => other_id,
-                    _ => panic!("Unpexected"),
+                if let Some(msg) = stream.next().await {
+                    let other_id = match msg {
+                        Ok(Message::Join(other_id)) => other_id,
+                        _ => return Err(NetworkError::Error.into()),
+                    };
+                    let msg = Message::Join(self.get_repo_id().clone());
+                    sink.send(msg).await.unwrap();
+                    other_id
+                } else {
+                    return Err(NetworkError::Error.into());
                 }
             }
             ConnDirection::Outgoing => {
                 let msg = Message::Join(self.get_repo_id().clone());
-                sink.send(msg).await.unwrap();
-                let msg = stream.next().await.unwrap().unwrap();
-                match msg {
-                    Message::Join(other_id) => other_id,
-                    _ => panic!("Unpexected"),
+                sink.send(msg).await?;
+                if let Some(msg) = stream.next().await {
+                    match msg {
+                        Ok(Message::Joined(other_id)) => other_id,
+                        _ => return Err(NetworkError::Error.into()),
+                    }
+                } else {
+                    return Err(NetworkError::Error.into());
                 }
             }
         };
 
         let stream = stream.map(|msg| match msg {
             Ok(Message::Repo(repo_msg)) => Ok(repo_msg),
-            Err(_) => Err(NetworkError::Error),
-            _ => panic!("Unexpected"),
+            _ => Err(NetworkError::Error),
         });
 
-        let sink = sink.with(|msg: Result<RepoMessage, SendErr>| {
-            match msg {
-                Ok(repo_msg) => futures::future::ready(Ok(Message::Repo(repo_msg))),
-                Err(err) => futures::future::ready(Err(err)),
-            }
-            
+        let sink = sink.with(|msg: Result<RepoMessage, NetworkError>| match msg {
+            Ok(repo_msg) => futures::future::ready(Ok(Message::Repo(repo_msg))),
+            Err(err) => futures::future::ready(Err(err)),
         });
-        
+
         // TODO: something like self.new_network_adapter(other_id, Box::new((stream, sink)));
 
         Ok(())
@@ -113,6 +95,14 @@ pub enum CodecError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Decode(#[from] DecodeError),
+    #[error(transparent)]
+    Network(#[from] NetworkError),
+}
+
+impl From<CodecError> for NetworkError {
+    fn from(_err: CodecError) -> Self {
+        NetworkError::Error
+    }
 }
 
 impl Decoder for Codec {

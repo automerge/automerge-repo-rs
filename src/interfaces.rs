@@ -35,9 +35,15 @@ impl<'a> From<&'a str> for DocumentId {
 }
 
 /// Network errors used by the sink.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum NetworkError {
     Error,
+}
+
+impl Display for NetworkError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NetworkError")
+    }
 }
 
 pub trait NetworkAdapter: Send + Unpin + Stream<Item = RepoMessage> + Sink<RepoMessage> {}
