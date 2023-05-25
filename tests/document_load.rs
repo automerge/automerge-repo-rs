@@ -2,7 +2,7 @@ extern crate test_utils;
 
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{DocumentId, Repo, RepoId};
+use automerge_repo::{DocumentId, Repo};
 use std::collections::HashMap;
 use test_utils::storage_utils::{AsyncInMemoryStorage, InMemoryStorage};
 use tokio::sync::mpsc::channel;
@@ -158,7 +158,7 @@ fn test_loading_document_immediately_not_found() {
 
     // Spawn a task that awaits the requested doc handle.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    let doc_id = DocumentId((RepoId(String::from("Test")), 1));
+    let doc_id = DocumentId(String::from("Test"));
     let load_fut = repo_handle.load(doc_id);
     rt.spawn(async move {
         let not_found = load_fut.await.unwrap().is_none();
@@ -191,7 +191,7 @@ fn test_loading_document_not_found_async() {
 
         // Spawn a task that awaits the requested doc handle.
         tokio::spawn(async move {
-            let doc_id = DocumentId((RepoId(String::from("Test")), 1));
+            let doc_id = DocumentId(String::from("Test"));
             let not_found = repo_handle.load(doc_id).await.unwrap().is_none();
             if not_found {
                 // Shut down the repo.

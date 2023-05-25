@@ -110,8 +110,8 @@ impl RepoHandle {
 
     /// Create a new document.
     pub fn new_document(&self) -> DocHandle {
-        let counter = self.document_id_counter.fetch_add(1, Ordering::SeqCst);
-        let document_id = DocumentId((self.repo_id.clone(), counter));
+        let _counter = self.document_id_counter.fetch_add(1, Ordering::SeqCst);
+        let document_id = DocumentId(Uuid::new_v4().to_string());
         let document = new_document_with_observer();
         let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
         let handle = DocHandle::new(

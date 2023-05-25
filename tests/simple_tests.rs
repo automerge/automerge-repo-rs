@@ -107,9 +107,6 @@ fn test_simple_sync() {
         let mut synced = 0;
         for doc_handle in documents {
             for repo_handle in repo_handles_clone.iter() {
-                if doc_handle.document_id().get_repo_id() == repo_handle.get_repo_id() {
-                    continue;
-                }
                 repo_handle
                     .request_document(doc_handle.document_id())
                     .await
@@ -117,7 +114,7 @@ fn test_simple_sync() {
                 synced = synced + 1;
             }
         }
-        assert_eq!(synced, 72);
+        assert_eq!(synced, 81);
         let _ = done_sync_sender.try_send(());
     });
 

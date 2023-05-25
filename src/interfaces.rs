@@ -1,11 +1,10 @@
 use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::Future;
-use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::marker::Unpin;
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub struct RepoId(pub String);
 
 impl Display for RepoId {
@@ -14,18 +13,24 @@ impl Display for RepoId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
-pub struct DocumentId(pub (RepoId, u64));
-
-impl Display for DocumentId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", self.0 .0, self.0 .1)
+impl<'a> From<&'a str> for RepoId {
+    fn from(s: &'a str) -> Self {
+        Self(s.to_string())
     }
 }
 
-impl DocumentId {
-    pub fn get_repo_id(&self) -> &RepoId {
-        &self.0 .0
+#[derive(Debug, Eq, Hash, PartialEq, Clone)]
+pub struct DocumentId(pub String);
+
+impl Display for DocumentId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl<'a> From<&'a str> for DocumentId {
+    fn from(s: &'a str) -> Self {
+        Self(s.to_string())
     }
 }
 

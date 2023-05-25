@@ -18,13 +18,17 @@ crossbeam-channel = { version = "0.5.8" }
 parking_lot = { version = "0.12.1" }
 futures = { version = "0.3.28" }
 serde = { version = "1.0.160", features = ["derive"]}
+tokio = { version = "1.27", features = ["full"] }
+tokio-util = { version = "0.7.8", features = ["codec", "net" ] }
+bytes = { version = "1.4.0" }
+thiserror = "1.0.38"
+minicbor = { version = "0.19.0", features = ["alloc"] }
 
 [dev-dependencies]
 clap = { version = "4.2.5", features = ["derive"] }
 reqwest = { version = "0.11.17", features = ["json"] }
 axum = { version = "0.6.18" }
 tokio = { version = "1.27", features = ["full"] }
-tokio-util = "0.7.8"
 tokio-serde = {version = "0.8.0", features = ["json"]}
 serde_json = "1.0.96"
 test_utils = { path = "test_utils" }
