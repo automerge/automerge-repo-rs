@@ -46,7 +46,13 @@ impl Display for NetworkError {
     }
 }
 
-pub trait NetworkAdapter: Send + Unpin + Stream<Item = RepoMessage> + Sink<RepoMessage> {}
+pub trait NetworkAdapter:
+    Send
+    + Unpin
+    + Stream<Item = Result<RepoMessage, NetworkError>>
+    + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>
+{
+}
 
 #[derive(Debug, Clone)]
 pub enum RepoMessage {

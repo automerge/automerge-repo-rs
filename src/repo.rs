@@ -924,12 +924,12 @@ impl Repo {
                             Poll::Pending => break false,
                             Poll::Ready(Some(repo_message)) => {
                                 match repo_message {
-                                    RepoMessage::Sync {
+                                    Ok(RepoMessage::Sync {
                                         from_repo_id,
                                         to_repo_id,
                                         document_id,
                                         message,
-                                    } => {
+                                    }) => {
                                         let event = NetworkEvent::Sync {
                                             from_repo_id,
                                             to_repo_id,
@@ -940,9 +940,10 @@ impl Repo {
                                         };
                                         self.pending_events.push_back(event);
                                     }
-                                    RepoMessage::Ephemeral { .. } => {
+                                    Ok(RepoMessage::Ephemeral { .. }) => {
                                         todo!()
                                     }
+                                    Err(_) => break true,
                                 }
                             }
                             Poll::Ready(None) => break true,
@@ -1025,7 +1026,7 @@ impl Repo {
                                     document_id,
                                     message: message.encode(),
                                 };
-                                let result = pinned_sink.start_send(outgoing);
+                                let result = pinned_sink.start_send(Ok(outgoing));
                                 if result.is_err() {
                                     discard = true;
                                     needs_flush = false;
