@@ -131,19 +131,7 @@ fn main() {
     let adapter = Network::new(sender.clone());
 
     // Create the repo.
-    let doc_handles_clone = doc_handles.clone();
-    let repo = Repo::new(
-        Some(Box::new(move |synced| {
-            for doc_handle in synced {
-                println!("Synced {:?}", doc_handle.document_id());
-                doc_handles_clone
-                    .lock()
-                    .insert(doc_handle.document_id(), doc_handle);
-            }
-        })),
-        None,
-        Box::new(Storage),
-    );
+    let repo = Repo::new(None, Box::new(Storage));
 
     // Run the repo in the background.
     let repo_handle = repo.run();
@@ -215,7 +203,7 @@ fn main() {
             .lock()
             .as_mut()
             .unwrap()
-            .bootstrap_document_from_id(None, document_id);
+            .request_document(document_id);
     }
 
     async fn edit_doc(
