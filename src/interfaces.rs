@@ -67,6 +67,7 @@ pub enum RepoMessage {
 /// 1. The connecting peer sends a `Message::Join` containing its repo ID
 /// 2. The accepting peer sends a `Message::Peer` containing its repo ID
 /// 3. Sync message exchange can proceed, by exchanging Message::Repo(_).
+#[derive(Debug, Clone)]
 pub enum Message {
     /// Sent by the connecting peer on opening a connection to tell the other
     /// end their repo ID
