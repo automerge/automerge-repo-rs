@@ -2,7 +2,7 @@ use automerge_repo::{DocumentId, StorageAdapter, StorageError};
 use futures::future::TryFutureExt;
 use futures::Future;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::marker::Unpin;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Sender};
@@ -50,24 +50,62 @@ impl StorageAdapter for InMemoryStorage {
             .collect())))
     }
 
-    fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}
+    fn append(
+        &self,
+        _id: DocumentId,
+        _changes: Vec<u8>,
+    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        Box::new(futures::future::ready(Ok(())))
+    }
 
-    fn compact(&self, _id: DocumentId) {}
+    fn compact(
+        &self,
+        id: DocumentId,
+        _full_doc: Vec<u8>,
+    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        Box::new(futures::future::ready(Ok(())))
+    }
+}
+
+#[derive(Debug)]
+enum StorageRequest {
+    Load(DocumentId, OneShot<Option<Vec<u8>>>),
+    Append(DocumentId, Vec<u8>, OneShot<()>),
+    Compact(DocumentId, Vec<u8>, OneShot<()>),
 }
 
 #[derive(Clone, Debug)]
 pub struct AsyncInMemoryStorage {
-    chan: Sender<(DocumentId, OneShot<Option<Vec<u8>>>)>,
+    chan: Sender<StorageRequest>,
 }
 
 impl AsyncInMemoryStorage {
-    pub fn new(documents: HashMap<DocumentId, Vec<u8>>) -> Self {
-        let (doc_request_sender, mut doc_request_receiver) =
-            channel::<(DocumentId, OneShot<Option<Vec<u8>>>)>(1);
+    pub fn new(mut documents: HashMap<DocumentId, VecDeque<Vec<u8>>>) -> Self {
+        let (doc_request_sender, mut doc_request_receiver) = channel::<StorageRequest>(1);
         tokio::spawn(async move {
             loop {
-                if let Some((doc_id, sender)) = doc_request_receiver.recv().await {
-                    sender.send(documents.get(&doc_id).cloned()).unwrap();
+                if let Some(request) = doc_request_receiver.recv().await {
+                    match request {
+                        StorageRequest::Load(doc_id, sender) => {
+                            let result = documents
+                                .get(&doc_id)
+                                .map(|data| data.front())
+                                .flatten()
+                                .cloned();
+                            let _ = sender.send(result);
+                        }
+                        StorageRequest::Append(doc_id, data, sender) => {
+                            let entry = documents.entry(doc_id).or_insert_with(Default::default);
+                            entry.push_back(data);
+                            let _ = sender.send(());
+                        }
+                        StorageRequest::Compact(doc_id, data, sender) => {
+                            let entry = documents.entry(doc_id).or_insert_with(Default::default);
+                            entry.clear();
+                            entry.push_back(data);
+                            let _ = sender.send(());
+                        }
+                    }
                 } else {
                     break;
                 }
@@ -85,7 +123,9 @@ impl StorageAdapter for AsyncInMemoryStorage {
         id: DocumentId,
     ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
         let (tx, rx) = oneshot();
-        self.chan.blocking_send((id, tx)).unwrap();
+        self.chan
+            .blocking_send(StorageRequest::Load(id, tx))
+            .unwrap();
         Box::new(rx.map_err(|_| StorageError::Error))
     }
 
@@ -93,7 +133,27 @@ impl StorageAdapter for AsyncInMemoryStorage {
         Box::new(futures::future::ready(Ok(vec![])))
     }
 
-    fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}
+    fn append(
+        &self,
+        id: DocumentId,
+        changes: Vec<u8>,
+    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        let (tx, rx) = oneshot();
+        self.chan
+            .blocking_send(StorageRequest::Append(id, changes, tx))
+            .unwrap();
+        Box::new(rx.map_err(|_| StorageError::Error))
+    }
 
-    fn compact(&self, _id: DocumentId) {}
+    fn compact(
+        &self,
+        id: DocumentId,
+        full_doc: Vec<u8>,
+    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        let (tx, rx) = oneshot();
+        self.chan
+            .blocking_send(StorageRequest::Compact(id, full_doc, tx))
+            .unwrap();
+        Box::new(rx.map_err(|_| StorageError::Error))
+    }
 }

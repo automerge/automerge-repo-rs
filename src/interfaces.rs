@@ -86,7 +86,19 @@ pub trait StorageAdapter: Send {
         Box::new(futures::future::ready(Ok(vec![])))
     }
 
-    fn append(&self, _id: DocumentId, _changes: Vec<u8>) {}
+    fn append(
+        &self,
+        _id: DocumentId,
+        _changes: Vec<u8>,
+    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        Box::new(futures::future::ready(Ok(())))
+    }
 
-    fn compact(&self, _id: DocumentId) {}
+    fn compact(
+        &self,
+        _id: DocumentId,
+        _full_doc: Vec<u8>,
+    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        Box::new(futures::future::ready(Ok(())))
+    }
 }

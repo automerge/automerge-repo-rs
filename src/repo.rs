@@ -225,8 +225,10 @@ pub(crate) enum DocState {
     /// should not be synced
     /// until it has been locally edited.
     LocallyCreatedNotEdited,
-    /// The doc is syncing(can be edited locally).
-    Sync,
+    /// The doc is syncing(can be edited locally),
+    /// and polling an optional future representing
+    /// a pending storage save operation.
+    Sync(Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>),
     /// The document is in a corrupted state,
     /// prune it from memory.
     /// TODO: prune it from storage as well?
@@ -239,7 +241,7 @@ impl fmt::Debug for DocState {
             DocState::Bootstrap(_) => f.write_str("DocState::Bootstrap"),
             DocState::LoadPending { .. } => f.write_str("DocState::LoadPending"),
             DocState::LocallyCreatedNotEdited => f.write_str("DocState::LocallyCreatedNotEdited"),
-            DocState::Sync => f.write_str("DocState::Sync"),
+            DocState::Sync(_) => f.write_str("DocState::Sync"),
             DocState::Error => f.write_str("DocState::Error"),
         }
     }
@@ -255,11 +257,15 @@ impl DocState {
     }
 
     fn should_announce(&self) -> bool {
-        matches!(self, DocState::Sync)
+        matches!(self, DocState::Sync(_))
     }
 
     fn should_sync(&self) -> bool {
-        matches!(self, DocState::Sync) || matches!(self, DocState::Bootstrap { .. })
+        matches!(self, DocState::Sync(_)) || matches!(self, DocState::Bootstrap { .. })
+    }
+
+    fn should_save(&self) -> bool {
+        matches!(self, DocState::Sync(None))
     }
 
     fn resolve_bootstrap_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
@@ -292,18 +298,45 @@ impl DocState {
         }
     }
 
-    fn poll(&mut self, waker: Arc<RepoWaker>) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
+    fn poll_pending_load(
+        &mut self,
+        waker: Arc<RepoWaker>,
+    ) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
+        assert!(matches!(*waker, RepoWaker::Storage { .. }));
         match self {
             DocState::LoadPending {
                 resolver: _,
                 storage_fut,
             } => {
-                assert!(matches!(*waker, RepoWaker::Storage { .. }));
                 let waker = waker_ref(&waker);
                 let pinned = Pin::new(storage_fut);
-                return pinned.poll(&mut Context::from_waker(&waker));
+                pinned.poll(&mut Context::from_waker(&waker))
             }
-            _ => panic!("Trying to poll a future for a document that does not have one."),
+            _ => panic!(
+                "Trying to poll a pending load future for a document that does not have one."
+            ),
+        }
+    }
+
+    fn poll_pending_save(&mut self, waker: Arc<RepoWaker>) {
+        assert!(matches!(*waker, RepoWaker::Storage { .. }));
+        match self {
+            DocState::Sync(Some(storage_fut)) => {
+                let waker = waker_ref(&waker);
+                let pinned = Pin::new(storage_fut);
+                match pinned.poll(&mut Context::from_waker(&waker)) {
+                    Poll::Ready(Ok(_)) => {
+                        *self = DocState::Sync(None);
+                    }
+                    Poll::Ready(Err(_)) => {
+                        *self = DocState::Error;
+                    }
+                    Poll::Pending => {}
+                }
+            }
+            _ => panic!(
+                "Trying to poll a pending save future for a document that does not have one."
+            ),
         }
     }
 }
@@ -356,38 +389,42 @@ impl DocumentInfo {
         repo_id: &RepoId,
     ) {
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id.clone()));
-        match self.state.poll(waker) {
-            Poll::Ready(Ok(Some(val))) => {
-                {
-                    let mut doc = self.document.lock();
-                    if doc.automerge.load_incremental(&val).is_err() {
-                        self.state.resolve_load_fut(Err(RepoError::Incorrect));
-                        self.state = DocState::Error;
-                        return;
+        if matches!(self.state, DocState::LoadPending { .. }) {
+            match self.state.poll_pending_load(waker) {
+                Poll::Ready(Ok(Some(val))) => {
+                    {
+                        let mut doc = self.document.lock();
+                        if doc.automerge.load_incremental(&val).is_err() {
+                            self.state.resolve_load_fut(Err(RepoError::Incorrect));
+                            self.state = DocState::Error;
+                            return;
+                        }
                     }
+                    self.handle_count.fetch_add(1, Ordering::SeqCst);
+                    let handle = DocHandle::new(
+                        repo_sender.clone(),
+                        document_id,
+                        self.document.clone(),
+                        self.handle_count.clone(),
+                        repo_id.clone(),
+                    );
+                    self.state.resolve_load_fut(Ok(Some(handle)));
+                    self.state = DocState::Sync(None);
+                    // TODO: send sync messages?
                 }
-                self.handle_count.fetch_add(1, Ordering::SeqCst);
-                let handle = DocHandle::new(
-                    repo_sender.clone(),
-                    document_id,
-                    self.document.clone(),
-                    self.handle_count.clone(),
-                    repo_id.clone(),
-                );
-                self.state.resolve_load_fut(Ok(Some(handle)));
-                self.state = DocState::Sync;
-                // TODO: send sync messages?
+                Poll::Ready(Ok(None)) => {
+                    self.state.resolve_load_fut(Ok(None));
+                    self.state = DocState::Error;
+                }
+                Poll::Ready(Err(err)) => {
+                    self.state
+                        .resolve_load_fut(Err(RepoError::StorageError(err)));
+                    self.state = DocState::Error;
+                }
+                Poll::Pending => {}
             }
-            Poll::Ready(Ok(None)) => {
-                self.state.resolve_load_fut(Ok(None));
-                self.state = DocState::Error;
-            }
-            Poll::Ready(Err(err)) => {
-                self.state
-                    .resolve_load_fut(Err(RepoError::StorageError(err)));
-                self.state = DocState::Error;
-            }
-            Poll::Pending => {}
+        } else {
+            self.state.poll_pending_save(waker);
         }
     }
 
@@ -405,16 +442,31 @@ impl DocumentInfo {
         }
     }
 
-    fn save_document(&mut self, document_id: DocumentId, storage: &dyn StorageAdapter) {
-        if self.patches_since_last_save > 10 {
-            storage.compact(document_id);
+    fn save_document(
+        &mut self,
+        document_id: DocumentId,
+        storage: &dyn StorageAdapter,
+        wake_sender: &Sender<WakeSignal>,
+    ) {
+        if !self.state.should_save() {
+            return;
+        }
+        let storage_fut = if self.patches_since_last_save > 10 {
+            let to_save = {
+                let mut doc = self.document.lock();
+                doc.automerge.save()
+            };
+            storage.compact(document_id.clone(), to_save)
         } else {
             let to_save = {
                 let mut doc = self.document.lock();
                 doc.automerge.save_incremental()
             };
-            storage.append(document_id, to_save);
-        }
+            storage.append(document_id.clone(), to_save)
+        };
+        self.state = DocState::Sync(Some(storage_fut));
+        let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
+        self.state.poll_pending_save(waker);
         self.patches_since_last_save = 0;
     }
 
@@ -544,7 +596,7 @@ impl Repo {
         for doc_id in mem::take(&mut self.pending_saves) {
             if let Some(info) = self.documents.get_mut(&doc_id) {
                 info.resolve_change_observers(Ok(()));
-                info.save_document(doc_id, self.storage.as_ref());
+                info.save_document(doc_id, self.storage.as_ref(), &self.wake_sender);
             }
         }
     }
@@ -697,9 +749,11 @@ impl Repo {
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     let should_announce = matches!(info.state, DocState::LocallyCreatedNotEdited);
-                    info.state = DocState::Sync;
+                    info.state = DocState::Sync(None);
                     info.note_changes();
                     self.pending_saves.push(doc_id.clone());
+                    // Hack: force a full save on first local edit.
+                    info.patches_since_last_save = 11;
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -833,7 +887,7 @@ impl Repo {
                             let shared_document = SharedDocument {
                                 automerge: new_document_with_observer(),
                             };
-                            let state = DocState::Sync;
+                            let state = DocState::Sync(None);
                             let document = Arc::new(Mutex::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
                             DocumentInfo::new(state, document, handle_count)
@@ -881,7 +935,7 @@ impl Repo {
                         );
                         if info.state.is_bootstrapping() {
                             info.state.resolve_bootstrap_fut(Ok(handle));
-                            info.state = DocState::Sync;
+                            info.state = DocState::Sync(None);
                         }
                     }
                 }
