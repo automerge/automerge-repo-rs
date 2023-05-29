@@ -82,7 +82,9 @@ pub trait StorageAdapter: Send {
         Box::new(futures::future::ready(Ok(None)))
     }
 
-    fn list_all(&self) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>>> {
+    fn list_all(
+        &self,
+    ) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
         Box::new(futures::future::ready(Ok(vec![])))
     }
 

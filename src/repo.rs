@@ -75,6 +75,14 @@ impl RepoHandle {
         &self.repo_id
     }
 
+    pub fn list_all(&self) -> RepoFuture<Result<Vec<DocumentId>, RepoError>> {
+        let (fut, resolver) = new_repo_future_with_resolver();
+        self.repo_sender
+            .send(RepoEvent::ListAllDocs(resolver))
+            .expect("Failed to send repo event.");
+        fut
+    }
+
     /// Create a new document.
     pub fn new_document(&self) -> DocHandle {
         let counter = self.document_id_counter.fetch_add(1, Ordering::SeqCst);
@@ -162,6 +170,8 @@ pub(crate) enum RepoEvent {
         DocumentId,
         RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
     ),
+    /// List all documents in storage.
+    ListAllDocs(RepoFutureResolver<Result<Vec<DocumentId>, RepoError>>),
     /// Connect with a remote repo.
     ConnectNetworkAdapter(RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>),
     /// Stop the repo.
@@ -176,6 +186,7 @@ impl fmt::Debug for RepoEvent {
             RepoEvent::DocClosed(_) => f.write_str("RepoEvent::DocClosed"),
             RepoEvent::AddChangeObserver(_, _) => f.write_str("RepoEvent::AddChangeObserver"),
             RepoEvent::LoadDoc(_, _) => f.write_str("RepoEvent::LoadDoc"),
+            RepoEvent::ListAllDocs(_) => f.write_str("RepoEvent::ListAllDocs"),
             RepoEvent::ConnectNetworkAdapter(_, _) => {
                 f.write_str("RepoEvent::ConnectNetworkAdapter")
             }
@@ -557,6 +568,7 @@ enum WakeSignal {
     Stream(RepoId),
     Sink(RepoId),
     Storage(DocumentId),
+    StorageList,
 }
 
 /// Waking mechanism for stream and sinks.
@@ -565,6 +577,7 @@ enum RepoWaker {
     Stream(Sender<WakeSignal>, RepoId),
     Sink(Sender<WakeSignal>, RepoId),
     Storage(Sender<WakeSignal>, DocumentId),
+    StorageList(Sender<WakeSignal>),
 }
 
 /// https://docs.rs/futures/latest/futures/task/trait.ArcWake.html
@@ -576,8 +589,14 @@ impl ArcWake for RepoWaker {
             RepoWaker::Stream(sender, repo_id) => sender.send(WakeSignal::Stream(repo_id.clone())),
             RepoWaker::Sink(sender, repo_id) => sender.send(WakeSignal::Sink(repo_id.clone())),
             RepoWaker::Storage(sender, doc_id) => sender.send(WakeSignal::Storage(doc_id.clone())),
+            RepoWaker::StorageList(sender) => sender.send(WakeSignal::StorageList),
         };
     }
+}
+
+struct PendingListAll {
+    resolvers: Vec<RepoFutureResolver<Result<Vec<DocumentId>, RepoError>>>,
+    storage_fut: Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin>,
 }
 
 /// The backend of a repo: the repo runs an event-loop in a background thread.
@@ -605,6 +624,7 @@ pub struct Repo {
     repo_receiver: Receiver<RepoEvent>,
 
     pending_saves: Vec<DocumentId>,
+    pending_lists: Option<PendingListAll>,
     storage: Box<dyn StorageAdapter>,
 }
 
@@ -624,6 +644,7 @@ impl Repo {
             sinks_to_poll: Default::default(),
             pending_messages: Default::default(),
             pending_events: Default::default(),
+            pending_lists: Default::default(),
             repo_sender,
             repo_receiver,
             pending_saves: Default::default(),
@@ -693,6 +714,26 @@ impl Repo {
                 };
             if should_be_removed {
                 self.network_adapters.remove(&repo_id);
+            }
+        }
+    }
+
+    fn process_pending_storage_list(&mut self) {
+        if let Some(ref mut pending) = self.pending_lists {
+            let waker = Arc::new(RepoWaker::StorageList(self.wake_sender.clone()));
+            let waker = waker_ref(&waker);
+            let pinned_fut = Pin::new(&mut pending.storage_fut);
+            let result = pinned_fut.poll(&mut Context::from_waker(&waker));
+            match result {
+                Poll::Pending => {}
+                Poll::Ready(res) => {
+                    for mut resolver in pending.resolvers.drain(..) {
+                        resolver.resolve_fut(
+                            res.clone().map_err(RepoError::StorageError),
+                        );
+                    }
+                    self.pending_lists = None;
+                }
             }
         }
     }
@@ -859,6 +900,29 @@ impl Repo {
                     panic!("Document closed with outstanding handles.");
                 }
             }
+            RepoEvent::ListAllDocs(mut resolver) => match self.pending_lists {
+                Some(ref mut pending) => {
+                    pending.resolvers.push(resolver);
+                }
+                None => {
+                    let mut storage_fut = self.storage.list_all();
+                    let waker = Arc::new(RepoWaker::StorageList(self.wake_sender.clone()));
+                    let waker = waker_ref(&waker);
+                    let pinned_fut = Pin::new(&mut storage_fut);
+                    let result = pinned_fut.poll(&mut Context::from_waker(&waker));
+                    match result {
+                        Poll::Pending => {}
+                        Poll::Ready(res) => {
+                            resolver.resolve_fut(res.map_err(RepoError::StorageError));
+                            return;
+                        }
+                    }
+                    self.pending_lists = Some(PendingListAll {
+                        resolvers: vec![resolver],
+                        storage_fut,
+                    });
+                }
+            },
             RepoEvent::LoadDoc(doc_id, resolver) => {
                 let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
                     let storage_fut = self.storage.get(doc_id.clone());
@@ -1059,6 +1123,7 @@ impl Repo {
                                     );
                                 }
                             }
+                            WakeSignal::StorageList => self.process_pending_storage_list(),
                         }
                     },
                 }
