@@ -47,7 +47,7 @@ pub enum RepoError {
     StorageError(StorageError),
 }
 
-// TODO: remove observer.
+/// Create a new autocommit document, with an observer.
 fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
     let document = AutoCommit::new();
     document.with_observer(VecOpObserver::default())
@@ -381,6 +381,8 @@ pub(crate) struct DocumentInfo {
     sync_states: HashMap<RepoId, SyncState>,
     /// Used to resolve futures for DocHandle::changed.
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
+    /// Counter of patches since last save,
+    /// used to make decisions about full or incemental saves.
     patches_since_last_save: PatchesCount,
 }
 
