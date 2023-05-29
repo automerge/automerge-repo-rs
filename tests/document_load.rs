@@ -12,7 +12,7 @@ fn test_loading_document_found_immediately() {
     let storage = InMemoryStorage::new();
     // Create one repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
-    let mut repo_handle = repo.run();
+    let repo_handle = repo.run();
 
     // Create a document for one repo.
     let mut document_handle = repo_handle.new_document();
@@ -73,7 +73,7 @@ fn test_loading_document_found_async() {
     let storage = InMemoryStorage::new();
     // Create one repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
-    let mut repo_handle = repo.run();
+    let repo_handle = repo.run();
 
     // Create a document for one repo.
     let mut document_handle = repo_handle.new_document();

@@ -76,7 +76,7 @@ impl RepoHandle {
     }
 
     /// Create a new document.
-    pub fn new_document(&mut self) -> DocHandle {
+    pub fn new_document(&self) -> DocHandle {
         let counter = self.document_id_counter.fetch_add(1, Ordering::SeqCst);
         let document_id = DocumentId((self.repo_id.clone(), counter));
         let document = new_document_with_observer();

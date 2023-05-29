@@ -30,7 +30,7 @@ fn test_simple_sync() {
     for _ in 1..10 {
         // Create the repo.
         let repo = Repo::new(None, Box::new(SimpleStorage));
-        let mut repo_handle = repo.run();
+        let repo_handle = repo.run();
 
         // Create a document.
         let mut doc_handle = repo_handle.new_document();

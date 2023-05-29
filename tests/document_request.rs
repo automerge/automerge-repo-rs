@@ -14,7 +14,7 @@ fn test_requesting_document_connected_peers() {
     let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
-    let mut repo_handle_1 = repo_1.run();
+    let repo_handle_1 = repo_1.run();
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
@@ -107,7 +107,7 @@ fn test_requesting_document_unconnected_peers() {
     let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
-    let mut repo_handle_1 = repo_1.run();
+    let repo_handle_1 = repo_1.run();
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
@@ -202,7 +202,7 @@ fn test_request_with_repo_stop() {
     let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
-    let mut repo_handle_1 = repo_1.run();
+    let repo_handle_1 = repo_1.run();
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.

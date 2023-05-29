@@ -15,7 +15,7 @@ fn test_document_changed_over_sync() {
     let repo_2 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repos in the background.
-    let mut repo_handle_1 = repo_1.run();
+    let repo_handle_1 = repo_1.run();
     let repo_handle_2 = repo_2.run();
     let repo_handle_2_clone = repo_handle_2.clone();
     let expected_repo_id = repo_handle_2.get_repo_id().clone();
@@ -132,7 +132,7 @@ fn test_document_changed_locally() {
     let repo_1 = Repo::new(None, Box::new(SimpleStorage));
 
     // Run the repo in the background.
-    let mut repo_handle_1 = repo_1.run();
+    let repo_handle_1 = repo_1.run();
     let expected_repo_id = repo_handle_1.get_repo_id().clone();
 
     // Create a document for the repo.

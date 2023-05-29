@@ -62,7 +62,7 @@ impl StorageAdapter for InMemoryStorage {
 
     fn compact(
         &self,
-        id: DocumentId,
+        _id: DocumentId,
         _full_doc: Vec<u8>,
     ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
         Box::new(futures::future::ready(Ok(())))
@@ -83,7 +83,7 @@ pub struct AsyncInMemoryStorage {
 
 impl AsyncInMemoryStorage {
     pub fn new(mut documents: HashMap<DocumentId, Vec<Vec<u8>>>) -> Self {
-        let (doc_request_sender, mut doc_request_receiver) = channel::<StorageRequest>(9);
+        let (doc_request_sender, mut doc_request_receiver) = channel::<StorageRequest>(1);
         tokio::spawn(async move {
             loop {
                 if let Some(request) = doc_request_receiver.recv().await {
