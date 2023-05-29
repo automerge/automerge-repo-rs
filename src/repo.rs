@@ -461,17 +461,18 @@ impl DocumentInfo {
     /// returns whether there were any.
     fn note_changes(&mut self) -> bool {
         let patches = {
+            use automerge::ReadDoc;
             let mut doc = self.document.lock();
             let observer = doc.automerge.observer();
             observer.take_patches()
         };
         let count = patches.len();
-        match self.patches_since_last_save {
-            PatchesCount::NotStarted => {}
-            PatchesCount::Counting(mut current_count) => {
-                let _ = current_count.checked_add(count);
+        self.patches_since_last_save = match self.patches_since_last_save {
+            PatchesCount::NotStarted => PatchesCount::Counting(0),
+            PatchesCount::Counting(current_count) => {
+                PatchesCount::Counting(current_count.checked_add(count).unwrap_or(0))
             }
-        }
+        };
         count > 0
     }
 
@@ -492,11 +493,7 @@ impl DocumentInfo {
         }
         let should_compact = match self.patches_since_last_save {
             PatchesCount::NotStarted => true,
-            PatchesCount::Counting(mut current_count) => {
-                let should_compact = current_count > 10;
-                current_count = 0;
-                should_compact
-            }
+            PatchesCount::Counting(mut current_count) => current_count > 10,
         };
         let storage_fut = if should_compact {
             let to_save = {
@@ -514,6 +511,7 @@ impl DocumentInfo {
         self.state = DocState::Sync(Some(storage_fut));
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
+        self.patches_since_last_save = PatchesCount::Counting(0);
     }
 
     /// Apply incoming sync messages.
@@ -795,9 +793,9 @@ impl Repo {
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     if !info.note_changes() {
+                        // Stop here if the document wasn't actually changed.
                         return;
                     }
-
                     let should_announce = matches!(info.state, DocState::LocallyCreatedNotEdited);
                     info.state = DocState::Sync(None);
                     self.pending_saves.push(doc_id.clone());
