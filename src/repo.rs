@@ -358,6 +358,16 @@ impl DocState {
     }
 }
 
+/// Counter of patches since last save.
+#[derive(Debug)]
+enum PatchesCount {
+    /// The first edit should trigger a full save(equivalent of a compact).
+    NotStarted,
+    /// Counting patches to determine whether to do an append or compact
+    /// at the next save.
+    Counting(usize),
+}
+
 /// Info about a document.
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
@@ -371,7 +381,7 @@ pub(crate) struct DocumentInfo {
     sync_states: HashMap<RepoId, SyncState>,
     /// Used to resolve futures for DocHandle::changed.
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
-    patches_since_last_save: usize,
+    patches_since_last_save: PatchesCount,
 }
 
 impl DocumentInfo {
@@ -386,7 +396,7 @@ impl DocumentInfo {
             handle_count,
             sync_states: Default::default(),
             change_observers: Default::default(),
-            patches_since_last_save: 0,
+            patches_since_last_save: PatchesCount::NotStarted,
         }
     }
 
@@ -447,11 +457,22 @@ impl DocumentInfo {
         }
     }
 
-    fn note_changes(&mut self) {
-        let mut doc = self.document.lock();
-        let observer = doc.automerge.observer();
-        let len = observer.take_patches().len();
-        let _ = self.patches_since_last_save.checked_add(len);
+    /// Count patches since last save,
+    /// returns whether there were any.
+    fn note_changes(&mut self) -> bool {
+        let patches = {
+            let mut doc = self.document.lock();
+            let observer = doc.automerge.observer();
+            observer.take_patches()
+        };
+        let count = patches.len();
+        match self.patches_since_last_save {
+            PatchesCount::NotStarted => {}
+            PatchesCount::Counting(mut current_count) => {
+                let _ = current_count.checked_add(count);
+            }
+        }
+        count > 0
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
@@ -469,7 +490,15 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let storage_fut = if self.patches_since_last_save > 10 {
+        let should_compact = match self.patches_since_last_save {
+            PatchesCount::NotStarted => true,
+            PatchesCount::Counting(mut current_count) => {
+                let should_compact = current_count > 10;
+                current_count = 0;
+                should_compact
+            }
+        };
+        let storage_fut = if should_compact {
             let to_save = {
                 let mut doc = self.document.lock();
                 doc.automerge.save()
@@ -485,7 +514,6 @@ impl DocumentInfo {
         self.state = DocState::Sync(Some(storage_fut));
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
-        self.patches_since_last_save = 0;
     }
 
     /// Apply incoming sync messages.
@@ -766,14 +794,13 @@ impl Repo {
                 // Handle doc changes: sync the document.
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
+                    if !info.note_changes() {
+                        return;
+                    }
+
                     let should_announce = matches!(info.state, DocState::LocallyCreatedNotEdited);
                     info.state = DocState::Sync(None);
-                    info.note_changes();
                     self.pending_saves.push(doc_id.clone());
-                    // Hack: force a full save on first local edit.
-                    if should_announce {
-                        info.patches_since_last_save = 11;
-                    }
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -917,11 +944,12 @@ impl Repo {
                         continue;
                     }
 
-                    // TODO: only do if applying the sync message changed the doc.
+                    info.receive_sync_message(from_repo_id, message);
+
+                    // TODO: only continue if applying the sync message changed the doc.
                     info.note_changes();
                     self.pending_saves.push(document_id.clone());
 
-                    info.receive_sync_message(from_repo_id, message);
                     // Note: since receiving and generating sync messages is done
                     // in two separate critical sections,
                     // local changes could be made in between those,
