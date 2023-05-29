@@ -493,7 +493,7 @@ impl DocumentInfo {
         }
         let should_compact = match self.patches_since_last_save {
             PatchesCount::NotStarted => true,
-            PatchesCount::Counting(mut current_count) => current_count > 10,
+            PatchesCount::Counting(current_count) => current_count > 10,
         };
         let storage_fut = if should_compact {
             let to_save = {
