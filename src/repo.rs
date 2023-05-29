@@ -168,6 +168,22 @@ pub(crate) enum RepoEvent {
     Stop,
 }
 
+impl fmt::Debug for RepoEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RepoEvent::NewDoc(_, _) => f.write_str("RepoEvent::NewDoc"),
+            RepoEvent::DocChange(_) => f.write_str("RepoEvent::DocChange"),
+            RepoEvent::DocClosed(_) => f.write_str("RepoEvent::DocClosed"),
+            RepoEvent::AddChangeObserver(_, _) => f.write_str("RepoEvent::AddChangeObserver"),
+            RepoEvent::LoadDoc(_, _) => f.write_str("RepoEvent::LoadDoc"),
+            RepoEvent::ConnectNetworkAdapter(_, _) => {
+                f.write_str("RepoEvent::ConnectNetworkAdapter")
+            }
+            RepoEvent::Stop => f.write_str("RepoEvent::Stop"),
+        }
+    }
+}
+
 /// Used to resolve repo futures.
 #[derive(Debug, Clone)]
 pub(crate) struct RepoFutureResolver<T> {
@@ -218,7 +234,8 @@ pub(crate) enum DocState {
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending {
         resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
-        storage_fut: Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>,
+        storage_fut:
+            Box<dyn Future<Output = Result<Option<Vec<Vec<u8>>>, StorageError>> + Send + Unpin>,
     },
     /// A document that has been locally created,
     /// and not edited yet,
@@ -301,7 +318,7 @@ impl DocState {
     fn poll_pending_load(
         &mut self,
         waker: Arc<RepoWaker>,
-    ) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
+    ) -> Poll<Result<Option<Vec<Vec<u8>>>, StorageError>> {
         assert!(matches!(*waker, RepoWaker::Storage { .. }));
         match self {
             DocState::LoadPending {
@@ -394,10 +411,12 @@ impl DocumentInfo {
                 Poll::Ready(Ok(Some(val))) => {
                     {
                         let mut doc = self.document.lock();
-                        if doc.automerge.load_incremental(&val).is_err() {
-                            self.state.resolve_load_fut(Err(RepoError::Incorrect));
-                            self.state = DocState::Error;
-                            return;
+                        for val in val {
+                            if doc.automerge.load_incremental(&val).is_err() {
+                                self.state.resolve_load_fut(Err(RepoError::Incorrect));
+                                self.state = DocState::Error;
+                                return;
+                            }
                         }
                     }
                     self.handle_count.fetch_add(1, Ordering::SeqCst);
@@ -431,9 +450,8 @@ impl DocumentInfo {
     fn note_changes(&mut self) {
         let mut doc = self.document.lock();
         let observer = doc.automerge.observer();
-        let _ = self
-            .patches_since_last_save
-            .checked_add(observer.take_patches().len());
+        let len = observer.take_patches().len();
+        let _ = self.patches_since_last_save.checked_add(len);
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
@@ -753,7 +771,9 @@ impl Repo {
                     info.note_changes();
                     self.pending_saves.push(doc_id.clone());
                     // Hack: force a full save on first local edit.
-                    info.patches_since_last_save = 11;
+                    if should_announce {
+                        info.patches_since_last_save = 11;
+                    }
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),

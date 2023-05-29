@@ -3,7 +3,7 @@ extern crate test_utils;
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{DocumentId, Repo, RepoId};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use test_utils::storage_utils::{AsyncInMemoryStorage, InMemoryStorage};
 use tokio::sync::mpsc::channel;
 
@@ -94,8 +94,8 @@ fn test_loading_document_found_async() {
     // Add the doc to storage, out of band.
     let doc_id = document_handle.document_id();
     let mut docs = HashMap::new();
-    let mut data = VecDeque::new();
-    data.push_back(doc_data);
+    let mut data = vec![];
+    data.push(doc_data);
     docs.insert(doc_id.clone(), data);
 
     // Shut down the repo.
