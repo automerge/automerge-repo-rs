@@ -82,6 +82,8 @@ impl DocHandle {
 
     /// Run a closure over a mutable reference to the document,
     /// returns the result of calling the closure.
+    /// Important: if `save` is called on the document inside the closure,
+    /// no saving via the storage adapter will be triggered.
     pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
     where
         F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
@@ -90,7 +92,6 @@ impl DocHandle {
             let mut state = self.shared_document.lock();
             f(&mut state.automerge)
         };
-        // TODO: check the document and only send below message if there was a change.
         self.repo_sender
             .send(RepoEvent::DocChange(self.document_id.clone()))
             .expect("Failed to send doc change event.");

@@ -461,12 +461,12 @@ impl DocumentInfo {
     /// returns whether there were any.
     fn note_changes(&mut self) -> bool {
         let patches = {
-            use automerge::ReadDoc;
             let mut doc = self.document.lock();
             let observer = doc.automerge.observer();
             observer.take_patches()
         };
         let count = patches.len();
+        println!("Patches: {:?}", count);
         self.patches_since_last_save = match self.patches_since_last_save {
             PatchesCount::NotStarted => PatchesCount::Counting(0),
             PatchesCount::Counting(current_count) => {

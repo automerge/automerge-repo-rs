@@ -32,7 +32,6 @@ fn test_simple_save() {
                 doc.put(automerge::ROOT, "repo_id", expected_value.clone())
                     .expect("Failed to change the document.");
                 doc.commit();
-                doc.save()
             });
 
             // Shut down the repo.
@@ -97,7 +96,6 @@ fn test_multiple_save() {
                 )
                 .expect("Failed to change the document.");
                 doc.commit();
-                doc.save()
             });
 
             // Edit the document, twice.
@@ -106,7 +104,6 @@ fn test_multiple_save() {
                 doc.put(automerge::ROOT, "repo_id", expected_value.clone())
                     .expect("Failed to change the document.");
                 doc.commit();
-                doc.save()
             });
 
             // Shut down the repo.
