@@ -769,7 +769,22 @@ impl Repo {
             RepoEvent::NewDoc(document_id, mut info) => {
                 // If this is a bootsrapped document.
                 if info.is_boostrapping() {
-                    // TODO: error fut if info already present.
+                    if let Some(existing_info) = self.documents.get_mut(&document_id) {
+                        if existing_info.state.is_bootstrapping() {
+                            info.state.resolve_bootstrap_fut(Err(RepoError::Incorrect));
+                        } else {
+                            existing_info.handle_count.fetch_add(1, Ordering::SeqCst);
+                            let handle = DocHandle::new(
+                                self.repo_sender.clone(),
+                                document_id.clone(),
+                                existing_info.document.clone(),
+                                existing_info.handle_count.clone(),
+                                self.repo_id.clone(),
+                            );
+                            info.state.resolve_bootstrap_fut(Ok(handle));
+                        }
+                        return;
+                    }
                     // Send a sync message to all other repos we are connected with.
                     for repo_id in self.network_adapters.keys() {
                         if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {

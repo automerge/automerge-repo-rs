@@ -243,3 +243,101 @@ fn test_request_with_repo_stop() {
 
     done_sync_receiver.blocking_recv().unwrap();
 }
+
+#[test]
+fn test_request_twice_fails() {
+    // Create two repos.
+    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
+    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
+
+    // Run the repos in the background.
+    let repo_handle_1 = repo_1.run();
+    let repo_handle_2 = repo_2.run();
+
+    // Create a document for one repo.
+    let mut document_handle_1 = repo_handle_1.new_document();
+
+    // Edit the document.
+    document_handle_1.with_doc_mut(|doc| {
+        doc.put(
+            automerge::ROOT,
+            "repo_id",
+            format!("{}", repo_handle_1.get_repo_id()),
+        )
+        .expect("Failed to change the document.");
+        doc.commit();
+    });
+
+    // Note: requesting the document while peers aren't connected yet.
+
+    // Request the document, twice.
+    let _doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
+    let doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
+
+    // Spawn a task that awaits the requested doc handle.
+    let (done_sync_sender, mut done_sync_receiver) = channel(1);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.spawn(async move {
+        // Since the request was made twice , the future should error.
+        if doc_handle_future.await.is_err() {
+            done_sync_sender.send(()).await.unwrap();
+        }
+    });
+
+    done_sync_receiver.blocking_recv().unwrap();
+
+    // Stop the repos.
+    repo_handle_1.stop().unwrap();
+    repo_handle_2.stop().unwrap();
+}
+
+#[test]
+fn test_request_twice_ok() {
+    // Create one repo.
+    let repo = Repo::new(None, Box::new(SimpleStorage));
+
+    // Run the repos in the background.
+    let repo_handle = repo.run();
+
+    // Create a document for one repo.
+    let mut document_handle = repo_handle.new_document();
+
+    // Edit the document.
+    document_handle.with_doc_mut(|doc| {
+        doc.put(
+            automerge::ROOT,
+            "repo_id",
+            format!("{}", repo_handle.get_repo_id()),
+        )
+        .expect("Failed to change the document.");
+        doc.commit();
+    });
+
+    // Note: requesting the document while peers aren't connected yet.
+
+    // Request the document, twice.
+    let _doc_handle_future = repo_handle.request_document(document_handle.document_id());
+    let doc_handle_future = repo_handle.request_document(document_handle.document_id());
+
+    // Spawn a task that awaits the requested doc handle.
+    let (done_sync_sender, mut done_sync_receiver) = channel(1);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.spawn(async move {
+        // Since the request was made twice,
+        // but the document is ready, the future should resolve to ok.
+        if doc_handle_future.await.is_ok() {
+            done_sync_sender.send(()).await.unwrap();
+        }
+    });
+
+    done_sync_receiver.blocking_recv().unwrap();
+
+    // Stop the repo.
+    repo_handle.stop().unwrap();
+}
