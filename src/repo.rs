@@ -94,7 +94,7 @@ impl RepoHandle {
         handle
     }
 
-    /// Boostrap a document using it's ID only
+    /// Boostrap a document over the network using it's ID only.
     pub fn request_document(
         &self,
         document_id: DocumentId,
