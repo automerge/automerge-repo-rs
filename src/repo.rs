@@ -769,7 +769,6 @@ impl Repo {
             RepoEvent::NewDoc(document_id, mut info) => {
                 // If this is a bootsrapped document.
                 if info.is_boostrapping() {
-                    // TODO: check local storage.
                     // Send a sync message to all other repos we are connected with.
                     for repo_id in self.network_adapters.keys() {
                         if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
