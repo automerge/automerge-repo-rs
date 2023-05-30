@@ -356,6 +356,8 @@ impl DocState {
                         *self = DocState::Sync(None);
                     }
                     Poll::Ready(Err(_)) => {
+                        // TODO: propagate error to doc handle.
+                        // `with_doc_mut` could return a future for this.
                         *self = DocState::Error;
                     }
                     Poll::Pending => {}
