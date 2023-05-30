@@ -1,7 +1,6 @@
 extern crate test_utils;
 
 use automerge::transaction::Transactable;
-use automerge::ReadDoc;
 use automerge_repo::Repo;
 use test_utils::storage_utils::AsyncInMemoryStorage;
 use tokio::sync::mpsc::channel;
@@ -16,7 +15,7 @@ fn test_list_all() {
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
         let storage = AsyncInMemoryStorage::new(Default::default());
-        let (expected_value, document_id) = {
+        let (_expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));
             let repo_handle = repo.run();

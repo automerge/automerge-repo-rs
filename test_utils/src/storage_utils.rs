@@ -105,7 +105,7 @@ impl AsyncInMemoryStorage {
                             let _ = sender.send(());
                         }
                         StorageRequest::Compact(doc_id, data, sender) => {
-                            let entry = documents
+                            let _entry = documents
                                 .entry(doc_id)
                                 .and_modify(|entry| *entry = data)
                                 .or_insert_with(Default::default);
