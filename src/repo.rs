@@ -578,7 +578,7 @@ impl DocumentInfo {
                     // TODO: send sync messages?
                 }
                 Poll::Ready(Ok(None)) => {
-                    // Swith to a network request.
+                    // Switch to a network request.
                     self.state.remove_bootstrap_storage_fut();
                 }
                 Poll::Ready(Err(err)) => {
