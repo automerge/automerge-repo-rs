@@ -600,12 +600,12 @@ struct PendingListAll {
     storage_fut: Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin>,
 }
 
-/// The backend of a repo: the repo runs an event-loop in a background thread.
+/// The backend of a repo: runs an event-loop in a background thread.
 pub struct Repo {
     /// The Id of the repo.
     repo_id: RepoId,
 
-    network_adapters: HashMap<RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>>,
+    /// Documents managed in memory by the repo.
     documents: HashMap<DocumentId, DocumentInfo>,
 
     /// Messages to send on the network adapter sink.
@@ -617,6 +617,8 @@ pub struct Repo {
     wake_receiver: Receiver<WakeSignal>,
     wake_sender: Sender<WakeSignal>,
 
+    /// Keeping track of streams and sinks
+    /// to poll in the current loop iteration.
     streams_to_poll: HashSet<RepoId>,
     sinks_to_poll: HashSet<RepoId>,
 
@@ -624,9 +626,17 @@ pub struct Repo {
     repo_sender: Sender<RepoEvent>,
     repo_receiver: Receiver<RepoEvent>,
 
-    pending_saves: Vec<DocumentId>,
-    pending_lists: Option<PendingListAll>,
+    /// List of documents with changes(to be saved, notify change observers).
+    documents_with_changes: Vec<DocumentId>,
+
+    /// Pending storage `list_all` operations.
+    pending_storage_list_all: Option<PendingListAll>,
+
+    /// The storage API.
     storage: Box<dyn StorageAdapter>,
+
+    /// The network API.
+    network_adapters: HashMap<RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>>,
 }
 
 impl Repo {
@@ -645,10 +655,10 @@ impl Repo {
             sinks_to_poll: Default::default(),
             pending_messages: Default::default(),
             pending_events: Default::default(),
-            pending_lists: Default::default(),
+            pending_storage_list_all: Default::default(),
             repo_sender,
             repo_receiver,
-            pending_saves: Default::default(),
+            documents_with_changes: Default::default(),
             storage,
         }
     }
@@ -660,7 +670,7 @@ impl Repo {
     /// Save documents that have changed to storage,
     /// resolve change observers.
     fn process_changed_document(&mut self) {
-        for doc_id in mem::take(&mut self.pending_saves) {
+        for doc_id in mem::take(&mut self.documents_with_changes) {
             if let Some(info) = self.documents.get_mut(&doc_id) {
                 info.resolve_change_observers(Ok(()));
                 info.save_document(doc_id, self.storage.as_ref(), &self.wake_sender);
@@ -720,7 +730,7 @@ impl Repo {
     }
 
     fn process_pending_storage_list(&mut self) {
-        if let Some(ref mut pending) = self.pending_lists {
+        if let Some(ref mut pending) = self.pending_storage_list_all {
             let waker = Arc::new(RepoWaker::StorageList(self.wake_sender.clone()));
             let waker = waker_ref(&waker);
             let pinned_fut = Pin::new(&mut pending.storage_fut);
@@ -731,7 +741,7 @@ impl Repo {
                     for mut resolver in pending.resolvers.drain(..) {
                         resolver.resolve_fut(res.clone().map_err(RepoError::StorageError));
                     }
-                    self.pending_lists = None;
+                    self.pending_storage_list_all = None;
                 }
             }
         }
@@ -854,7 +864,7 @@ impl Repo {
                     }
                     let should_announce = matches!(info.state, DocState::LocallyCreatedNotEdited);
                     info.state = DocState::Sync(None);
-                    self.pending_saves.push(doc_id.clone());
+                    self.documents_with_changes.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -899,7 +909,7 @@ impl Repo {
                     panic!("Document closed with outstanding handles.");
                 }
             }
-            RepoEvent::ListAllDocs(mut resolver) => match self.pending_lists {
+            RepoEvent::ListAllDocs(mut resolver) => match self.pending_storage_list_all {
                 Some(ref mut pending) => {
                     pending.resolvers.push(resolver);
                 }
@@ -916,7 +926,7 @@ impl Repo {
                             return;
                         }
                     }
-                    self.pending_lists = Some(PendingListAll {
+                    self.pending_storage_list_all = Some(PendingListAll {
                         resolvers: vec![resolver],
                         storage_fut,
                     });
@@ -1025,7 +1035,7 @@ impl Repo {
 
                     // TODO: only continue if applying the sync message changed the doc.
                     info.note_changes();
-                    self.pending_saves.push(document_id.clone());
+                    self.documents_with_changes.push(document_id.clone());
 
                     // Note: since receiving and generating sync messages is done
                     // in two separate critical sections,
