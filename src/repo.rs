@@ -99,6 +99,7 @@ impl RepoHandle {
         self.repo_sender
             .send(RepoEvent::NewDoc(document_id, doc_info))
             .expect("Failed to send repo event.");
+        // TODO: return a future to make-up for the unboundedness of the channel.
         handle
     }
 
