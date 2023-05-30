@@ -410,7 +410,7 @@ impl DocState {
                 *storage_fut = Some(fut);
             }
             _ => panic!(
-                "Trying to remove a boostrap load future for a document that does not have one."
+                "Trying to add a boostrap load future for a document that does not need one."
             ),
         }
     }
