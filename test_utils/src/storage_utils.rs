@@ -12,18 +12,12 @@ pub struct SimpleStorage;
 
 impl StorageAdapter for SimpleStorage {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct InMemoryStorage {
     documents: Arc<Mutex<HashMap<DocumentId, Vec<u8>>>>,
 }
 
 impl InMemoryStorage {
-    pub fn new() -> Self {
-        InMemoryStorage {
-            documents: Arc::new(Mutex::new(Default::default())),
-        }
-    }
-
     pub fn add_document(&self, doc_id: DocumentId, mut doc: Vec<u8>) {
         let mut documents = self.documents.lock();
         let entry = documents.entry(doc_id).or_insert_with(Default::default);
@@ -89,7 +83,7 @@ impl AsyncInMemoryStorage {
         let (doc_request_sender, mut doc_request_receiver) = channel::<StorageRequest>(1);
         tokio::spawn(async move {
             loop {
-                if let Some(request) = doc_request_receiver.recv().await {
+                while let Some(request) = doc_request_receiver.recv().await {
                     match request {
                         StorageRequest::ListAll(sender) => {
                             let result = documents.keys().cloned().collect();
@@ -112,8 +106,6 @@ impl AsyncInMemoryStorage {
                             let _ = sender.send(());
                         }
                     }
-                } else {
-                    break;
                 }
             }
         });

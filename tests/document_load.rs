@@ -9,7 +9,7 @@ use tokio::sync::mpsc::channel;
 
 #[test]
 fn test_loading_document_found_immediately() {
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
     // Create one repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
     let repo_handle = repo.run();
@@ -70,7 +70,7 @@ fn test_loading_document_found_immediately() {
 
 #[test]
 fn test_loading_document_found_async() {
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
     // Create one repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
     let repo_handle = repo.run();
@@ -142,7 +142,7 @@ fn test_loading_document_found_async() {
 #[test]
 fn test_loading_document_immediately_not_found() {
     // Empty storage.
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
 
     // Create a repo.
     let repo = Repo::new(None, Box::new(storage.clone()));

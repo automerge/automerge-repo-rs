@@ -215,7 +215,7 @@ fn test_requesting_document_unconnected_peers_with_storage_load() {
     });
 
     // Add document to storage.
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
     storage.add_document(
         document_handle_1.document_id(),
         document_handle_1.with_doc_mut(|doc| doc.save()),
@@ -316,7 +316,7 @@ fn test_request_twice_ok_bootstrap() {
     });
 
     // Add document to storage.
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
     storage.add_document(
         document_handle_1.document_id(),
         document_handle_1.with_doc_mut(|doc| doc.save()),

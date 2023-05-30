@@ -24,11 +24,11 @@ impl Network<NetworkMessage> {
         let sink_waker = Arc::new(Mutex::new(None));
         let outgoing = Arc::new(Mutex::new(VecDeque::new()));
         Network {
-            buffer: buffer.clone(),
-            stream_waker: stream_waker.clone(),
-            outgoing: outgoing.clone(),
+            buffer,
+            stream_waker,
+            outgoing,
             sender,
-            sink_waker: sink_waker.clone(),
+            sink_waker,
         }
     }
 
