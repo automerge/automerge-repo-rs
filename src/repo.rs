@@ -104,7 +104,7 @@ impl RepoHandle {
         handle
     }
 
-    /// Boostrap a document over the network using it's ID only.
+    /// Boostrap a document, first from storage, and if not found over the network.
     pub fn request_document(
         &self,
         document_id: DocumentId,
