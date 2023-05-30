@@ -479,13 +479,16 @@ impl DocumentInfo {
             observer.take_patches()
         };
         let count = patches.len();
-        self.patches_since_last_save = match self.patches_since_last_save {
-            PatchesCount::NotStarted => PatchesCount::Counting(0),
-            PatchesCount::Counting(current_count) => {
-                PatchesCount::Counting(current_count.checked_add(count).unwrap_or(0))
-            }
-        };
-        count > 0
+        let has_patches = count > 0;
+        if has_patches {
+            self.patches_since_last_save = match self.patches_since_last_save {
+                PatchesCount::NotStarted => PatchesCount::Counting(0),
+                PatchesCount::Counting(current_count) => {
+                    PatchesCount::Counting(current_count.checked_add(count).unwrap_or(0))
+                }
+            };
+        }
+        has_patches
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
