@@ -78,7 +78,7 @@ pub trait StorageAdapter: Send {
     fn get(
         &self,
         _id: DocumentId,
-    ) -> Box<dyn Future<Output = Result<Option<Vec<Vec<u8>>>, StorageError>> + Send + Unpin> {
+    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
         Box::new(futures::future::ready(Ok(None)))
     }
 

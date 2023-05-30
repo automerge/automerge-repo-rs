@@ -14,7 +14,7 @@ impl StorageAdapter for SimpleStorage {}
 
 #[derive(Clone, Debug)]
 pub struct InMemoryStorage {
-    documents: Arc<Mutex<HashMap<DocumentId, Vec<Vec<u8>>>>>,
+    documents: Arc<Mutex<HashMap<DocumentId, Vec<u8>>>>,
 }
 
 impl InMemoryStorage {
@@ -24,10 +24,10 @@ impl InMemoryStorage {
         }
     }
 
-    pub fn add_document(&self, doc_id: DocumentId, doc: Vec<u8>) {
+    pub fn add_document(&self, doc_id: DocumentId, mut doc: Vec<u8>) {
         let mut documents = self.documents.lock();
         let entry = documents.entry(doc_id).or_insert_with(Default::default);
-        entry.push(doc);
+        entry.append(&mut doc);
     }
 }
 
@@ -35,7 +35,7 @@ impl StorageAdapter for InMemoryStorage {
     fn get(
         &self,
         id: DocumentId,
-    ) -> Box<dyn Future<Output = Result<Option<Vec<Vec<u8>>>, StorageError>> + Send + Unpin> {
+    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
         Box::new(futures::future::ready(Ok(self
             .documents
             .lock()
@@ -43,7 +43,9 @@ impl StorageAdapter for InMemoryStorage {
             .cloned())))
     }
 
-    fn list_all(&self) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
+    fn list_all(
+        &self,
+    ) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
         Box::new(futures::future::ready(Ok(self
             .documents
             .lock()
@@ -71,7 +73,7 @@ impl StorageAdapter for InMemoryStorage {
 
 #[derive(Debug)]
 enum StorageRequest {
-    Load(DocumentId, OneShot<Option<Vec<Vec<u8>>>>),
+    Load(DocumentId, OneShot<Option<Vec<u8>>>),
     Append(DocumentId, Vec<u8>, OneShot<()>),
     Compact(DocumentId, Vec<u8>, OneShot<()>),
     ListAll(OneShot<Vec<DocumentId>>),
@@ -83,7 +85,7 @@ pub struct AsyncInMemoryStorage {
 }
 
 impl AsyncInMemoryStorage {
-    pub fn new(mut documents: HashMap<DocumentId, Vec<Vec<u8>>>) -> Self {
+    pub fn new(mut documents: HashMap<DocumentId, Vec<u8>>) -> Self {
         let (doc_request_sender, mut doc_request_receiver) = channel::<StorageRequest>(1);
         tokio::spawn(async move {
             loop {
@@ -97,15 +99,16 @@ impl AsyncInMemoryStorage {
                             let result = documents.get(&doc_id).cloned();
                             let _ = sender.send(result);
                         }
-                        StorageRequest::Append(doc_id, data, sender) => {
+                        StorageRequest::Append(doc_id, mut data, sender) => {
                             let entry = documents.entry(doc_id).or_insert_with(Default::default);
-                            entry.push(data);
+                            entry.append(&mut data);
                             let _ = sender.send(());
                         }
                         StorageRequest::Compact(doc_id, data, sender) => {
-                            let entry = documents.entry(doc_id).or_insert_with(Default::default);
-                            entry.clear();
-                            entry.push(data);
+                            let entry = documents
+                                .entry(doc_id)
+                                .and_modify(|entry| *entry = data)
+                                .or_insert_with(Default::default);
                             let _ = sender.send(());
                         }
                     }
@@ -124,7 +127,7 @@ impl StorageAdapter for AsyncInMemoryStorage {
     fn get(
         &self,
         id: DocumentId,
-    ) -> Box<dyn Future<Output = Result<Option<Vec<Vec<u8>>>, StorageError>> + Send + Unpin> {
+    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
         let (tx, rx) = oneshot();
         self.chan
             .blocking_send(StorageRequest::Load(id, tx))
@@ -132,7 +135,9 @@ impl StorageAdapter for AsyncInMemoryStorage {
         Box::new(rx.map_err(|_| StorageError::Error))
     }
 
-    fn list_all(&self) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
+    fn list_all(
+        &self,
+    ) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
         let (tx, rx) = oneshot();
         self.chan
             .blocking_send(StorageRequest::ListAll(tx))

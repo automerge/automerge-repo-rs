@@ -94,9 +94,7 @@ fn test_loading_document_found_async() {
     // Add the doc to storage, out of band.
     let doc_id = document_handle.document_id();
     let mut docs = HashMap::new();
-    let mut data = vec![];
-    data.push(doc_data);
-    docs.insert(doc_id.clone(), data);
+    docs.insert(doc_id.clone(), doc_data);
 
     // Shut down the repo.
     drop(document_handle);

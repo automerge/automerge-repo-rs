@@ -245,8 +245,7 @@ pub(crate) enum DocState {
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending {
         resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
-        storage_fut:
-            Box<dyn Future<Output = Result<Option<Vec<Vec<u8>>>, StorageError>> + Send + Unpin>,
+        storage_fut: Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>,
     },
     /// A document that has been locally created,
     /// and not edited yet,
@@ -329,7 +328,7 @@ impl DocState {
     fn poll_pending_load(
         &mut self,
         waker: Arc<RepoWaker>,
-    ) -> Poll<Result<Option<Vec<Vec<u8>>>, StorageError>> {
+    ) -> Poll<Result<Option<Vec<u8>>, StorageError>> {
         assert!(matches!(*waker, RepoWaker::Storage { .. }));
         match self {
             DocState::LoadPending {
@@ -433,13 +432,14 @@ impl DocumentInfo {
             match self.state.poll_pending_load(waker) {
                 Poll::Ready(Ok(Some(val))) => {
                     {
-                        let mut doc = self.document.lock();
-                        for val in val {
-                            if doc.automerge.load_incremental(&val).is_err() {
-                                self.state.resolve_load_fut(Err(RepoError::Incorrect));
-                                self.state = DocState::Error;
-                                return;
-                            }
+                        let res = {
+                            let mut doc = self.document.lock();
+                            doc.automerge.load_incremental(&val)
+                        };
+                        if res.is_err() {
+                            self.state.resolve_load_fut(Err(RepoError::Incorrect));
+                            self.state = DocState::Error;
+                            return;
                         }
                     }
                     self.handle_count.fetch_add(1, Ordering::SeqCst);
@@ -594,6 +594,7 @@ impl ArcWake for RepoWaker {
     }
 }
 
+/// Manages pending `list_all` calls to storage.
 struct PendingListAll {
     resolvers: Vec<RepoFutureResolver<Result<Vec<DocumentId>, RepoError>>>,
     storage_fut: Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin>,
@@ -728,9 +729,7 @@ impl Repo {
                 Poll::Pending => {}
                 Poll::Ready(res) => {
                     for mut resolver in pending.resolvers.drain(..) {
-                        resolver.resolve_fut(
-                            res.clone().map_err(RepoError::StorageError),
-                        );
+                        resolver.resolve_fut(res.clone().map_err(RepoError::StorageError));
                     }
                     self.pending_lists = None;
                 }
