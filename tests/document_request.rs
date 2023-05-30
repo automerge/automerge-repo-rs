@@ -295,10 +295,10 @@ fn test_request_with_repo_stop() {
 
 #[test]
 fn test_request_twice_ok_bootstrap() {
-    // Create two repos.
+    // Create a repo.
     let repo_1 = Repo::new(None, Box::new(SimpleStorage));
 
-    // Run the repos in the background.
+    // Run in the background.
     let repo_handle_1 = repo_1.run();
 
     // Create a document for one repo.
@@ -315,14 +315,18 @@ fn test_request_twice_ok_bootstrap() {
         doc.commit();
     });
 
-    // Add document to storage.
+    // Add document to storage(out-of-band).
     let storage = InMemoryStorage::default();
     storage.add_document(
         document_handle_1.document_id(),
         document_handle_1.with_doc_mut(|doc| doc.save()),
     );
+    
+    // Create another repo, with the storage containing the doc.
     let repo_2 = Repo::new(None, Box::new(storage));
     let repo_handle_2 = repo_2.run();
+    
+    // Note: requesting the document while peers aren't connected yet.
 
     // Request the document, twice.
     let _doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
@@ -335,6 +339,7 @@ fn test_request_twice_ok_bootstrap() {
         .build()
         .unwrap();
     rt.spawn(async move {
+        // Future should resolve from storage load(no peers are connected).
         if doc_handle_future.await.is_ok() {
             done_sync_sender.send(()).await.unwrap();
         }
