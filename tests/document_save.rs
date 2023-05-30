@@ -184,7 +184,7 @@ fn test_compact_save() {
             });
             change_fut.await.unwrap();
 
-            // Edit the document, enough times to trigger a concat.
+            // Edit the document, enough times to trigger a compact.
             let change_fut = document_handle.changed();
             let expected_value = format!("{}::11", repo_handle.get_repo_id());
             document_handle.with_doc_mut(|doc| {
