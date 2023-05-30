@@ -1097,7 +1097,6 @@ impl Repo {
         // when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
             loop {
-                // Poll ready streams and sinks at the start of each iteration.
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
