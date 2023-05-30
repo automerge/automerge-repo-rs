@@ -48,7 +48,7 @@ fn test_requesting_document_connected_peers() {
     peers.insert(repo_handle_1.get_repo_id().clone(), network_2);
 
     // Request the document.
-    let repo_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
+    let doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -58,7 +58,10 @@ fn test_requesting_document_connected_peers() {
     // Spawn a task that awaits the requested doc handle.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        repo_handle_future.await.unwrap();
+        assert_eq!(
+            doc_handle_future.await.unwrap().document_id(),
+            document_handle_1.document_id()
+        );
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -153,7 +156,10 @@ fn test_requesting_document_unconnected_peers() {
     // Spawn a task that awaits the requested doc handle.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        doc_handle_future.await.unwrap();
+        assert_eq!(
+            doc_handle_future.await.unwrap().document_id(),
+            document_handle_1.document_id()
+        );
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -233,7 +239,10 @@ fn test_requesting_document_unconnected_peers_with_storage_load() {
         .build()
         .unwrap();
     rt.spawn(async move {
-        doc_handle_future.await.unwrap();
+        assert_eq!(
+            doc_handle_future.await.unwrap().document_id(),
+            document_handle_1.document_id()
+        );
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -339,7 +348,10 @@ fn test_request_twice_ok_bootstrap() {
         .unwrap();
     rt.spawn(async move {
         // Future should resolve from storage load(no peers are connected).
-        doc_handle_future.await.unwrap();
+        assert_eq!(
+            doc_handle_future.await.unwrap().document_id(),
+            document_handle_1.document_id()
+        );
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -387,7 +399,10 @@ fn test_request_twice_ok() {
     rt.spawn(async move {
         // Since the request was made twice,
         // but the document is ready, the future should resolve to ok.
-        doc_handle_future.await.unwrap();
+        assert_eq!(
+            doc_handle_future.await.unwrap().document_id(),
+            document_handle.document_id()
+        );
         done_sync_sender.send(()).await.unwrap();
     });
 
