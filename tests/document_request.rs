@@ -58,7 +58,7 @@ fn test_requesting_document_connected_peers() {
     // Spawn a task that awaits the requested doc handle.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let _doc_handle = repo_handle_future.await;
+        repo_handle_future.await.unwrap();
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -153,7 +153,7 @@ fn test_requesting_document_unconnected_peers() {
     // Spawn a task that awaits the requested doc handle.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let _doc_handle = doc_handle_future.await;
+        doc_handle_future.await.unwrap();
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -233,7 +233,7 @@ fn test_requesting_document_unconnected_peers_with_storage_load() {
         .build()
         .unwrap();
     rt.spawn(async move {
-        let _doc_handle = doc_handle_future.await;
+        doc_handle_future.await.unwrap();
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -285,9 +285,8 @@ fn test_request_with_repo_stop() {
         .unwrap();
     rt.spawn(async move {
         // Since the repo is stopping, the future should error.
-        if doc_handle_future.await.is_err() {
-            done_sync_sender.send(()).await.unwrap();
-        }
+        assert!(doc_handle_future.await.is_err());
+        done_sync_sender.send(()).await.unwrap();
     });
 
     done_sync_receiver.blocking_recv().unwrap();
@@ -321,11 +320,11 @@ fn test_request_twice_ok_bootstrap() {
         document_handle_1.document_id(),
         document_handle_1.with_doc_mut(|doc| doc.save()),
     );
-    
+
     // Create another repo, with the storage containing the doc.
     let repo_2 = Repo::new(None, Box::new(storage));
     let repo_handle_2 = repo_2.run();
-    
+
     // Note: requesting the document while peers aren't connected yet.
 
     // Request the document, twice.
@@ -340,9 +339,8 @@ fn test_request_twice_ok_bootstrap() {
         .unwrap();
     rt.spawn(async move {
         // Future should resolve from storage load(no peers are connected).
-        if doc_handle_future.await.is_ok() {
-            done_sync_sender.send(()).await.unwrap();
-        }
+        doc_handle_future.await.unwrap();
+        done_sync_sender.send(()).await.unwrap();
     });
 
     done_sync_receiver.blocking_recv().unwrap();
@@ -389,9 +387,8 @@ fn test_request_twice_ok() {
     rt.spawn(async move {
         // Since the request was made twice,
         // but the document is ready, the future should resolve to ok.
-        if doc_handle_future.await.is_ok() {
-            done_sync_sender.send(()).await.unwrap();
-        }
+        doc_handle_future.await.unwrap();
+        done_sync_sender.send(()).await.unwrap();
     });
 
     done_sync_receiver.blocking_recv().unwrap();

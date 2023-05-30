@@ -722,7 +722,7 @@ impl ArcWake for RepoWaker {
 
 /// Manages pending `list_all` calls to storage.
 /// Note: multiple calls to `list_all` will see all futures resolve
-/// using the result of the first call. 
+/// using the result of the first call.
 struct PendingListAll {
     resolvers: Vec<RepoFutureResolver<Result<Vec<DocumentId>, RepoError>>>,
     storage_fut: Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin>,
