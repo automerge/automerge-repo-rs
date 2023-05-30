@@ -75,6 +75,7 @@ impl RepoHandle {
         &self.repo_id
     }
 
+    /// Get a list of documents in storage.
     pub fn list_all(&self) -> RepoFuture<Result<Vec<DocumentId>, RepoError>> {
         let (fut, resolver) = new_repo_future_with_resolver();
         self.repo_sender
