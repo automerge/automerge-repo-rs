@@ -944,6 +944,9 @@ impl Repo {
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
         match event {
+            // TODO: simplify handling of `RepoEvent::NewDoc`.
+            // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
+            // the doc info could be created here. 
             RepoEvent::NewDoc(document_id, mut info) => {
                 if info.is_boostrapping() {
                     if let Some(existing_info) = self.documents.get_mut(&document_id) {
