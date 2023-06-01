@@ -454,16 +454,6 @@ impl DocState {
     }
 }
 
-/// Counter of patches since last save.
-#[derive(Debug)]
-enum PatchesCount {
-    /// The first edit should trigger a full save(equivalent of a compact).
-    NotStarted,
-    /// Counting patches to determine whether to do an append or compact
-    /// at the next save.
-    Counting(usize),
-}
-
 /// Info about a document.
 #[derive(Debug)]
 pub(crate) struct DocumentInfo {
@@ -479,7 +469,7 @@ pub(crate) struct DocumentInfo {
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
     /// Counter of patches since last save,
     /// used to make decisions about full or incemental saves.
-    patches_since_last_save: PatchesCount,
+    patches_since_last_save: usize,
 }
 
 impl DocumentInfo {
@@ -494,7 +484,7 @@ impl DocumentInfo {
             handle_count,
             sync_states: Default::default(),
             change_observers: Default::default(),
-            patches_since_last_save: PatchesCount::NotStarted,
+            patches_since_last_save: 0,
         }
     }
 
@@ -603,14 +593,7 @@ impl DocumentInfo {
         };
         let count = patches.len();
         let has_patches = count > 0;
-        if has_patches {
-            self.patches_since_last_save = match self.patches_since_last_save {
-                PatchesCount::NotStarted => PatchesCount::Counting(0),
-                PatchesCount::Counting(current_count) => {
-                    PatchesCount::Counting(current_count.checked_add(count).unwrap_or(0))
-                }
-            };
-        }
+        self.patches_since_last_save = self.patches_since_last_save.checked_add(count).unwrap_or(0);
         has_patches
     }
 
@@ -629,10 +612,7 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let should_compact = match self.patches_since_last_save {
-            PatchesCount::NotStarted => true,
-            PatchesCount::Counting(current_count) => current_count > 10,
-        };
+        let should_compact = self.patches_since_last_save > 10;
         let storage_fut = if should_compact {
             let to_save = {
                 let mut doc = self.document.lock();
@@ -649,7 +629,7 @@ impl DocumentInfo {
         self.state = DocState::Sync(Some(storage_fut));
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
-        self.patches_since_last_save = PatchesCount::Counting(0);
+        self.patches_since_last_save = 0;
     }
 
     /// Apply incoming sync messages.
@@ -952,7 +932,6 @@ impl Repo {
 
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
-        println!("Got event: {:?}", event);
         match event {
             // TODO: simplify handling of `RepoEvent::NewDoc`.
             // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
