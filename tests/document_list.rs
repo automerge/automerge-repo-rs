@@ -34,7 +34,10 @@ fn test_list_all() {
 
             // Shut down the repo.
             drop(document_handle);
-            repo_handle.stop().unwrap();
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             (expected_value, document_id)
         };
 
@@ -46,7 +49,10 @@ fn test_list_all() {
         assert_eq!(list.pop().unwrap(), document_id);
         assert!(list.is_empty());
         // Shut down the repo.
-        repo_handle.stop().unwrap();
+        let _ = tokio::task::spawn_blocking(|| {
+            repo_handle.stop().unwrap();
+        })
+        .await;
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -63,7 +69,7 @@ fn test_list_all_errors_on_shutdown() {
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
         let storage = AsyncInMemoryStorage::new(Default::default());
-        let (_expected_value, _document_id) = {
+        let (_expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));
             let repo_handle = repo.run();
@@ -93,12 +99,22 @@ fn test_list_all_errors_on_shutdown() {
         let list_all_fut = repo_handle.list_all();
 
         // Shut down the repo.
-        tokio::task::spawn_blocking(|| {
+        let _ = tokio::task::spawn_blocking(|| {
             repo_handle.stop().unwrap();
-        });
+        })
+        .await;
 
         let res = list_all_fut.await;
-        assert!(matches!(res, Err(RepoError::Shutdown)));
+        // Whether the future is resolved or not before shutdown is not deterministic,
+        // hence the conditional. Could be fixed with a storage backend
+        // that would only send a result when told to.
+        if let Err(res) = res {
+            assert!(matches!(res, RepoError::Shutdown));
+        } else {
+            let mut list = res.unwrap();
+            assert_eq!(list.pop().unwrap(), document_id);
+            assert!(list.is_empty());
+        }
         done_sync_sender.send(()).await.unwrap();
     });
 

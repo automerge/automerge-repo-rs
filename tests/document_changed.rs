@@ -59,7 +59,6 @@ fn test_document_changed_over_sync() {
             .expect("Failed to change the document.");
             doc.commit();
         });
-        repo_handle_2.stop().unwrap();
     });
 
     // Spawn a task that awaits the document change.
@@ -121,7 +120,7 @@ fn test_document_changed_over_sync() {
 
     done_sync_receiver.blocking_recv().unwrap();
 
-    // Stop the repo.
+    // Stop the repos.
     repo_handle_1.stop().unwrap();
     repo_handle_2_clone.stop().unwrap();
 }

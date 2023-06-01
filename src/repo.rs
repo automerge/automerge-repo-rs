@@ -867,6 +867,7 @@ impl Repo {
                 Poll::Pending => {}
                 Poll::Ready(res) => {
                     for mut resolver in pending.resolvers.drain(..) {
+                        println!("resolve ready;");
                         resolver.resolve_fut(res.clone().map_err(RepoError::StorageError));
                     }
                     self.pending_storage_list_all = None;
@@ -951,6 +952,7 @@ impl Repo {
 
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
+        println!("Got event: {:?}", event);
         match event {
             // TODO: simplify handling of `RepoEvent::NewDoc`.
             // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
@@ -1077,6 +1079,7 @@ impl Repo {
                     match result {
                         Poll::Pending => {}
                         Poll::Ready(res) => {
+                            println!("Ready");
                             resolver.resolve_fut(res.map_err(RepoError::StorageError));
                             return;
                         }

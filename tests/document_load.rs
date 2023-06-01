@@ -128,7 +128,10 @@ fn test_loading_document_found_async() {
                 });
             if equals {
                 // Shut down the repo.
-                repo_handle.stop().unwrap();
+                let _ = tokio::task::spawn_blocking(|| {
+                    repo_handle.stop().unwrap();
+                })
+                .await;
                 done_sync_sender.send(()).await.unwrap();
             }
         })
@@ -192,7 +195,10 @@ fn test_loading_document_not_found_async() {
             let not_found = repo_handle.load(doc_id).await.unwrap().is_none();
             if not_found {
                 // Shut down the repo.
-                repo_handle.stop().unwrap();
+                let _ = tokio::task::spawn_blocking(|| {
+                    repo_handle.stop().unwrap();
+                })
+                .await;
                 done_sync_sender.send(()).await.unwrap();
             }
         })

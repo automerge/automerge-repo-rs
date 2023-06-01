@@ -33,9 +33,12 @@ fn test_simple_save() {
                 doc.commit();
             });
 
-            // Shut down the repo.
             drop(document_handle);
-            repo_handle.stop().unwrap();
+            // Shut down the repo.
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             (expected_value, document_id)
         };
 
@@ -59,7 +62,10 @@ fn test_simple_save() {
             });
         if equals {
             // Shut down the repo.
-            repo_handle.stop().unwrap();
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             done_sync_sender.send(()).await.unwrap();
         }
     });
@@ -131,7 +137,10 @@ fn test_multiple_save() {
             });
         if equals {
             // Shut down the repo.
-            repo_handle.stop().unwrap();
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             done_sync_sender.send(()).await.unwrap();
         }
     });
@@ -200,9 +209,12 @@ fn test_compact_save() {
             });
             change_fut.await.unwrap();
 
-            // Shut down the repo.
             drop(document_handle);
-            repo_handle.stop().unwrap();
+            // Shut down the repo.
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             (expected_value, document_id)
         };
 
@@ -226,7 +238,10 @@ fn test_compact_save() {
             });
         if equals {
             // Shut down the repo.
-            repo_handle.stop().unwrap();
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             done_sync_sender.send(()).await.unwrap();
         }
     });
