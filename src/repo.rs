@@ -1036,6 +1036,7 @@ impl Repo {
                 }
             }
             RepoEvent::DocClosed(id) => {
+                // TODO: first save, then remove.
                 // Handle doc closed: remove the document info.
                 let doc_info = self
                     .documents
@@ -1292,6 +1293,8 @@ impl Repo {
                 }
             }
             // TODO: close sinks and streams?
+            
+            // TODO: save all documents.
 
             self.error_pending_storage_list_for_shutdown();
 
