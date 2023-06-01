@@ -875,6 +875,14 @@ impl Repo {
         }
     }
 
+    fn error_pending_storage_list_fo_shutdown(&mut self) {
+        if let Some(ref mut pending) = self.pending_storage_list_all {
+            for mut resolver in pending.resolvers.drain(..) {
+                resolver.resolve_fut(Err(RepoError::Shutdown));
+            }
+        }
+    }
+
     /// Try to send pending messages on the network sink.
     fn process_outgoing_network_messages(&mut self) {
         // Send outgoing message on sinks,
@@ -946,7 +954,7 @@ impl Repo {
         match event {
             // TODO: simplify handling of `RepoEvent::NewDoc`.
             // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
-            // the doc info could be created here. 
+            // the doc info could be created here.
             RepoEvent::NewDoc(document_id, mut info) => {
                 if info.is_boostrapping() {
                     if let Some(existing_info) = self.documents.get_mut(&document_id) {
@@ -1302,6 +1310,8 @@ impl Repo {
                 }
             }
             // TODO: close sinks and streams?
+
+            self.error_pending_storage_list_fo_shutdown();
 
             // Error all futures for all docs.
             for (_document_id, info) in self.documents.iter_mut() {
