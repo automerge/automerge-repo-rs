@@ -83,6 +83,7 @@ fn test_document_changed_over_sync() {
             });
             if equals {
                 done_sync_sender.send(()).await.unwrap();
+                break;
             }
         }
     });
