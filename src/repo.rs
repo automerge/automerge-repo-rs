@@ -876,7 +876,7 @@ impl Repo {
         }
     }
 
-    fn error_pending_storage_list_fo_shutdown(&mut self) {
+    fn error_pending_storage_list_for_shutdown(&mut self) {
         if let Some(ref mut pending) = self.pending_storage_list_all {
             for mut resolver in pending.resolvers.drain(..) {
                 resolver.resolve_fut(Err(RepoError::Shutdown));
@@ -1314,7 +1314,7 @@ impl Repo {
             }
             // TODO: close sinks and streams?
 
-            self.error_pending_storage_list_fo_shutdown();
+            self.error_pending_storage_list_for_shutdown();
 
             // Error all futures for all docs.
             for (_document_id, info) in self.documents.iter_mut() {
