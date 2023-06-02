@@ -2,13 +2,8 @@ use crate::interfaces::{DocumentId, Message, NetworkAdapter, NetworkError, RepoI
 use crate::repo::RepoHandle;
 use bytes::{Buf, BytesMut};
 use core::pin::Pin;
-use futures::task::{Context, Poll, Waker};
-use futures::{
-    select, stream::FuturesUnordered, Future, FutureExt, Sink, SinkExt, Stream, StreamExt,
-    TryStreamExt,
-};
-use parking_lot::Mutex;
-use std::sync::Arc;
+use futures::task::{Context, Poll};
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::ToSocketAddrs;
 use tokio_util::codec::{Decoder, Encoder};
@@ -67,14 +62,9 @@ impl NetworkAdapter for Network<Result<RepoMessage, NetworkError>> {}
 
 impl RepoHandle {
     /// Connect a tokio io object
-    ///
-    /// This implements a simple length prefixed framing protocol and is intended for use with
-    /// stream oriented transports
-    ///
-    /// Will panic if not called from a tokio context.
     pub async fn connect_tokio_io<Io, Source>(
         &self,
-        source: Source,
+        _source: Source,
         io: Io,
         direction: ConnDirection,
     ) -> Result<(), CodecError>
@@ -93,7 +83,7 @@ impl RepoHandle {
                         Ok(Message::Join(other_id)) => other_id,
                         _ => return Err(NetworkError::Error.into()),
                     };
-                    let msg = Message::Join(self.get_repo_id().clone());
+                    let msg = Message::Joined(self.get_repo_id().clone());
                     sink.send(msg).await.unwrap();
                     other_id
                 } else {
@@ -103,11 +93,8 @@ impl RepoHandle {
             ConnDirection::Outgoing => {
                 let msg = Message::Join(self.get_repo_id().clone());
                 sink.send(msg).await?;
-                if let Some(msg) = stream.next().await {
-                    match msg {
-                        Ok(Message::Joined(other_id)) => other_id,
-                        _ => return Err(NetworkError::Error.into()),
-                    }
+                if let Some(Ok(Message::Joined(other_id))) = stream.next().await {
+                    other_id
                 } else {
                     return Err(NetworkError::Error.into());
                 }
@@ -216,10 +203,7 @@ impl Message {
                 "targetId" => target_id = Some(decoder.str()?.into()),
                 "documentId" => document_id = Some(decoder.str()?.into()),
                 "type" => type_name = Some(decoder.str()?),
-                "message" => {
-                    let _tag = decoder.tag()?;
-                    message = Some(decoder.bytes()?.to_vec());
-                }
+                "message" => message = Some(decoder.bytes()?.to_vec()),
                 _ => decoder.skip()?,
             }
         }
@@ -245,6 +229,7 @@ impl Message {
                 encoder.map(2).unwrap();
                 encoder.str("type").unwrap();
                 encoder.str("join").unwrap();
+                encoder.str("senderId").unwrap();
                 encoder.str(repo_id.0.as_str()).unwrap();
             }
             Self::Repo(RepoMessage::Sync {
@@ -269,6 +254,7 @@ impl Message {
                 encoder.map(2).unwrap();
                 encoder.str("type").unwrap();
                 encoder.str("joined").unwrap();
+                encoder.str("senderId").unwrap();
                 encoder.str(repo_id.0.as_str()).unwrap();
             }
             _ => todo!(),
