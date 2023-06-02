@@ -76,19 +76,19 @@ fn test_requesting_document_connected_peers() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       RepoMessage::Sync {
+                       Ok(RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       } => {
+                       }) => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(RepoMessage::Sync {
+                          peer.receive_incoming(Ok(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                           });
+                               }));
                        }
                        _ => todo!(),
                    }
@@ -175,19 +175,19 @@ fn test_requesting_document_unconnected_peers() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       RepoMessage::Sync {
+                       Ok(RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       } => {
+                       }) => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(RepoMessage::Sync {
+                          peer.receive_incoming(Ok(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                           });
+                               }));
                        }
                        _ => todo!(),
                    }
