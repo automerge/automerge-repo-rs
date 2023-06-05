@@ -12,6 +12,7 @@ Project goal: add an integration layer between automerge and client code, compat
    - `cargo run --example tcp-example -- --other-ip 127.0.0.1:2345 --http-run-ip 0.0.0.0:3002`
 3. Create a new document at the server:
    - `curl 0.0.0.0:3001/new_doc`
+   - The document id is returned as json.
 4. Request the document:
    - `curl --json '{document-id}' 0.0.0.0:3002/request_doc` 
 5. Presss ctr-c at every terminal tab.

@@ -2,7 +2,7 @@ use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{ConnDirection, Repo, RepoHandle, StorageAdapter};
 use automerge_repo::{DocumentId, StorageError};
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_macros::debug_handler;
@@ -133,7 +133,7 @@ struct AppState {
 
 #[debug_handler]
 async fn request_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
-    let doc_handle = state
+    state
         .repo_handle
         .request_document(document_id)
         .await
@@ -142,9 +142,7 @@ async fn request_doc(State(state): State<Arc<AppState>>, Json(document_id): Json
 
 #[debug_handler]
 async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
-    println!("New doc");
     let mut doc_handle = state.repo_handle.new_document();
-    println!("Handle: {:?}", doc_handle);
     let our_id = state.repo_handle.get_repo_id();
     doc_handle.with_doc_mut(|doc| {
         doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
@@ -211,8 +209,6 @@ async fn main() {
             .await
             .unwrap();
     }
-
-    println!("REady");
 
     tokio::select! {
         _ = serve.fuse() => {},
