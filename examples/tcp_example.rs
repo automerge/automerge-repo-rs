@@ -1,14 +1,20 @@
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{ConnDirection, Repo, StorageAdapter};
+use automerge_repo::{ConnDirection, Repo, RepoHandle, StorageAdapter};
 use automerge_repo::{DocumentId, StorageError};
+use axum::extract::{Path, State};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use axum_macros::debug_handler;
 use clap::Parser;
 use futures::future::TryFutureExt;
 use futures::Future;
 use futures::FutureExt;
 use std::collections::HashMap;
 use std::marker::Unpin;
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneShot};
 
@@ -114,15 +120,45 @@ impl StorageAdapter for AsyncInMemoryStorage {
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(long)]
-    run_ip: Option<String>,
+    http_run_ip: String,
+    #[arg(long)]
+    tcp_run_ip: Option<String>,
     #[arg(long)]
     other_ip: Option<String>,
+}
+
+struct AppState {
+    repo_handle: RepoHandle,
+}
+
+#[debug_handler]
+async fn request_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
+    let doc_handle = state
+        .repo_handle
+        .request_document(document_id)
+        .await
+        .unwrap();
+}
+
+#[debug_handler]
+async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
+    println!("New doc");
+    let mut doc_handle = state.repo_handle.new_document();
+    println!("Handle: {:?}", doc_handle);
+    let our_id = state.repo_handle.get_repo_id();
+    doc_handle.with_doc_mut(|doc| {
+        doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
+            .expect("Failed to change the document.");
+        doc.commit();
+    });
+    let doc_id = doc_handle.document_id();
+    Json(doc_id)
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let run_ip = args.run_ip;
+    let run_ip = args.tcp_run_ip;
     let other_ip = args.other_ip;
 
     // Create a repo.
@@ -130,31 +166,34 @@ async fn main() {
     let repo_handle = repo.run();
     let repo_handle_clone = repo_handle.clone();
 
-    // Create a document.
-    {
-        let mut doc_handle = repo_handle.new_document();
-        let our_id = repo_handle.get_repo_id();
-        doc_handle.with_doc_mut(|doc| {
-            doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
-                .expect("Failed to change the document.");
-            doc.commit();
-        });
-    }
+    let app_state = Arc::new(AppState {
+        repo_handle: repo_handle.clone(),
+    });
+    let app = Router::new()
+        .route("/new_doc", get(new_doc))
+        .route("/request_doc", post(request_doc))
+        .with_state(app_state);
+    let serve =
+        axum::Server::bind(&args.http_run_ip.parse().unwrap()).serve(app.into_make_service());
 
     if let Some(run_ip) = run_ip {
         // Start a server.
-        let listener = TcpListener::bind(run_ip).await.unwrap();
-        loop {
-            match listener.accept().await {
-                Ok((socket, addr)) => {
-                    repo_handle
-                        .connect_tokio_io(addr, socket, ConnDirection::Incoming)
-                        .await
-                        .unwrap();
+        let handle = Handle::current();
+        let repo_clone = repo_handle.clone();
+        handle.spawn(async move {
+            let listener = TcpListener::bind(run_ip).await.unwrap();
+            loop {
+                match listener.accept().await {
+                    Ok((socket, addr)) => {
+                        repo_clone
+                            .connect_tokio_io(addr, socket, ConnDirection::Incoming)
+                            .await
+                            .unwrap();
+                    }
+                    Err(e) => println!("couldn't get client: {:?}", e),
                 }
-                Err(e) => println!("couldn't get client: {:?}", e),
             }
-        }
+        });
     } else {
         // Start a client.
         // Spawn a task connecting to the other peer.
@@ -173,7 +212,10 @@ async fn main() {
             .unwrap();
     }
 
+    println!("REady");
+
     tokio::select! {
+        _ = serve.fuse() => {},
         _ = tokio::signal::ctrl_c().fuse() => {
             let synced_docs = repo_handle_clone.list_all().await.unwrap();
             for doc_id in synced_docs {

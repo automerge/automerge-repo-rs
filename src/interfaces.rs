@@ -1,6 +1,7 @@
 use futures::sink::Sink;
 use futures::stream::Stream;
 use futures::Future;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::marker::Unpin;
 
@@ -19,7 +20,7 @@ impl<'a> From<&'a str> for RepoId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct DocumentId(pub String);
 
 impl Display for DocumentId {
