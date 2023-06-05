@@ -1223,6 +1223,9 @@ impl Repo {
                         .documents
                         .entry(document_id.clone())
                         .or_insert_with(|| {
+                            // Note: since the handle count is zero,
+                            // the document will not be removed from memory until shutdown. 
+                            // Perhaps remove this and rely on `request_document` calls.
                             let shared_document = SharedDocument {
                                 automerge: new_document_with_observer(),
                             };
