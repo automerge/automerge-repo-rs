@@ -271,6 +271,13 @@ pub(crate) enum DocState {
     /// and polling an optional future representing
     /// a pending storage save operation.
     Sync(Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>),
+    /// Doc is pending removal,
+    /// removal can proceed when storage fut is none, 
+    /// and edit count is zero.
+    PendingRemoval {
+        storage_fut: Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>,
+        pending_edits: usize,
+    },
     /// The document is in a corrupted state,
     /// prune it from memory.
     /// TODO: prune it from storage as well?
@@ -284,6 +291,7 @@ impl fmt::Debug for DocState {
             DocState::LoadPending { .. } => f.write_str("DocState::LoadPending"),
             DocState::LocallyCreatedNotEdited => f.write_str("DocState::LocallyCreatedNotEdited"),
             DocState::Sync(_) => f.write_str("DocState::Sync"),
+            DocState::PendingRemoval { .. } => f.write_str("DocState::PendingRemoval"),
             DocState::Error => f.write_str("DocState::Error"),
         }
     }
@@ -315,6 +323,13 @@ impl DocState {
 
     fn should_save(&self) -> bool {
         matches!(self, DocState::Sync(None))
+            || matches!(
+                self,
+                DocState::PendingRemoval {
+                    storage_fut: None,
+                    pending_edits: 1..,
+                }
+            )
     }
 
     fn resolve_bootstrap_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
@@ -447,6 +462,24 @@ impl DocState {
                     Poll::Pending => {}
                 }
             }
+            DocState::PendingRemoval {
+                storage_fut,
+                pending_edits: _,
+            } => {
+                let waker = waker_ref(&waker);
+                let pinned = Pin::new(storage_fut.as_mut().expect(
+                    "Trying to poll a pending save future for a document that does not have one.",
+                ));
+                match pinned.poll(&mut Context::from_waker(&waker)) {
+                    Poll::Ready(Ok(_)) => {
+                        *storage_fut = None;
+                    }
+                    Poll::Ready(Err(_)) => {
+                        *self = DocState::Error;
+                    }
+                    Poll::Pending => {}
+                }
+            }
             _ => panic!(
                 "Trying to poll a pending save future for a document that does not have one."
             ),
@@ -494,6 +527,26 @@ impl DocumentInfo {
 
     fn is_pending_load(&self) -> bool {
         self.state.is_pending_load()
+    }
+
+    fn start_pending_removal(&mut self) {
+        self.state = match &mut self.state {
+            DocState::LocallyCreatedNotEdited
+            | DocState::Error
+            | DocState::LoadPending { .. }
+            | DocState::Bootstrap { .. } => {
+                assert_eq!(self.patches_since_last_save, 0);
+                DocState::PendingRemoval {
+                    storage_fut: None,
+                    pending_edits: 0,
+                }
+            }
+            DocState::Sync(ref mut storage_fut) => DocState::PendingRemoval {
+                storage_fut: storage_fut.take(),
+                pending_edits: self.patches_since_last_save,
+            },
+            DocState::PendingRemoval { .. } => return,
+        }
     }
 
     fn poll_storage_operation(
@@ -626,7 +679,17 @@ impl DocumentInfo {
             };
             storage.append(document_id.clone(), to_save)
         };
-        self.state = DocState::Sync(Some(storage_fut));
+        self.state = match self.state {
+            DocState::Sync(None) => DocState::Sync(Some(storage_fut)),
+            DocState::PendingRemoval {
+                storage_fut: None,
+                pending_edits: 1..,
+            } => DocState::PendingRemoval {
+                storage_fut: Some(storage_fut),
+                pending_edits: 0,
+            },
+            _ => panic!("Unexpected doc state on save."),
+        };
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
         self.patches_since_last_save = 0;
@@ -795,10 +858,18 @@ impl Repo {
         }
     }
 
-    /// Remove docs in error states.
-    fn remove_errored_docs(&mut self) {
-        self.documents
-            .drain_filter(|_, info| matches!(info.state, DocState::Error));
+    /// Garbage collect docs.
+    fn gc_docs(&mut self) {
+        self.documents.drain_filter(|_, info| {
+            matches!(info.state, DocState::Error)
+                || matches!(
+                    info.state,
+                    DocState::PendingRemoval {
+                        storage_fut: None,
+                        pending_edits: 0
+                    }
+                )
+        });
     }
 
     /// Remove pending messages for repos for which we do not have an adapter anymore.
@@ -1035,15 +1106,13 @@ impl Repo {
                     }
                 }
             }
-            RepoEvent::DocClosed(id) => {
-                // TODO: first save, then remove.
-                // Handle doc closed: remove the document info.
-                let doc_info = self
-                    .documents
-                    .remove(&id)
-                    .expect("Document closed but not doc info found.");
-                if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
-                    panic!("Document closed with outstanding handles.");
+            RepoEvent::DocClosed(doc_id) => {
+                if let Some(doc_info) = self.documents.get_mut(&doc_id) {
+                    if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
+                        panic!("Document closed with outstanding handles.");
+                    }
+                    doc_info.save_document(doc_id, self.storage.as_ref(), &self.wake_sender);
+                    doc_info.start_pending_removal();
                 }
             }
             RepoEvent::ListAllDocs(mut resolver) => match self.pending_storage_list_all {
@@ -1235,7 +1304,7 @@ impl Repo {
                 self.process_changed_document();
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
-                self.remove_errored_docs();
+                self.gc_docs();
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
@@ -1293,17 +1362,56 @@ impl Repo {
                 }
             }
             // TODO: close sinks and streams?
-            
+
             // TODO: save all documents.
 
             self.error_pending_storage_list_for_shutdown();
 
-            // Error all futures for all docs.
-            for (_document_id, info) in self.documents.iter_mut() {
+            // Error all futures for all docs,
+            // save documents.
+            for (doc_id, info) in self.documents.iter_mut() {
                 info.state.resolve_any_fut_for_shutdown();
                 info.resolve_change_observers(Err(RepoError::Shutdown));
+                info.save_document(doc_id.clone(), self.storage.as_ref(), &self.wake_sender);
+                info.start_pending_removal();
+            }
+
+            // Ensure all docs are saved.
+            loop {
+                self.documents.drain_filter(|doc_id, info| {
+                    if !info.state.should_save() {
+                        true
+                    } else {
+                        info.save_document(
+                            doc_id.clone(),
+                            self.storage.as_ref(),
+                            &self.wake_sender,
+                        );
+                        false
+                    }
+                });
+                if self.documents.is_empty() {
+                    break;
+                }
+                let event = self.wake_receiver.recv();
+                match event.unwrap() {
+                    WakeSignal::Stream(_) | WakeSignal::Sink(_) | WakeSignal::StorageList => {
+                        continue
+                    }
+                    WakeSignal::Storage(doc_id) => {
+                        if let Some(info) = self.documents.get_mut(&doc_id) {
+                            info.poll_storage_operation(
+                                doc_id.clone(),
+                                &self.wake_sender,
+                                &self.repo_sender,
+                                &self.repo_id,
+                            );
+                        }
+                    }
+                }
             }
         });
+
         RepoHandle {
             handle: Arc::new(Mutex::new(Some(handle))),
             document_id_counter: Arc::new(document_id_counter),
