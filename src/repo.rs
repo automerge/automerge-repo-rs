@@ -339,9 +339,9 @@ impl DocState {
                     resolver.resolve_fut(doc_handle.clone());
                 }
             }
-            _ => {
-                panic!("Trying to resolve a boostrap future for a document that does not have one.")
-            }
+            _ => unreachable!(
+                "Trying to resolve a boostrap future for a document that does not have one."
+            ),
         }
     }
 
@@ -351,7 +351,9 @@ impl DocState {
                 resolver,
                 storage_fut: _,
             } => resolver.resolve_fut(doc_handle),
-            _ => panic!("Trying to resolve a load future for a document that does not have one."),
+            _ => unreachable!(
+                "Trying to resolve a load future for a document that does not have one."
+            ),
         }
     }
 
@@ -392,7 +394,7 @@ impl DocState {
                 let pinned = Pin::new(storage_fut);
                 pinned.poll(&mut Context::from_waker(&waker))
             }
-            _ => panic!(
+            _ => unreachable!(
                 "Trying to poll a pending load future for a document that does not have one."
             ),
         }
@@ -406,7 +408,7 @@ impl DocState {
             } => {
                 *storage_fut = None;
             }
-            _ => panic!(
+            _ => unreachable!(
                 "Trying to remove a boostrap load future for a document that does not have one."
             ),
         }
@@ -424,7 +426,7 @@ impl DocState {
                 assert!(storage_fut.is_none());
                 *storage_fut = Some(fut);
             }
-            _ => panic!(
+            _ => unreachable!(
                 "Trying to add a boostrap load future for a document that does not need one."
             ),
         }
@@ -440,7 +442,7 @@ impl DocState {
             } => {
                 resolvers.append(incoming);
             }
-            _ => panic!("Unexpected adding of boostrap resolvers."),
+            _ => unreachable!("Unexpected adding of boostrap resolvers."),
         }
     }
 
@@ -480,7 +482,7 @@ impl DocState {
                     Poll::Pending => {}
                 }
             }
-            _ => panic!(
+            _ => unreachable!(
                 "Trying to poll a pending save future for a document that does not have one."
             ),
         }
@@ -688,7 +690,7 @@ impl DocumentInfo {
                 storage_fut: Some(storage_fut),
                 pending_edits: 0,
             },
-            _ => panic!("Unexpected doc state on save."),
+            _ => unreachable!("Unexpected doc state on save."),
         };
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
@@ -1266,19 +1268,17 @@ impl Repo {
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
                     }
-                    if ready {
-                        if info.state.is_bootstrapping() {
-                            info.handle_count.fetch_add(1, Ordering::SeqCst);
-                            let handle = DocHandle::new(
-                                self.repo_sender.clone(),
-                                document_id.clone(),
-                                info.document.clone(),
-                                info.handle_count.clone(),
-                                self.repo_id.clone(),
-                            );
-                            info.state.resolve_bootstrap_fut(Ok(handle));
-                            info.state = DocState::Sync(None);
-                        }
+                    if ready && info.state.is_bootstrapping() {
+                        info.handle_count.fetch_add(1, Ordering::SeqCst);
+                        let handle = DocHandle::new(
+                            self.repo_sender.clone(),
+                            document_id.clone(),
+                            info.document.clone(),
+                            info.handle_count.clone(),
+                            self.repo_id.clone(),
+                        );
+                        info.state.resolve_bootstrap_fut(Ok(handle));
+                        info.state = DocState::Sync(None);
                     }
                 }
             }
@@ -1313,6 +1313,7 @@ impl Repo {
                                 event => self.handle_repo_event(event),
                             }
                         } else {
+                            // TODO: error in a future returned by `run`.
                             panic!("Repo handle dropped before calling `stop`");
                         }
                     },
@@ -1391,7 +1392,9 @@ impl Repo {
                     break;
                 }
                 let event = self.wake_receiver.recv();
-                match event.unwrap() {
+
+                // Repo keeps sender around, should never drop.
+                match event.expect("Wake senders dropped") {
                     WakeSignal::Stream(_) | WakeSignal::Sink(_) | WakeSignal::StorageList => {
                         continue
                     }
