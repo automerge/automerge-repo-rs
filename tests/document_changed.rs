@@ -148,7 +148,7 @@ fn test_document_changed_locally() {
     let (done_sender, mut done_receiver) = channel(1);
     let (start_wait_sender, mut start_wait_receiver) = channel(1);
     let expected = expected_repo_id.clone();
-    let mut doc_handle = document_handle_1.clone();
+    let doc_handle = document_handle_1.clone();
     rt.spawn(async move {
         start_wait_sender.send(()).await.unwrap();
         // Await the local change.

@@ -9,5 +9,5 @@ pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{
     DocumentId, NetworkAdapter, NetworkError, RepoId, RepoMessage, Storage, StorageError,
 };
-pub use crate::repo::{Repo, RepoError, RepoHandle};
 pub use crate::network_connect::ConnDirection;
+pub use crate::repo::{Repo, RepoError, RepoHandle};
