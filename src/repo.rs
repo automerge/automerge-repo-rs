@@ -1224,7 +1224,7 @@ impl Repo {
                         .entry(document_id.clone())
                         .or_insert_with(|| {
                             // Note: since the handle count is zero,
-                            // the document will not be removed from memory until shutdown. 
+                            // the document will not be removed from memory until shutdown.
                             // Perhaps remove this and rely on `request_document` calls.
                             let shared_document = SharedDocument {
                                 automerge: new_document_with_observer(),
@@ -1267,16 +1267,15 @@ impl Repo {
                         self.sinks_to_poll.insert(to_repo_id);
                     }
                     if ready {
-                        // Create a handle and pass it to the sync observer.
-                        info.handle_count.fetch_add(1, Ordering::SeqCst);
-                        let handle = DocHandle::new(
-                            self.repo_sender.clone(),
-                            document_id.clone(),
-                            info.document.clone(),
-                            info.handle_count.clone(),
-                            self.repo_id.clone(),
-                        );
                         if info.state.is_bootstrapping() {
+                            info.handle_count.fetch_add(1, Ordering::SeqCst);
+                            let handle = DocHandle::new(
+                                self.repo_sender.clone(),
+                                document_id.clone(),
+                                info.document.clone(),
+                                info.handle_count.clone(),
+                                self.repo_id.clone(),
+                            );
                             info.state.resolve_bootstrap_fut(Ok(handle));
                             info.state = DocState::Sync(None);
                         }
