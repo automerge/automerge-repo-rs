@@ -272,7 +272,7 @@ pub(crate) enum DocState {
     /// a pending storage save operation.
     Sync(Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>),
     /// Doc is pending removal,
-    /// removal can proceed when storage fut is none, 
+    /// removal can proceed when storage fut is none,
     /// and edit count is zero.
     PendingRemoval {
         storage_fut: Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>,
@@ -918,7 +918,6 @@ impl Repo {
                 Poll::Pending => {}
                 Poll::Ready(res) => {
                     for mut resolver in pending.resolvers.drain(..) {
-                        println!("resolve ready;");
                         resolver.resolve_fut(res.clone().map_err(RepoError::StorageError));
                     }
                     self.pending_storage_list_all = None;
@@ -1128,7 +1127,6 @@ impl Repo {
                     match result {
                         Poll::Pending => {}
                         Poll::Ready(res) => {
-                            println!("Ready");
                             resolver.resolve_fut(res.map_err(RepoError::StorageError));
                             return;
                         }
