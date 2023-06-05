@@ -1366,7 +1366,6 @@ impl Repo {
             self.error_pending_storage_list_for_shutdown();
 
             // Error all futures for all docs,
-            // save documents.
             for (doc_id, info) in self.documents.iter_mut() {
                 info.state.resolve_any_fut_for_shutdown();
                 info.resolve_change_observers(Err(RepoError::Shutdown));
