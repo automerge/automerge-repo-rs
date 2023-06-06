@@ -28,12 +28,14 @@ fn test_document_changed_over_sync() {
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
     let network_2 = Network::new(sender.clone());
-    repo_handle_1.new_network_adapter(
+    repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
+        Box::new(network_1.clone()),
     );
-    repo_handle_2.new_network_adapter(
+    repo_handle_2.new_remote_repo(
         repo_handle_1.get_repo_id().clone(),
+        Box::new(network_2.clone()),
         Box::new(network_2.clone()),
     );
     peers.insert(repo_handle_2.get_repo_id().clone(), network_1);

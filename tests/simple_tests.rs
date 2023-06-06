@@ -58,7 +58,11 @@ fn test_simple_sync() {
         for id in repo_ids.iter() {
             // Create the network adapter.
             let network = Network::new(sender.clone());
-            repo_handle.new_network_adapter(id.clone(), Box::new(network.clone()));
+            repo_handle.new_remote_repo(
+                id.clone(),
+                Box::new(network.clone()),
+                Box::new(network.clone()),
+            );
             let entry = peers
                 .entry(repo_handle.get_repo_id().clone())
                 .or_insert(HashMap::new());

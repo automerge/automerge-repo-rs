@@ -1,5 +1,3 @@
-use futures::sink::Sink;
-use futures::stream::Stream;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -45,14 +43,6 @@ impl Display for NetworkError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "NetworkError")
     }
-}
-
-pub trait NetworkAdapter:
-    Send
-    + Unpin
-    + Stream<Item = Result<RepoMessage, NetworkError>>
-    + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>
-{
 }
 
 #[derive(Debug, Clone)]

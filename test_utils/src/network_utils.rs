@@ -1,4 +1,4 @@
-use automerge_repo::{NetworkAdapter, NetworkError, RepoMessage, RepoId};
+use automerge_repo::{NetworkError, RepoId, RepoMessage};
 use core::pin::Pin;
 use futures::sink::Sink;
 use futures::stream::Stream;
@@ -73,7 +73,10 @@ impl Sink<Result<RepoMessage, NetworkError>> for Network<Result<RepoMessage, Net
             Poll::Pending
         }
     }
-    fn start_send(self: Pin<&mut Self>, item: Result<RepoMessage, NetworkError>) -> Result<(), Self::Error> {
+    fn start_send(
+        self: Pin<&mut Self>,
+        item: Result<RepoMessage, NetworkError>,
+    ) -> Result<(), Self::Error> {
         let (from_repo_id, to_repo_id) = match &item {
             Ok(RepoMessage::Sync {
                 from_repo_id,
@@ -110,5 +113,3 @@ impl Sink<Result<RepoMessage, NetworkError>> for Network<Result<RepoMessage, Net
         }
     }
 }
-
-impl NetworkAdapter for Network<Result<RepoMessage, NetworkError>> {}

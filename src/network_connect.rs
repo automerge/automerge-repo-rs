@@ -1,9 +1,7 @@
-use crate::interfaces::{DocumentId, Message, NetworkAdapter, NetworkError, RepoId, RepoMessage};
+use crate::interfaces::{DocumentId, Message, NetworkError, RepoId, RepoMessage};
 use crate::repo::RepoHandle;
 use bytes::{Buf, BytesMut};
-use core::pin::Pin;
-use futures::task::{Context, Poll};
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::ToSocketAddrs;
 use tokio_util::codec::{Decoder, Encoder};
@@ -13,52 +11,6 @@ pub enum ConnDirection {
     Incoming,
     Outgoing,
 }
-
-struct Network<T> {
-    sink: Box<dyn Send + Unpin + Sink<T, Error = NetworkError>>,
-    stream: Box<dyn Send + Unpin + Stream<Item = T>>,
-}
-
-impl Stream for Network<Result<RepoMessage, NetworkError>> {
-    type Item = Result<RepoMessage, NetworkError>;
-    fn poll_next(
-        self: Pin<&mut Network<Result<RepoMessage, NetworkError>>>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<RepoMessage, NetworkError>>> {
-        let network = self.get_mut();
-        let pinned_stream = Pin::new(&mut network.stream);
-        pinned_stream.poll_next(cx)
-    }
-}
-
-impl Sink<Result<RepoMessage, NetworkError>> for Network<Result<RepoMessage, NetworkError>> {
-    type Error = NetworkError;
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let network = self.get_mut();
-        let pinned_sink = Pin::new(&mut network.sink);
-        pinned_sink.poll_ready(cx)
-    }
-    fn start_send(
-        self: Pin<&mut Self>,
-        item: Result<RepoMessage, NetworkError>,
-    ) -> Result<(), Self::Error> {
-        let network = self.get_mut();
-        let pinned_sink = Pin::new(&mut network.sink);
-        pinned_sink.start_send(item)
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let network = self.get_mut();
-        let pinned_sink = Pin::new(&mut network.sink);
-        pinned_sink.poll_flush(cx)
-    }
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let network = self.get_mut();
-        let pinned_sink = Pin::new(&mut network.sink);
-        pinned_sink.poll_close(cx)
-    }
-}
-
-impl NetworkAdapter for Network<Result<RepoMessage, NetworkError>> {}
 
 impl RepoHandle {
     /// Connect a tokio io object
@@ -111,12 +63,7 @@ impl RepoHandle {
             Err(err) => futures::future::ready(Err(err)),
         });
 
-        let adapter = Network {
-            stream: Box::new(stream),
-            sink: Box::new(sink),
-        };
-
-        self.new_network_adapter(other_id, Box::new(adapter));
+        self.new_remote_repo(other_id, Box::new(stream), Box::new(sink));
 
         Ok(())
     }
