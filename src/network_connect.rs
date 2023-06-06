@@ -36,7 +36,7 @@ impl RepoHandle {
                         _ => return Err(NetworkError::Error.into()),
                     };
                     let msg = Message::Joined(self.get_repo_id().clone());
-                    sink.send(msg).await.unwrap();
+                    sink.send(msg).await?;
                     other_id
                 } else {
                     return Err(NetworkError::Error.into());
