@@ -1140,6 +1140,7 @@ impl Repo {
                 }
             },
             RepoEvent::LoadDoc(doc_id, resolver) => {
+                // TODO: handle multiple calls, through a list of resolvers.
                 let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
                     let storage_fut = self.storage.get(doc_id.clone());
                     let shared_document = SharedDocument {
