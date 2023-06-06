@@ -179,7 +179,7 @@ impl RepoHandle {
         sink: Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>,
     ) {
         self.repo_sender
-            .send(RepoEvent::ConnectNetworkAdapter {
+            .send(RepoEvent::ConnectRemoteRepo {
                 repo_id,
                 stream,
                 sink,
@@ -206,7 +206,7 @@ pub(crate) enum RepoEvent {
     /// List all documents in storage.
     ListAllDocs(RepoFutureResolver<Result<Vec<DocumentId>, RepoError>>),
     /// Connect with a remote repo.
-    ConnectNetworkAdapter {
+    ConnectRemoteRepo {
         repo_id: RepoId,
         stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
         sink: Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>,
@@ -224,9 +224,7 @@ impl fmt::Debug for RepoEvent {
             RepoEvent::AddChangeObserver(_, _) => f.write_str("RepoEvent::AddChangeObserver"),
             RepoEvent::LoadDoc(_, _) => f.write_str("RepoEvent::LoadDoc"),
             RepoEvent::ListAllDocs(_) => f.write_str("RepoEvent::ListAllDocs"),
-            RepoEvent::ConnectNetworkAdapter { .. } => {
-                f.write_str("RepoEvent::ConnectNetworkAdapter")
-            }
+            RepoEvent::ConnectRemoteRepo { .. } => f.write_str("RepoEvent::ConnectRemoteRepo"),
             RepoEvent::Stop => f.write_str("RepoEvent::Stop"),
         }
     }
@@ -1235,7 +1233,7 @@ impl Repo {
                     info.change_observers.push(observer);
                 }
             }
-            RepoEvent::ConnectNetworkAdapter {
+            RepoEvent::ConnectRemoteRepo {
                 repo_id,
                 stream,
                 sink,
