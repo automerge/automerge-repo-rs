@@ -1362,11 +1362,14 @@ impl Repo {
                     },
                 }
             }
-            // TODO: close sinks and streams?
+
+            // Start of shutdown.
 
             self.error_pending_storage_list_for_shutdown();
 
             // Error all futures for all docs,
+            // start to save them,
+            // and mark them as pending removal.
             for (doc_id, info) in self.documents.iter_mut() {
                 info.state.resolve_any_fut_for_shutdown();
                 info.resolve_change_observers(Err(RepoError::Shutdown));
@@ -1374,19 +1377,39 @@ impl Repo {
                 info.start_pending_removal();
             }
 
-            // Ensure all docs are saved.
+            // Ensure all docs are saved,
+            // and all network sinks are closed.
             loop {
                 for (doc_id, info) in self.documents.iter_mut() {
+                    // Save docs again, in case they had a pending save, and pending edits.
                     info.save_document(doc_id.clone(), self.storage.as_ref(), &self.wake_sender);
                 }
+
+                // Remove docs that have been saved, or that errored.
                 self.gc_docs();
-                if self.documents.is_empty() {
+
+                // Poll close sinks, and remove those that are ready or errored.
+                self.network_adapters.drain_filter(|_, mut sink| {
+                    let sink_waker = Arc::new(RepoWaker::Sink(
+                        self.wake_sender.clone(),
+                        self.repo_id.clone(),
+                    ));
+                    let waker = waker_ref(&sink_waker);
+                    let pinned_sink = Pin::new(&mut sink);
+                    let result = pinned_sink.poll_close(&mut Context::from_waker(&waker));
+                    match result {
+                        Poll::Pending => false,
+                        Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => true,
+                    }
+                });
+
+                if self.documents.is_empty() && self.network_adapters.is_empty() {
+                    // Shutdown is done.
                     break;
                 }
-                let event = self.wake_receiver.recv();
 
                 // Repo keeps sender around, should never drop.
-                match event.expect("Wake senders dropped") {
+                match self.wake_receiver.recv().expect("Wake senders dropped") {
                     WakeSignal::Stream(_) | WakeSignal::Sink(_) | WakeSignal::StorageList => {
                         continue
                     }
@@ -1402,6 +1425,7 @@ impl Repo {
                     }
                 }
             }
+            // Shutdown finished.
         });
 
         RepoHandle {
