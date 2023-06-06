@@ -930,30 +930,30 @@ impl Repo {
                     let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
                     match result {
                         Poll::Pending => break false,
-                        Poll::Ready(Some(repo_message)) => {
-                            match repo_message {
-                                Ok(RepoMessage::Sync {
-                                    from_repo_id,
-                                    to_repo_id,
-                                    document_id,
-                                    message,
-                                }) => {
+                        Poll::Ready(Some(repo_message)) => match repo_message {
+                            Ok(RepoMessage::Sync {
+                                from_repo_id,
+                                to_repo_id,
+                                document_id,
+                                message,
+                            }) => {
+                                if let Ok(message) = SyncMessage::decode(&message) {
                                     let event = NetworkEvent::Sync {
                                         from_repo_id,
                                         to_repo_id,
                                         document_id,
-                                        // TODO: handle failure, disconnect/ban peer?
-                                        message: SyncMessage::decode(&message)
-                                            .expect("Failed to decode message."),
+                                        message,
                                     };
                                     self.pending_events.push_back(event);
+                                } else {
+                                    break true;
                                 }
-                                Ok(RepoMessage::Ephemeral { .. }) => {
-                                    todo!()
-                                }
-                                Err(_) => break true,
                             }
-                        }
+                            Ok(RepoMessage::Ephemeral { .. }) => {
+                                todo!()
+                            }
+                            Err(_) => break true,
+                        },
                         Poll::Ready(None) => break true,
                     }
                 }
