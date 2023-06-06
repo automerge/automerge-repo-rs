@@ -1110,9 +1110,7 @@ impl Repo {
             }
             RepoEvent::DocClosed(doc_id) => {
                 if let Some(doc_info) = self.documents.get_mut(&doc_id) {
-                    if doc_info.handle_count.load(Ordering::SeqCst) != 0 {
-                        panic!("Document closed with outstanding handles.");
-                    }
+                    assert_eq!(doc_info.handle_count.load(Ordering::SeqCst), 0);
                     doc_info.save_document(doc_id, self.storage.as_ref(), &self.wake_sender);
                     doc_info.start_pending_removal();
                 }
