@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::mem;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
@@ -30,9 +30,6 @@ pub struct RepoHandle {
     /// such as when a doc is created, and a doc handle acquired.
     repo_sender: Sender<RepoEvent>,
     repo_id: RepoId,
-
-    /// Counter to generate unique document ids.
-    document_id_counter: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +107,6 @@ impl RepoHandle {
 
     /// Create a new document.
     pub fn new_document(&self) -> DocHandle {
-        let _counter = self.document_id_counter.fetch_add(1, Ordering::SeqCst);
         let document_id = DocumentId(Uuid::new_v4().to_string());
         let document = new_document_with_observer();
         let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
@@ -1365,7 +1361,6 @@ impl Repo {
     pub fn run(mut self) -> RepoHandle {
         let repo_sender = self.repo_sender.clone();
         let repo_id = self.repo_id.clone();
-        let document_id_counter = Default::default();
 
         // Run the repo's event-loop in a thread.
         // The repo shuts down
@@ -1504,7 +1499,6 @@ impl Repo {
 
         RepoHandle {
             handle: Arc::new(Mutex::new(Some(handle))),
-            document_id_counter: Arc::new(document_id_counter),
             repo_id,
             repo_sender,
         }
