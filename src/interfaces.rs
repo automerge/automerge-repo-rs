@@ -73,8 +73,8 @@ pub enum StorageError {
     Error,
 }
 
-// TODO: return futures.
-pub trait StorageAdapter: Send {
+/// The Storage API.
+pub trait Storage: Send {
     fn get(
         &self,
         _id: DocumentId,

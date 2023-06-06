@@ -5,10 +5,6 @@ edition = "2021"
 path = "src/lib.rs"
 
 [[example]]
-name = "http-server-with-relay"
-path = "examples/http_server_with_relay.rs"
-
-[[example]]
 name = "tcp-example"
 path = "examples/tcp_example.rs"
 

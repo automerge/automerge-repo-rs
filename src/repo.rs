@@ -1,7 +1,7 @@
 use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{
-    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, StorageAdapter, StorageError,
+    NetworkAdapter, NetworkError, NetworkEvent, NetworkMessage, Storage, StorageError,
 };
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::transaction::Observed;
@@ -661,7 +661,7 @@ impl DocumentInfo {
     fn save_document(
         &mut self,
         document_id: DocumentId,
-        storage: &dyn StorageAdapter,
+        storage: &dyn Storage,
         wake_sender: &Sender<WakeSignal>,
     ) {
         if !self.state.should_save() {
@@ -806,7 +806,7 @@ pub struct Repo {
     pending_storage_list_all: Option<PendingListAll>,
 
     /// The storage API.
-    storage: Box<dyn StorageAdapter>,
+    storage: Box<dyn Storage>,
 
     /// The network API.
     network_adapters: HashMap<RepoId, Box<dyn NetworkAdapter<Error = NetworkError>>>,
@@ -814,7 +814,7 @@ pub struct Repo {
 
 impl Repo {
     /// Create a new repo.
-    pub fn new(repo_id: Option<String>, storage: Box<dyn StorageAdapter>) -> Self {
+    pub fn new(repo_id: Option<String>, storage: Box<dyn Storage>) -> Self {
         let (wake_sender, wake_receiver) = unbounded();
         let (repo_sender, repo_receiver) = unbounded();
         let repo_id = repo_id.map_or_else(|| RepoId(Uuid::new_v4().to_string()), RepoId);

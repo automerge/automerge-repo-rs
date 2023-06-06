@@ -1,4 +1,4 @@
-use automerge_repo::{DocumentId, StorageAdapter, StorageError};
+use automerge_repo::{DocumentId, Storage, StorageError};
 use futures::future::TryFutureExt;
 use futures::Future;
 use parking_lot::Mutex;
@@ -10,7 +10,7 @@ use tokio::sync::oneshot::{channel as oneshot, Sender as OneShot};
 
 pub struct SimpleStorage;
 
-impl StorageAdapter for SimpleStorage {}
+impl Storage for SimpleStorage {}
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryStorage {
@@ -25,7 +25,7 @@ impl InMemoryStorage {
     }
 }
 
-impl StorageAdapter for InMemoryStorage {
+impl Storage for InMemoryStorage {
     fn get(
         &self,
         id: DocumentId,
@@ -115,7 +115,7 @@ impl AsyncInMemoryStorage {
     }
 }
 
-impl StorageAdapter for AsyncInMemoryStorage {
+impl Storage for AsyncInMemoryStorage {
     fn get(
         &self,
         id: DocumentId,
