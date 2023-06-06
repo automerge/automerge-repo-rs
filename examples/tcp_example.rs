@@ -228,7 +228,12 @@ async fn main() {
                     println!("Synced: {:?} to {:?}", doc_id, val);
                 });
             }
-            repo_handle_clone.stop().unwrap();
+            Handle::current()
+                .spawn_blocking(|| {
+                    repo_handle.stop().unwrap();
+                })
+                .await
+                .unwrap();
         }
     }
 }
