@@ -113,7 +113,10 @@ fn test_multiple_save() {
 
             // Shut down the repo.
             drop(document_handle);
-            repo_handle.stop().unwrap();
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             (expected_value, document_id)
         };
 

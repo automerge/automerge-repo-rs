@@ -1376,18 +1376,10 @@ impl Repo {
 
             // Ensure all docs are saved.
             loop {
-                self.documents.drain_filter(|doc_id, info| {
-                    if !info.state.should_save() {
-                        true
-                    } else {
-                        info.save_document(
-                            doc_id.clone(),
-                            self.storage.as_ref(),
-                            &self.wake_sender,
-                        );
-                        false
-                    }
-                });
+                for (doc_id, info) in self.documents.iter_mut() {
+                    info.save_document(doc_id.clone(), self.storage.as_ref(), &self.wake_sender);
+                }
+                self.gc_docs();
                 if self.documents.is_empty() {
                     break;
                 }

@@ -88,7 +88,10 @@ fn test_list_all_errors_on_shutdown() {
 
             // Shut down the repo.
             drop(document_handle);
-            repo_handle.stop().unwrap();
+            let _ = tokio::task::spawn_blocking(|| {
+                repo_handle.stop().unwrap();
+            })
+            .await;
             (expected_value, document_id)
         };
 
