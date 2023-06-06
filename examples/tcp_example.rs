@@ -1,6 +1,6 @@
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{ConnDirection, Repo, RepoHandle, StorageAdapter};
+use automerge_repo::{ConnDirection, Repo, RepoHandle, Storage};
 use automerge_repo::{DocumentId, StorageError};
 use axum::extract::State;
 use axum::routing::{get, post};
@@ -69,7 +69,7 @@ impl AsyncInMemoryStorage {
     }
 }
 
-impl StorageAdapter for AsyncInMemoryStorage {
+impl Storage for AsyncInMemoryStorage {
     fn get(
         &self,
         id: DocumentId,

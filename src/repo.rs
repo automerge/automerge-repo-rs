@@ -807,7 +807,6 @@ struct PendingListAll {
     storage_fut: Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin>,
 }
 
-
 /// A sink and stream pair representing a network connection to a remote repo.
 struct RemoteRepo {
     stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
