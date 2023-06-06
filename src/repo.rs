@@ -705,6 +705,7 @@ impl DocumentInfo {
             .or_insert_with(SyncState::new);
         let mut document = self.document.lock();
         let mut sync = document.automerge.sync();
+        // TODO: remove remote if there is an error.
         sync.receive_sync_message(sync_state, message)
             .expect("Failed to apply sync message.");
     }
