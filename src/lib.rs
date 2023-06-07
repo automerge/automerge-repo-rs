@@ -1,4 +1,5 @@
 #![feature(hash_drain_filter)]
+#![feature(drain_filter)]
 
 mod dochandle;
 mod interfaces;

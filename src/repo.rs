@@ -5,6 +5,7 @@ use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::transaction::Observed;
 use automerge::VecOpObserver;
 use automerge::{AutoCommit, AutoCommitWithObs};
+use std::collections::hash_map::Entry;
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::future::Future;
@@ -12,6 +13,7 @@ use futures::stream::Stream;
 use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll, Waker};
 use futures::Sink;
+use futures::StreamExt;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
@@ -766,6 +768,7 @@ impl DocumentInfo {
 enum WakeSignal {
     Stream(RepoId),
     Sink(RepoId),
+    PendingCloseSink(RepoId),
     Storage(DocumentId),
     StorageList,
 }
@@ -775,6 +778,7 @@ enum WakeSignal {
 enum RepoWaker {
     Stream(Sender<WakeSignal>, RepoId),
     Sink(Sender<WakeSignal>, RepoId),
+    PendingCloseSink(Sender<WakeSignal>, RepoId),
     Storage(Sender<WakeSignal>, DocumentId),
     StorageList(Sender<WakeSignal>),
 }
@@ -787,6 +791,9 @@ impl ArcWake for RepoWaker {
         let _ = match &**arc_self {
             RepoWaker::Stream(sender, repo_id) => sender.send(WakeSignal::Stream(repo_id.clone())),
             RepoWaker::Sink(sender, repo_id) => sender.send(WakeSignal::Sink(repo_id.clone())),
+            RepoWaker::PendingCloseSink(sender, repo_id) => {
+                sender.send(WakeSignal::PendingCloseSink(repo_id.clone()))
+            }
             RepoWaker::Storage(sender, doc_id) => sender.send(WakeSignal::Storage(doc_id.clone())),
             RepoWaker::StorageList(sender) => sender.send(WakeSignal::StorageList),
         };
@@ -806,6 +813,9 @@ struct RemoteRepo {
     stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
     sink: Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>,
 }
+
+type PendingCloseSinks =
+    Vec<Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>>;
 
 /// The backend of a repo: runs an event-loop in a background thread.
 pub struct Repo {
@@ -844,6 +854,9 @@ pub struct Repo {
 
     /// The network API.
     remote_repos: HashMap<RepoId, RemoteRepo>,
+
+    /// Network sinks that are pending close.
+    pending_close_sinks: HashMap<RepoId, PendingCloseSinks>,
 }
 
 impl Repo {
@@ -867,6 +880,7 @@ impl Repo {
             repo_receiver,
             documents_with_changes: Default::default(),
             storage,
+            pending_close_sinks: Default::default(),
         }
     }
 
@@ -1238,34 +1252,49 @@ impl Repo {
                 stream,
                 sink,
             } => {
-                self.remote_repos
-                    .entry(repo_id.clone())
-                    .and_modify(|_| {
-                        // TODO: close the existing stream/sink?
-                    })
-                    .or_insert(RemoteRepo { stream, sink });
-
-                // Try to sync all docs we know about.
-                let our_id = self.get_repo_id().clone();
-                for (document_id, info) in self.documents.iter_mut() {
-                    if !info.state.should_announce() {
-                        continue;
+                if let Some(RemoteRepo {
+                    stream: existing_stream,
+                    sink: existing_sink,
+                }) = self.remote_repos.remove(&repo_id)
+                {
+                    let remote = RemoteRepo {
+                        stream: Box::new(existing_stream.chain(stream)),
+                        sink,
+                    };
+                    assert!(self.remote_repos.insert(repo_id.clone(), remote).is_none());
+                    let pending_sinks = self
+                        .pending_close_sinks
+                        .entry(repo_id.clone())
+                        .or_insert_with(Default::default);
+                    pending_sinks.push(existing_sink);
+                    self.poll_close_sinks(repo_id)
+                } else {
+                    assert!(self
+                        .remote_repos
+                        .insert(repo_id.clone(), RemoteRepo { stream, sink })
+                        .is_none());
+                    // Try to sync all docs we know about.
+                    let our_id = self.get_repo_id().clone();
+                    for (document_id, info) in self.documents.iter_mut() {
+                        if !info.state.should_announce() {
+                            continue;
+                        }
+                        if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
+                            let outgoing = NetworkMessage::Sync {
+                                from_repo_id: our_id.clone(),
+                                to_repo_id: repo_id.clone(),
+                                document_id: document_id.clone(),
+                                message,
+                            };
+                            self.pending_messages
+                                .entry(repo_id.clone())
+                                .or_insert_with(Default::default)
+                                .push_back(outgoing);
+                        }
                     }
-                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
-                        let outgoing = NetworkMessage::Sync {
-                            from_repo_id: our_id.clone(),
-                            to_repo_id: repo_id.clone(),
-                            document_id: document_id.clone(),
-                            message,
-                        };
-                        self.pending_messages
-                            .entry(repo_id.clone())
-                            .or_insert_with(Default::default)
-                            .push_back(outgoing);
-                    }
+                    self.sinks_to_poll.insert(repo_id.clone());
+                    self.streams_to_poll.insert(repo_id);
                 }
-                self.sinks_to_poll.insert(repo_id.clone());
-                self.streams_to_poll.insert(repo_id);
             }
             RepoEvent::Stop => {
                 // Handled in the main run loop.
@@ -1353,6 +1382,24 @@ impl Repo {
         }
     }
 
+    fn poll_close_sinks(&mut self, repo_id: RepoId) {
+        if let Entry::Occupied(mut entry) = self.pending_close_sinks.entry(repo_id.clone()) {
+            entry.get_mut().drain_filter(|mut sink| {
+                let sink_waker = Arc::new(RepoWaker::PendingCloseSink(
+                    self.wake_sender.clone(),
+                    repo_id.clone(),
+                ));
+                let waker = waker_ref(&sink_waker);
+                let pinned_sink = Pin::new(&mut sink);
+                let result = pinned_sink.poll_close(&mut Context::from_waker(&waker));
+                !matches!(result, Poll::Pending)
+            });
+            if entry.get().is_empty() {
+                entry.remove_entry();
+            }
+        }
+    }
+
     /// The event-loop of the repo.
     /// Handles events from handles and adapters.
     /// Returns a handle for optional clean shutdown.
@@ -1424,6 +1471,7 @@ impl Repo {
                                     }
                                 }
                             }
+                            WakeSignal::PendingCloseSink(repo_id) => self.poll_close_sinks(repo_id),
                             WakeSignal::StorageList => self.process_pending_storage_list(),
                         }
                     },
@@ -1444,6 +1492,23 @@ impl Repo {
                 info.start_pending_removal();
             }
 
+            // Poll close sinks, and remove those that are ready or errored.
+            let sinks_to_close: Vec<RepoId> = self
+                .remote_repos
+                .drain()
+                .map(|(repo_id, remote_repo)| {
+                    let pending = self
+                        .pending_close_sinks
+                        .entry(repo_id.clone())
+                        .or_insert_with(Default::default);
+                    pending.push(remote_repo.sink);
+                    repo_id
+                })
+                .collect();
+            for repo_id in sinks_to_close {
+                self.poll_close_sinks(repo_id);
+            }
+
             // Ensure all docs are saved,
             // and all network sinks are closed.
             loop {
@@ -1455,22 +1520,7 @@ impl Repo {
                 // Remove docs that have been saved, or that errored.
                 self.gc_docs();
 
-                // Poll close sinks, and remove those that are ready or errored.
-                self.remote_repos.drain_filter(|_, remote_repo| {
-                    let sink_waker = Arc::new(RepoWaker::Sink(
-                        self.wake_sender.clone(),
-                        self.repo_id.clone(),
-                    ));
-                    let waker = waker_ref(&sink_waker);
-                    let pinned_sink = Pin::new(&mut remote_repo.sink);
-                    let result = pinned_sink.poll_close(&mut Context::from_waker(&waker));
-                    match result {
-                        Poll::Pending => false,
-                        Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => true,
-                    }
-                });
-
-                if self.documents.is_empty() && self.remote_repos.is_empty() {
+                if self.documents.is_empty() && self.pending_close_sinks.is_empty() {
                     // Shutdown is done.
                     break;
                 }
@@ -1480,6 +1530,7 @@ impl Repo {
                     WakeSignal::Stream(_) | WakeSignal::Sink(_) | WakeSignal::StorageList => {
                         continue
                     }
+                    WakeSignal::PendingCloseSink(repo_id) => self.poll_close_sinks(repo_id),
                     WakeSignal::Storage(doc_id) => {
                         if let Some(info) = self.documents.get_mut(&doc_id) {
                             info.poll_storage_operation(
