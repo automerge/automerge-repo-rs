@@ -1,9 +1,10 @@
 use automerge::transaction::Transactable;
-use automerge::ReadDoc;
+use automerge::{ReadDoc, AutoSerde};
 use automerge_repo::{ConnDirection, Repo, RepoHandle, Storage};
 use automerge_repo::{DocumentId, StorageError};
-use axum::extract::State;
+use axum::extract::{State, Path};
 use axum::routing::{get, post};
+use axum::http::StatusCode;
 use axum::{Json, Router};
 use axum_macros::debug_handler;
 use clap::Parser;
@@ -17,6 +18,54 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneShot};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(long)]
+    http_run_ip: String,
+    #[arg(long)]
+    tcp_run_ip: Option<String>,
+    #[arg(long)]
+    other_ip: Option<String>,
+}
+
+struct AppState {
+    repo_handle: RepoHandle,
+}
+
+#[debug_handler]
+async fn request_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
+    state
+        .repo_handle
+        .request_document(document_id)
+        .await
+        .unwrap();
+}
+
+#[debug_handler]
+async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
+    let mut doc_handle = state.repo_handle.new_document();
+    let our_id = state.repo_handle.get_repo_id();
+    doc_handle.with_doc_mut(|doc| {
+        doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
+            .expect("Failed to change the document.");
+        doc.commit();
+    });
+    let doc_id = doc_handle.document_id();
+    Json(doc_id)
+}
+
+async fn get_doc(
+    State(state): State<Arc<AppState>>,
+    Path(doc_id): Path<DocumentId>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let doc_handle = state.repo_handle.request_document(doc_id).await.unwrap();
+    let value = doc_handle.with_doc(|doc| {
+        serde_json::to_value(AutoSerde::from(doc)).unwrap()
+    });
+    (StatusCode::OK,Json(value))
+}
 
 #[derive(Debug)]
 enum StorageRequest {
@@ -116,43 +165,6 @@ impl Storage for AsyncInMemoryStorage {
     }
 }
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(long)]
-    http_run_ip: String,
-    #[arg(long)]
-    tcp_run_ip: Option<String>,
-    #[arg(long)]
-    other_ip: Option<String>,
-}
-
-struct AppState {
-    repo_handle: RepoHandle,
-}
-
-#[debug_handler]
-async fn request_doc(State(state): State<Arc<AppState>>, Json(document_id): Json<DocumentId>) {
-    state
-        .repo_handle
-        .request_document(document_id)
-        .await
-        .unwrap();
-}
-
-#[debug_handler]
-async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
-    let mut doc_handle = state.repo_handle.new_document();
-    let our_id = state.repo_handle.get_repo_id();
-    doc_handle.with_doc_mut(|doc| {
-        doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
-            .expect("Failed to change the document.");
-        doc.commit();
-    });
-    let doc_id = doc_handle.document_id();
-    Json(doc_id)
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -170,6 +182,7 @@ async fn main() {
     let app = Router::new()
         .route("/new_doc", get(new_doc))
         .route("/request_doc", post(request_doc))
+        .route("/docs/:id", get(get_doc))
         .with_state(app_state);
     let serve =
         axum::Server::bind(&args.http_run_ip.parse().unwrap()).serve(app.into_make_service());
