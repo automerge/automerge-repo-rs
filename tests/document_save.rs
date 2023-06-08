@@ -15,7 +15,7 @@ fn test_simple_save() {
 
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let storage = AsyncInMemoryStorage::new(Default::default());
+        let storage = AsyncInMemoryStorage::new(Default::default(), false);
         let (expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));
@@ -74,6 +74,58 @@ fn test_simple_save() {
 }
 
 #[test]
+fn test_save_on_shutdown() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let (done_sync_sender, mut done_sync_receiver) = channel(1);
+    rt.spawn(async move {
+        // Step by step storage.
+        let storage = AsyncInMemoryStorage::new(Default::default(), true);
+        // Create one repo.
+        let repo = Repo::new(None, Box::new(storage.clone()));
+        let repo_handle = repo.run();
+
+        // Create a document for one repo.
+        let mut document_handle = repo_handle.new_document();
+
+        // Edit the document.
+        let expected_value = format!("{}", repo_handle.get_repo_id());
+        document_handle.with_doc_mut(|doc| {
+            doc.put(automerge::ROOT, "repo_id", expected_value.clone())
+                .expect("Failed to change the document.");
+            doc.commit();
+        });
+        drop(document_handle);
+
+        use tokio::sync::oneshot::channel as oneshot;
+
+        let (tx, rx) = oneshot();
+
+        tokio::spawn(async move {
+            rx.await.unwrap();
+            // Allow storage to save.
+            storage.process_next_result().await;
+        });
+
+        // Shut down the repo.
+        tokio::task::spawn_blocking(|| {
+            // Not completely deterministic, but good enough.
+            tx.send(()).unwrap();
+            repo_handle.stop().unwrap();
+        })
+        .await
+        .unwrap();
+
+        done_sync_sender.send(()).await.unwrap();
+    });
+
+    done_sync_receiver.blocking_recv().unwrap();
+}
+
+#[test]
 fn test_multiple_save() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -82,7 +134,7 @@ fn test_multiple_save() {
 
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let storage = AsyncInMemoryStorage::new(Default::default());
+        let storage = AsyncInMemoryStorage::new(Default::default(), false);
         let (expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));
@@ -160,7 +212,7 @@ fn test_compact_save() {
 
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let storage = AsyncInMemoryStorage::new(Default::default());
+        let storage = AsyncInMemoryStorage::new(Default::default(), false);
         let (expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));
