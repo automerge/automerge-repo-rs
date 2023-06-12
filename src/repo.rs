@@ -1257,6 +1257,8 @@ impl Repo {
                     sink: existing_sink,
                 }) = self.remote_repos.remove(&repo_id)
                 {
+                    // Reset the sync state.
+                    self.remove_unused_sync_states();
                     let remote = RemoteRepo {
                         stream: Box::new(existing_stream.chain(stream)),
                         sink,
@@ -1267,34 +1269,34 @@ impl Repo {
                         .entry(repo_id.clone())
                         .or_insert_with(Default::default);
                     pending_sinks.push(existing_sink);
-                    self.poll_close_sinks(repo_id)
+                    self.poll_close_sinks(repo_id.clone());
                 } else {
                     assert!(self
                         .remote_repos
                         .insert(repo_id.clone(), RemoteRepo { stream, sink })
                         .is_none());
-                    // Try to sync all docs we know about.
-                    let our_id = self.get_repo_id().clone();
-                    for (document_id, info) in self.documents.iter_mut() {
-                        if !info.state.should_announce() {
-                            continue;
-                        }
-                        if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
-                            let outgoing = NetworkMessage::Sync {
-                                from_repo_id: our_id.clone(),
-                                to_repo_id: repo_id.clone(),
-                                document_id: document_id.clone(),
-                                message,
-                            };
-                            self.pending_messages
-                                .entry(repo_id.clone())
-                                .or_insert_with(Default::default)
-                                .push_back(outgoing);
-                        }
-                    }
-                    self.sinks_to_poll.insert(repo_id.clone());
-                    self.streams_to_poll.insert(repo_id);
                 }
+                // Try to sync all docs we know about.
+                let our_id = self.get_repo_id().clone();
+                for (document_id, info) in self.documents.iter_mut() {
+                    if !info.state.should_announce() {
+                        continue;
+                    }
+                    if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: our_id.clone(),
+                            to_repo_id: repo_id.clone(),
+                            document_id: document_id.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(repo_id.clone())
+                            .or_insert_with(Default::default)
+                            .push_back(outgoing);
+                    }
+                }
+                self.sinks_to_poll.insert(repo_id.clone());
+                self.streams_to_poll.insert(repo_id);
             }
             RepoEvent::Stop => {
                 // Handled in the main run loop.
