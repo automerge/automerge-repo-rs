@@ -15,6 +15,7 @@ pub struct Network<T> {
     outgoing: Arc<Mutex<VecDeque<T>>>,
     sink_waker: Arc<Mutex<Option<Waker>>>,
     sender: Sender<(RepoId, RepoId)>,
+    closed: Arc<Mutex<bool>>,
 }
 
 impl<T> Network<T> {
@@ -29,6 +30,7 @@ impl<T> Network<T> {
             outgoing,
             sender,
             sink_waker,
+            closed: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -45,6 +47,10 @@ impl<T> Network<T> {
             waker.wake();
         }
         message
+    }
+    
+    pub fn closed(&self) -> bool {
+        *self.closed.lock()
     }
 }
 
@@ -106,6 +112,7 @@ impl Sink<Result<RepoMessage, NetworkError>> for Network<Result<RepoMessage, Net
     }
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         *self.sink_waker.lock() = Some(cx.waker().clone());
+        *self.closed.lock() = true;
         if self.outgoing.lock().is_empty() {
             Poll::Ready(Ok(()))
         } else {
