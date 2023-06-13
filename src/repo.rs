@@ -5,7 +5,6 @@ use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::transaction::Observed;
 use automerge::VecOpObserver;
 use automerge::{AutoCommit, AutoCommitWithObs};
-use std::collections::hash_map::Entry;
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::future::Future;
@@ -15,6 +14,7 @@ use futures::task::{waker_ref, Context, Poll, Waker};
 use futures::Sink;
 use futures::StreamExt;
 use parking_lot::Mutex;
+use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -902,30 +902,57 @@ impl Repo {
     /// Remove sync states for repos for which we do not have an adapter anymore.
     fn remove_unused_sync_states(&mut self) {
         for document_info in self.documents.values_mut() {
-            document_info
+            let sync_keys = document_info
                 .sync_states
-                .drain_filter(|repo_id, _| !self.remote_repos.contains_key(repo_id));
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>();
+            let live_keys = self.remote_repos.keys().cloned().collect::<HashSet<_>>();
+            let delenda = sync_keys.difference(&live_keys).collect::<Vec<_>>();
+
+            for key in delenda {
+                document_info.sync_states.remove(key);
+            }
         }
     }
 
     /// Garbage collect docs.
     fn gc_docs(&mut self) {
-        self.documents.drain_filter(|_, info| {
-            matches!(info.state, DocState::Error)
-                || matches!(
-                    info.state,
-                    DocState::PendingRemoval {
-                        storage_fut: None,
-                        pending_edits: 0
-                    }
-                )
-        });
+        let delenda = self
+            .documents
+            .iter()
+            .filter_map(|(key, info)| {
+                if matches!(info.state, DocState::Error)
+                    || matches!(
+                        info.state,
+                        DocState::PendingRemoval {
+                            storage_fut: None,
+                            pending_edits: 0
+                        }
+                    )
+                {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        for key in delenda {
+            self.documents.remove(&key);
+        }
     }
 
     /// Remove pending messages for repos for which we do not have an adapter anymore.
     fn remove_unused_pending_messages(&mut self) {
-        self.pending_messages
-            .drain_filter(|repo_id, _| !self.remote_repos.contains_key(repo_id));
+        let dead_repos = self
+            .pending_messages
+            .keys()
+            .filter(|repo_id| !self.remote_repos.contains_key(repo_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for dead_repo in dead_repos {
+            self.pending_messages.remove(&dead_repo);
+        }
     }
 
     /// Poll the network adapter stream.
@@ -1386,7 +1413,8 @@ impl Repo {
 
     fn poll_close_sinks(&mut self, repo_id: RepoId) {
         if let Entry::Occupied(mut entry) = self.pending_close_sinks.entry(repo_id.clone()) {
-            entry.get_mut().drain_filter(|mut sink| {
+            let mut delenda = Vec::new();
+            for (index, mut sink) in entry.get_mut().iter_mut().enumerate() {
                 let sink_waker = Arc::new(RepoWaker::PendingCloseSink(
                     self.wake_sender.clone(),
                     repo_id.clone(),
@@ -1394,8 +1422,17 @@ impl Repo {
                 let waker = waker_ref(&sink_waker);
                 let pinned_sink = Pin::new(&mut sink);
                 let result = pinned_sink.poll_close(&mut Context::from_waker(&waker));
-                !matches!(result, Poll::Pending)
-            });
+                if !matches!(result, Poll::Pending) {
+                    delenda.push(index);
+                }
+            }
+            for index in delenda {
+                // why?
+                #[allow(unused_must_use)]
+                {
+                    entry.get_mut().remove(index);
+                }
+            }
             if entry.get().is_empty() {
                 entry.remove_entry();
             }
