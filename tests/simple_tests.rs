@@ -1,7 +1,7 @@
 extern crate test_utils;
 
 use automerge::transaction::Transactable;
-use automerge_repo::{NetworkEvent, NetworkMessage, Repo, RepoId};
+use automerge_repo::{Repo, RepoId, RepoMessage};
 use std::collections::HashMap;
 use test_utils::network_utils::Network;
 use test_utils::storage_utils::SimpleStorage;
@@ -30,7 +30,7 @@ fn test_simple_sync() {
     for _ in 1..10 {
         // Create the repo.
         let repo = Repo::new(None, Box::new(SimpleStorage));
-        let mut repo_handle = repo.run();
+        let repo_handle = repo.run();
 
         // Create a document.
         let mut doc_handle = repo_handle.new_document();
@@ -58,7 +58,11 @@ fn test_simple_sync() {
         for id in repo_ids.iter() {
             // Create the network adapter.
             let network = Network::new(sender.clone());
-            repo_handle.new_network_adapter(id.clone(), Box::new(network.clone()));
+            repo_handle.new_remote_repo(
+                id.clone(),
+                Box::new(network.clone()),
+                Box::new(network.clone()),
+            );
             let entry = peers
                 .entry(repo_handle.get_repo_id().clone())
                 .or_insert(HashMap::new());
@@ -81,21 +85,22 @@ fn test_simple_sync() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       NetworkMessage::Sync {
+                       Ok(RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       } => {
+                       }) => {
                            let peers = peers.get_mut(&to_repo_id).unwrap();
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(NetworkEvent::Sync {
+                          peer.receive_incoming(Ok(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                           });
-                       }
+                               }));
+                       },
+                       _ => todo!(),
                    }
                },
             }
@@ -106,9 +111,6 @@ fn test_simple_sync() {
         let mut synced = 0;
         for doc_handle in documents {
             for repo_handle in repo_handles_clone.iter() {
-                if doc_handle.document_id().get_repo_id() == repo_handle.get_repo_id() {
-                    continue;
-                }
                 repo_handle
                     .request_document(doc_handle.document_id())
                     .await
@@ -116,7 +118,7 @@ fn test_simple_sync() {
                 synced = synced + 1;
             }
         }
-        assert_eq!(synced, 72);
+        assert_eq!(synced, 81);
         let _ = done_sync_sender.try_send(());
     });
 

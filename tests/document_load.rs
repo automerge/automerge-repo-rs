@@ -2,17 +2,17 @@ extern crate test_utils;
 
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{DocumentId, Repo, RepoId};
+use automerge_repo::{DocumentId, Repo};
 use std::collections::HashMap;
 use test_utils::storage_utils::{AsyncInMemoryStorage, InMemoryStorage};
 use tokio::sync::mpsc::channel;
 
 #[test]
 fn test_loading_document_found_immediately() {
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
     // Create one repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
-    let mut repo_handle = repo.run();
+    let repo_handle = repo.run();
 
     // Create a document for one repo.
     let mut document_handle = repo_handle.new_document();
@@ -70,10 +70,10 @@ fn test_loading_document_found_immediately() {
 
 #[test]
 fn test_loading_document_found_async() {
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
     // Create one repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
-    let mut repo_handle = repo.run();
+    let repo_handle = repo.run();
 
     // Create a document for one repo.
     let mut document_handle = repo_handle.new_document();
@@ -108,7 +108,7 @@ fn test_loading_document_found_async() {
     // Create another repo, using the async storage.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let async_storage = AsyncInMemoryStorage::new(docs);
+        let async_storage = AsyncInMemoryStorage::new(docs, false);
         let repo = Repo::new(None, Box::new(async_storage));
         let repo_handle = repo.run();
 
@@ -128,7 +128,10 @@ fn test_loading_document_found_async() {
                 });
             if equals {
                 // Shut down the repo.
-                repo_handle.stop().unwrap();
+                let _ = tokio::task::spawn_blocking(|| {
+                    repo_handle.stop().unwrap();
+                })
+                .await;
                 done_sync_sender.send(()).await.unwrap();
             }
         })
@@ -142,7 +145,7 @@ fn test_loading_document_found_async() {
 #[test]
 fn test_loading_document_immediately_not_found() {
     // Empty storage.
-    let storage = InMemoryStorage::new();
+    let storage = InMemoryStorage::default();
 
     // Create a repo.
     let repo = Repo::new(None, Box::new(storage.clone()));
@@ -155,7 +158,7 @@ fn test_loading_document_immediately_not_found() {
 
     // Spawn a task that awaits the requested doc handle.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    let doc_id = DocumentId((RepoId(String::from("Test")), 1));
+    let doc_id = DocumentId(String::from("Test"));
     let load_fut = repo_handle.load(doc_id);
     rt.spawn(async move {
         let not_found = load_fut.await.unwrap().is_none();
@@ -182,17 +185,20 @@ fn test_loading_document_not_found_async() {
     // Create a repo, using the async storage.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let async_storage = AsyncInMemoryStorage::new(docs);
+        let async_storage = AsyncInMemoryStorage::new(docs, false);
         let repo = Repo::new(None, Box::new(async_storage));
         let repo_handle = repo.run();
 
         // Spawn a task that awaits the requested doc handle.
         tokio::spawn(async move {
-            let doc_id = DocumentId((RepoId(String::from("Test")), 1));
+            let doc_id = DocumentId(String::from("Test"));
             let not_found = repo_handle.load(doc_id).await.unwrap().is_none();
             if not_found {
                 // Shut down the repo.
-                repo_handle.stop().unwrap();
+                let _ = tokio::task::spawn_blocking(|| {
+                    repo_handle.stop().unwrap();
+                })
+                .await;
                 done_sync_sender.send(()).await.unwrap();
             }
         })
