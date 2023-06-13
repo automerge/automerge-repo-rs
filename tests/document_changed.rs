@@ -2,7 +2,7 @@ extern crate test_utils;
 
 use automerge::transaction::Transactable;
 use automerge::ReadDoc;
-use automerge_repo::{NetworkEvent, NetworkMessage, Repo};
+use automerge_repo::{Repo, RepoMessage};
 use std::collections::HashMap;
 use test_utils::network_utils::Network;
 use test_utils::storage_utils::SimpleStorage;
@@ -28,12 +28,14 @@ fn test_document_changed_over_sync() {
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
     let network_2 = Network::new(sender.clone());
-    repo_handle_1.new_network_adapter(
+    repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
+        Box::new(network_1.clone()),
     );
-    repo_handle_2.new_network_adapter(
+    repo_handle_2.new_remote_repo(
         repo_handle_1.get_repo_id().clone(),
+        Box::new(network_2.clone()),
         Box::new(network_2.clone()),
     );
     peers.insert(repo_handle_2.get_repo_id().clone(), network_1);
@@ -99,20 +101,21 @@ fn test_document_changed_over_sync() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       NetworkMessage::Sync {
+                       Ok(RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       } => {
+                       }) => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(NetworkEvent::Sync {
+                          peer.receive_incoming(Ok(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                           });
+                               }));
                        }
+                       _ => todo!(),
                    }
                },
             }
@@ -147,7 +150,7 @@ fn test_document_changed_locally() {
     let (done_sender, mut done_receiver) = channel(1);
     let (start_wait_sender, mut start_wait_receiver) = channel(1);
     let expected = expected_repo_id.clone();
-    let mut doc_handle = document_handle_1.clone();
+    let doc_handle = document_handle_1.clone();
     rt.spawn(async move {
         start_wait_sender.send(()).await.unwrap();
         // Await the local change.

@@ -100,7 +100,7 @@ impl DocHandle {
 
     /// Run a closure over a immutable reference to the document,
     /// returns the result of calling the closure.
-    pub fn with_doc<F, T>(&mut self, f: F) -> T
+    pub fn with_doc<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
     {

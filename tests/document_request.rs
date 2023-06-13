@@ -1,7 +1,7 @@
 extern crate test_utils;
 
 use automerge::transaction::Transactable;
-use automerge_repo::{NetworkEvent, NetworkMessage, Repo};
+use automerge_repo::{Repo, RepoMessage};
 use std::collections::HashMap;
 use test_utils::network_utils::Network;
 use test_utils::storage_utils::{InMemoryStorage, SimpleStorage};
@@ -36,12 +36,14 @@ fn test_requesting_document_connected_peers() {
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
     let network_2 = Network::new(sender.clone());
-    repo_handle_1.new_network_adapter(
+    repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
+        Box::new(network_1.clone()),
     );
-    repo_handle_2.new_network_adapter(
+    repo_handle_2.new_remote_repo(
         repo_handle_1.get_repo_id().clone(),
+        Box::new(network_2.clone()),
         Box::new(network_2.clone()),
     );
     peers.insert(repo_handle_2.get_repo_id().clone(), network_1);
@@ -76,20 +78,21 @@ fn test_requesting_document_connected_peers() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       NetworkMessage::Sync {
+                       Ok(RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       } => {
+                       }) => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(NetworkEvent::Sync {
+                          peer.receive_incoming(Ok(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                           });
+                               }));
                        }
+                       _ => todo!(),
                    }
                },
             }
@@ -137,12 +140,14 @@ fn test_requesting_document_unconnected_peers() {
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
     let network_2 = Network::new(sender.clone());
-    repo_handle_1.new_network_adapter(
+    repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
+        Box::new(network_1.clone()),
     );
-    repo_handle_2.new_network_adapter(
+    repo_handle_2.new_remote_repo(
         repo_handle_1.get_repo_id().clone(),
+        Box::new(network_2.clone()),
         Box::new(network_2.clone()),
     );
     peers.insert(repo_handle_2.get_repo_id().clone(), network_1);
@@ -174,20 +179,21 @@ fn test_requesting_document_unconnected_peers() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       NetworkMessage::Sync {
+                       Ok(RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       } => {
+                       }) => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                           peer.receive_incoming(NetworkEvent::Sync {
+                          peer.receive_incoming(Ok(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                           });
+                               }));
                        }
+                       _ => todo!(),
                    }
                },
             }
