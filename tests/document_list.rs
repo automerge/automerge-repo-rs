@@ -14,7 +14,7 @@ fn test_list_all() {
 
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let storage = AsyncInMemoryStorage::new(Default::default());
+        let storage = AsyncInMemoryStorage::new(Default::default(), false);
         let (_expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));
@@ -68,7 +68,7 @@ fn test_list_all_errors_on_shutdown() {
 
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let storage = AsyncInMemoryStorage::new(Default::default());
+        let storage = AsyncInMemoryStorage::new(Default::default(), false);
         let (_expected_value, document_id) = {
             // Create one repo.
             let repo = Repo::new(None, Box::new(storage.clone()));

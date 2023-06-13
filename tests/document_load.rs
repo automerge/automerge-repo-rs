@@ -108,7 +108,7 @@ fn test_loading_document_found_async() {
     // Create another repo, using the async storage.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let async_storage = AsyncInMemoryStorage::new(docs);
+        let async_storage = AsyncInMemoryStorage::new(docs, false);
         let repo = Repo::new(None, Box::new(async_storage));
         let repo_handle = repo.run();
 
@@ -185,7 +185,7 @@ fn test_loading_document_not_found_async() {
     // Create a repo, using the async storage.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
     rt.spawn(async move {
-        let async_storage = AsyncInMemoryStorage::new(docs);
+        let async_storage = AsyncInMemoryStorage::new(docs, false);
         let repo = Repo::new(None, Box::new(async_storage));
         let repo_handle = repo.run();
 
