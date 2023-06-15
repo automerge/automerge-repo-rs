@@ -275,7 +275,7 @@ fn test_sinks_closed_on_replacement() {
     // Stop the repos.
     repo_handle_1.stop().unwrap();
     repo_handle_2.stop().unwrap();
-    
+
     // Assert all sinks were closed when replaced.
     assert!(!old_peers.is_empty());
     for (_, network) in old_peers.into_iter() {

@@ -1413,24 +1413,19 @@ impl Repo {
 
     fn poll_close_sinks(&mut self, repo_id: RepoId) {
         if let Entry::Occupied(mut entry) = self.pending_close_sinks.entry(repo_id.clone()) {
-            let mut delenda = Vec::new();
-            for (index, mut sink) in entry.get_mut().iter_mut().enumerate() {
-                let sink_waker = Arc::new(RepoWaker::PendingCloseSink(
-                    self.wake_sender.clone(),
-                    repo_id.clone(),
-                ));
-                let waker = waker_ref(&sink_waker);
-                let pinned_sink = Pin::new(&mut sink);
-                let result = pinned_sink.poll_close(&mut Context::from_waker(&waker));
-                if !matches!(result, Poll::Pending) {
-                    delenda.push(index);
-                }
-            }
-            for index in delenda {
-                // why?
-                #[allow(unused_must_use)]
-                {
-                    entry.get_mut().remove(index);
+            let sinks = mem::take(entry.get_mut());
+            for mut sink in sinks.into_iter() {
+                let result = {
+                    let sink_waker = Arc::new(RepoWaker::PendingCloseSink(
+                        self.wake_sender.clone(),
+                        repo_id.clone(),
+                    ));
+                    let waker = waker_ref(&sink_waker);
+                    let pinned_sink = Pin::new(&mut sink);
+                    pinned_sink.poll_close(&mut Context::from_waker(&waker))
+                };
+                if matches!(result, Poll::Pending) {
+                    entry.get_mut().push(sink);
                 }
             }
             if entry.get().is_empty() {

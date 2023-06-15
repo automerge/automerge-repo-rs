@@ -1,10 +1,10 @@
 use automerge::transaction::Transactable;
-use automerge::{ReadDoc, AutoSerde};
+use automerge::{AutoSerde, ReadDoc};
 use automerge_repo::{ConnDirection, Repo, RepoHandle, Storage};
 use automerge_repo::{DocumentId, StorageError};
-use axum::extract::{State, Path};
-use axum::routing::{get, post};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_macros::debug_handler;
 use clap::Parser;
@@ -61,10 +61,8 @@ async fn get_doc(
     Path(doc_id): Path<DocumentId>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let doc_handle = state.repo_handle.request_document(doc_id).await.unwrap();
-    let value = doc_handle.with_doc(|doc| {
-        serde_json::to_value(AutoSerde::from(doc)).unwrap()
-    });
-    (StatusCode::OK,Json(value))
+    let value = doc_handle.with_doc(|doc| serde_json::to_value(AutoSerde::from(doc)).unwrap());
+    (StatusCode::OK, Json(value))
 }
 
 #[derive(Debug)]
