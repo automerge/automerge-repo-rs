@@ -2,9 +2,7 @@ use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
-use automerge::transaction::Observed;
-use automerge::VecOpObserver;
-use automerge::{AutoCommit, AutoCommitWithObs};
+use automerge::AutoCommit;
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::future::Future;
@@ -44,10 +42,9 @@ pub enum RepoError {
     StorageError(StorageError),
 }
 
-/// Create a new autocommit document, with an observer.
-fn new_document_with_observer() -> AutoCommitWithObs<Observed<VecOpObserver>> {
-    let document = AutoCommit::new();
-    document.with_observer(VecOpObserver::default())
+/// Create a new document.
+fn new_document() -> AutoCommit {
+    AutoCommit::new()
 }
 
 /// Incoming event from the network.
@@ -110,7 +107,7 @@ impl RepoHandle {
     /// Create a new document.
     pub fn new_document(&self) -> DocHandle {
         let document_id = DocumentId(Uuid::new_v4().to_string());
-        let document = new_document_with_observer();
+        let document = new_document();
         let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
         let handle = DocHandle::new(
             self.repo_sender.clone(),
@@ -131,7 +128,7 @@ impl RepoHandle {
         &self,
         document_id: DocumentId,
     ) -> RepoFuture<Result<DocHandle, RepoError>> {
-        let document = new_document_with_observer();
+        let document = new_document();
         let (fut, resolver) = new_repo_future_with_resolver();
         let doc_info = self.new_document_info(
             document,
@@ -160,11 +157,7 @@ impl RepoHandle {
         fut
     }
 
-    fn new_document_info(
-        &self,
-        document: AutoCommitWithObs<Observed<VecOpObserver>>,
-        state: DocState,
-    ) -> DocumentInfo {
+    fn new_document_info(&self, document: AutoCommit, state: DocState) -> DocumentInfo {
         let document = SharedDocument {
             automerge: document,
         };
@@ -670,15 +663,8 @@ impl DocumentInfo {
     /// Count patches since last save,
     /// returns whether there were any.
     fn note_changes(&mut self) -> bool {
-        let patches = {
-            let mut doc = self.document.lock();
-            let observer = doc.automerge.observer();
-            observer.take_patches()
-        };
-        let count = patches.len();
-        let has_patches = count > 0;
-        self.patches_since_last_save = self.patches_since_last_save.checked_add(count).unwrap_or(0);
-        has_patches
+        // TODO: count patches somehow.
+        true
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
@@ -1248,7 +1234,7 @@ impl Repo {
                 let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
                     let storage_fut = self.storage.get(doc_id.clone());
                     let shared_document = SharedDocument {
-                        automerge: new_document_with_observer(),
+                        automerge: new_document(),
                     };
                     let state = DocState::LoadPending {
                         storage_fut,
@@ -1355,7 +1341,7 @@ impl Repo {
                             // the document will not be removed from memory until shutdown.
                             // Perhaps remove this and rely on `request_document` calls.
                             let shared_document = SharedDocument {
-                                automerge: new_document_with_observer(),
+                                automerge: new_document(),
                             };
                             let state = DocState::Sync(None);
                             let document = Arc::new(Mutex::new(shared_document));

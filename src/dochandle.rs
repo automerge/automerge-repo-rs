@@ -1,7 +1,6 @@
 use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
-use automerge::transaction::Observed;
-use automerge::{AutoCommitWithObs, VecOpObserver};
+use automerge::AutoCommit;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,7 +9,7 @@ use std::sync::Arc;
 /// A wrapper around a document shared between a handle and the repo.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedDocument {
-    pub automerge: AutoCommitWithObs<Observed<VecOpObserver>>,
+    pub automerge: AutoCommit,
 }
 
 #[derive(Debug)]
@@ -86,7 +85,7 @@ impl DocHandle {
     /// no saving via the storage adapter will be triggered.
     pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
     where
-        F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
+        F: FnOnce(&mut AutoCommit) -> T,
     {
         let res = {
             let mut state = self.shared_document.lock();
@@ -102,7 +101,7 @@ impl DocHandle {
     /// returns the result of calling the closure.
     pub fn with_doc<F, T>(&self, f: F) -> T
     where
-        F: FnOnce(&AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
+        F: FnOnce(&AutoCommit) -> T,
     {
         let res = {
             let state = self.shared_document.lock();
