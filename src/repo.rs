@@ -2,7 +2,7 @@ use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
-use automerge::AutoCommit;
+use automerge::Automerge;
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::future::Future;
@@ -43,8 +43,8 @@ pub enum RepoError {
 }
 
 /// Create a new document.
-fn new_document() -> AutoCommit {
-    AutoCommit::new()
+fn new_document() -> Automerge {
+    Automerge::new()
 }
 
 /// Incoming event from the network.
@@ -157,7 +157,7 @@ impl RepoHandle {
         fut
     }
 
-    fn new_document_info(&self, document: AutoCommit, state: DocState) -> DocumentInfo {
+    fn new_document_info(&self, document: Automerge, state: DocState) -> DocumentInfo {
         let document = SharedDocument {
             automerge: document,
         };
@@ -719,9 +719,10 @@ impl DocumentInfo {
             .entry(repo_id)
             .or_insert_with(SyncState::new);
         let mut document = self.document.lock();
-        let mut sync = document.automerge.sync();
         // TODO: remove remote if there is an error.
-        sync.receive_sync_message(sync_state, message)
+        document
+            .automerge
+            .receive_sync_message(sync_state, message)
             .expect("Failed to apply sync message.");
     }
 
@@ -732,7 +733,7 @@ impl DocumentInfo {
             .entry(repo_id)
             .or_insert_with(SyncState::new);
         let mut document = self.document.lock();
-        let msg = document.automerge.sync().generate_sync_message(sync_state);
+        let msg = document.automerge.generate_sync_message(sync_state);
         msg
     }
 
@@ -742,7 +743,7 @@ impl DocumentInfo {
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
                 let mut document = self.document.lock();
-                let message = document.automerge.sync().generate_sync_message(sync_state);
+                let message = document.automerge.generate_sync_message(sync_state);
                 message.map(|msg| (repo_id.clone(), msg))
             })
             .collect()
