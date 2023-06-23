@@ -83,7 +83,7 @@ impl DocHandle {
     /// returns the result of calling the closure.
     /// Important: if `save` is called on the document inside the closure,
     /// no saving via the storage adapter will be triggered.
-    pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
+    pub fn with_doc_mut<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&mut Automerge) -> T,
     {
