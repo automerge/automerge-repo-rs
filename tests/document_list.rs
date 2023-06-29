@@ -21,15 +21,16 @@ fn test_list_all() {
             let repo_handle = repo.run();
 
             // Create a document for one repo.
-            let mut document_handle = repo_handle.new_document();
+            let document_handle = repo_handle.new_document();
             let document_id = document_handle.document_id();
 
             // Edit the document.
             let expected_value = format!("{}", repo_handle.get_repo_id());
             document_handle.with_doc_mut(|doc| {
-                doc.put(automerge::ROOT, "repo_id", expected_value.clone())
+                let mut tx = doc.transaction();
+                tx.put(automerge::ROOT, "repo_id", expected_value.clone())
                     .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
 
             // Shut down the repo.
@@ -75,15 +76,16 @@ fn test_list_all_errors_on_shutdown() {
             let repo_handle = repo.run();
 
             // Create a document for one repo.
-            let mut document_handle = repo_handle.new_document();
+            let document_handle = repo_handle.new_document();
             let document_id = document_handle.document_id();
 
             // Edit the document.
             let expected_value = format!("{}", repo_handle.get_repo_id());
             document_handle.with_doc_mut(|doc| {
-                doc.put(automerge::ROOT, "repo_id", expected_value.clone())
+                let mut tx = doc.transaction();
+                tx.put(automerge::ROOT, "repo_id", expected_value.clone())
                     .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
 
             // Shut down the repo.

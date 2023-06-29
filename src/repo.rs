@@ -732,9 +732,8 @@ impl DocumentInfo {
             .sync_states
             .entry(repo_id)
             .or_insert_with(SyncState::new);
-        let mut document = self.document.lock();
-        let msg = document.automerge.generate_sync_message(sync_state);
-        msg
+        let document = self.document.lock();
+        document.automerge.generate_sync_message(sync_state)
     }
 
     /// Generate outgoing sync message for all repos we are syncing with.
@@ -742,7 +741,7 @@ impl DocumentInfo {
         self.sync_states
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
-                let mut document = self.document.lock();
+                let document = self.document.lock();
                 let message = document.automerge.generate_sync_message(sync_state);
                 message.map(|msg| (repo_id.clone(), msg))
             })

@@ -33,15 +33,16 @@ fn test_simple_sync() {
         let repo_handle = repo.run();
 
         // Create a document.
-        let mut doc_handle = repo_handle.new_document();
+        let doc_handle = repo_handle.new_document();
         doc_handle.with_doc_mut(|doc| {
-            doc.put(
+            let mut tx = doc.transaction();
+            tx.put(
                 automerge::ROOT,
                 "repo_id",
                 format!("{}", repo_handle.get_repo_id()),
             )
             .expect("Failed to change the document.");
-            doc.commit();
+            tx.commit();
         });
         documents.push(doc_handle);
 

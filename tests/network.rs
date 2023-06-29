@@ -18,17 +18,18 @@ fn test_sinks_closed_on_shutdown() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Add network adapters
@@ -124,17 +125,18 @@ fn test_sinks_closed_on_replacement() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Add network adapters
@@ -300,17 +302,18 @@ fn test_streams_chained_on_replacement() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Add network adapters
