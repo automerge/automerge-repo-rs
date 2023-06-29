@@ -11,7 +11,7 @@ use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll, Waker};
 use futures::Sink;
 use futures::StreamExt;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
@@ -161,7 +161,7 @@ impl RepoHandle {
         let document = SharedDocument {
             automerge: document,
         };
-        let document = Arc::new(Mutex::new(document));
+        let document = Arc::new(RwLock::new(document));
         let handle_count = Arc::new(AtomicUsize::new(1));
         DocumentInfo::new(state, document, handle_count)
     }
@@ -517,7 +517,7 @@ pub(crate) struct DocumentInfo {
     /// State of the document.
     state: DocState,
     /// Document used to apply and generate sync messages(shared with handles).
-    document: Arc<Mutex<SharedDocument>>,
+    document: Arc<RwLock<SharedDocument>>,
     /// Ref count for handles(shared with handles).
     handle_count: Arc<AtomicUsize>,
     /// Per repo automerge sync state.
@@ -532,7 +532,7 @@ pub(crate) struct DocumentInfo {
 impl DocumentInfo {
     fn new(
         state: DocState,
-        document: Arc<Mutex<SharedDocument>>,
+        document: Arc<RwLock<SharedDocument>>,
         handle_count: Arc<AtomicUsize>,
     ) -> Self {
         DocumentInfo {
@@ -586,7 +586,7 @@ impl DocumentInfo {
                 Poll::Ready(Ok(Some(val))) => {
                     {
                         let res = {
-                            let mut doc = self.document.lock();
+                            let mut doc = self.document.write();
                             doc.automerge.load_incremental(&val)
                         };
                         if res.is_err() {
@@ -623,7 +623,7 @@ impl DocumentInfo {
                 Poll::Ready(Ok(Some(val))) => {
                     {
                         let res = {
-                            let mut doc = self.document.lock();
+                            let mut doc = self.document.write();
                             doc.automerge.load_incremental(&val)
                         };
                         if res.is_err() {
@@ -685,13 +685,13 @@ impl DocumentInfo {
         let should_compact = self.patches_since_last_save > 10;
         let storage_fut = if should_compact {
             let to_save = {
-                let mut doc = self.document.lock();
+                let mut doc = self.document.write();
                 doc.automerge.save()
             };
             storage.compact(document_id.clone(), to_save)
         } else {
             let to_save = {
-                let mut doc = self.document.lock();
+                let mut doc = self.document.write();
                 doc.automerge.save_incremental()
             };
             storage.append(document_id.clone(), to_save)
@@ -718,7 +718,7 @@ impl DocumentInfo {
             .sync_states
             .entry(repo_id)
             .or_insert_with(SyncState::new);
-        let mut document = self.document.lock();
+        let mut document = self.document.write();
         // TODO: remove remote if there is an error.
         document
             .automerge
@@ -732,7 +732,7 @@ impl DocumentInfo {
             .sync_states
             .entry(repo_id)
             .or_insert_with(SyncState::new);
-        let document = self.document.lock();
+        let document = self.document.read();
         document.automerge.generate_sync_message(sync_state)
     }
 
@@ -741,7 +741,7 @@ impl DocumentInfo {
         self.sync_states
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
-                let document = self.document.lock();
+                let document = self.document.read();
                 let message = document.automerge.generate_sync_message(sync_state);
                 message.map(|msg| (repo_id.clone(), msg))
             })
@@ -1240,7 +1240,7 @@ impl Repo {
                         storage_fut,
                         resolver,
                     };
-                    let document = Arc::new(Mutex::new(shared_document));
+                    let document = Arc::new(RwLock::new(shared_document));
                     let handle_count = Arc::new(AtomicUsize::new(0));
                     DocumentInfo::new(state, document, handle_count)
                 });
@@ -1344,7 +1344,7 @@ impl Repo {
                                 automerge: new_document(),
                             };
                             let state = DocState::Sync(None);
-                            let document = Arc::new(Mutex::new(shared_document));
+                            let document = Arc::new(RwLock::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
                             DocumentInfo::new(state, document, handle_count)
                         });

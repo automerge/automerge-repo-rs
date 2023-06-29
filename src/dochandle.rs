@@ -2,7 +2,7 @@ use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
 use automerge::Automerge;
 use crossbeam_channel::Sender;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub(crate) struct SharedDocument {
 pub struct DocHandle {
     /// Doc info in repo owns the same state, and sets it to ready.
     /// Document used by the handle for local editing.
-    shared_document: Arc<Mutex<SharedDocument>>,
+    shared_document: Arc<RwLock<SharedDocument>>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
@@ -58,7 +58,7 @@ impl DocHandle {
     pub(crate) fn new(
         repo_sender: Sender<RepoEvent>,
         document_id: DocumentId,
-        shared_document: Arc<Mutex<SharedDocument>>,
+        shared_document: Arc<RwLock<SharedDocument>>,
         handle_count: Arc<AtomicUsize>,
         local_repo_id: RepoId,
     ) -> Self {
@@ -88,7 +88,7 @@ impl DocHandle {
         F: FnOnce(&mut Automerge) -> T,
     {
         let res = {
-            let mut state = self.shared_document.lock();
+            let mut state = self.shared_document.write();
             f(&mut state.automerge)
         };
         self.repo_sender
@@ -104,7 +104,7 @@ impl DocHandle {
         F: FnOnce(&Automerge) -> T,
     {
         let res = {
-            let state = self.shared_document.lock();
+            let state = self.shared_document.read();
             f(&state.automerge)
         };
         res
