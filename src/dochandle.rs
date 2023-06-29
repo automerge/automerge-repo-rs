@@ -13,9 +13,8 @@ pub(crate) struct SharedDocument {
 }
 
 #[derive(Debug)]
-/// A handle to a document, held by the client.
+/// A handle to a document, held by the client(s).
 pub struct DocHandle {
-    /// Doc info in repo owns the same state, and sets it to ready.
     /// Document used by the handle for local editing.
     shared_document: Arc<RwLock<SharedDocument>>,
     /// Ref count for handles.
