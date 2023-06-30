@@ -188,7 +188,7 @@ impl FsStore {
             tracing::warn!(doc_id=%id, "attempted to compact non-existent document");
             return Ok(());
         };
-        let mut doc = chunks
+        let doc = chunks
             .to_doc()
             .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
 
