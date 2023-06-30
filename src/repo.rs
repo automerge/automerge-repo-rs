@@ -558,6 +558,8 @@ pub(crate) struct DocumentInfo {
     /// Counter of patches since last save,
     /// used to make decisions about full or incemental saves.
     patches_since_last_save: usize,
+    /// Last heads obtained from the automerge doc.
+    last_heads: Vec<ChangeHash>,
 }
 
 impl DocumentInfo {
@@ -566,6 +568,10 @@ impl DocumentInfo {
         document: Arc<RwLock<SharedDocument>>,
         handle_count: Arc<AtomicUsize>,
     ) -> Self {
+        let last_heads = {
+            let doc = document.read();
+            doc.automerge.get_heads()
+        };
         DocumentInfo {
             state,
             document,
@@ -573,6 +579,7 @@ impl DocumentInfo {
             sync_states: Default::default(),
             change_observers: Default::default(),
             patches_since_last_save: 0,
+            last_heads,
         }
     }
 
@@ -688,8 +695,14 @@ impl DocumentInfo {
     /// Count patches since last save,
     /// returns whether there were any.
     fn note_changes(&mut self) -> bool {
-        // TODO: count patches somehow.
-        true
+        let count = {
+            let doc = self.document.read();
+            let changes = doc.automerge.get_changes(&self.last_heads);
+            changes.len()
+        };
+        let has_patches = count > 0;
+        self.patches_since_last_save = self.patches_since_last_save.checked_add(count).unwrap_or(0);
+        has_patches
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
@@ -708,18 +721,21 @@ impl DocumentInfo {
             return;
         }
         let should_compact = self.patches_since_last_save > 10;
-        let storage_fut = if should_compact {
-            let to_save = {
-                let mut doc = self.document.write();
-                doc.automerge.save()
+        let (storage_fut, new_heads) = if should_compact {
+            let (to_save, new_heads) = {
+                let doc = self.document.read();
+                (doc.automerge.save(), doc.automerge.get_heads())
             };
-            storage.compact(document_id.clone(), to_save)
+            (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
-            let to_save = {
-                let mut doc = self.document.write();
-                doc.automerge.save_incremental()
+            let (to_save, new_heads) = {
+                let doc = self.document.read();
+                (
+                    doc.automerge.save_after(&self.last_heads),
+                    doc.automerge.get_heads(),
+                )
             };
-            storage.append(document_id.clone(), to_save)
+            (storage.append(document_id.clone(), to_save), new_heads)
         };
         match self.state {
             DocState::Sync(ref mut futs) => {
@@ -733,6 +749,7 @@ impl DocumentInfo {
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
         self.patches_since_last_save = 0;
+        self.last_heads = new_heads;
     }
 
     /// Apply incoming sync messages,
