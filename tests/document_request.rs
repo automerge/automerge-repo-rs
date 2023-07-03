@@ -56,6 +56,7 @@ fn test_requesting_document_connected_peers() {
 
     // Request the document.
     let doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
+    let load = repo_handle_2.load(document_handle_1.document_id());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -79,6 +80,10 @@ fn test_requesting_document_connected_peers() {
             }
         })
         .await;
+
+        // Load following a request fails, but this API should be improved.
+        // See comment at handling of `RepoEvent::LoadDoc`.
+        assert!(load.await.is_err());
 
         // Test is done.
         done_sync_sender.send(()).await.unwrap();

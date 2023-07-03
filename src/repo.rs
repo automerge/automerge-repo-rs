@@ -1231,6 +1231,7 @@ impl Repo {
             },
             RepoEvent::LoadDoc(doc_id, resolver) => {
                 // TODO: handle multiple calls, through a list of resolvers.
+                let mut resolver_clone = resolver.clone();
                 let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
                     let storage_fut = self.storage.get(doc_id.clone());
                     let shared_document = SharedDocument {
@@ -1244,8 +1245,18 @@ impl Repo {
                     let handle_count = Arc::new(AtomicUsize::new(0));
                     DocumentInfo::new(state, document, handle_count)
                 });
+
+                // Note: unfriendly API.
+                //
+                // API currently assumes client makes a single `load` call,
+                // for a document that has not been created or requested before.
+                //
+                // If the doc is in memory, we could simply create a new handle for it.
+                //
+                // If the doc is bootstrapping,
+                // the resolver could be added to the list of resolvers.
                 if !info.is_pending_load() {
-                    info.state.resolve_load_fut(Err(RepoError::Incorrect));
+                    resolver_clone.resolve_fut(Err(RepoError::Incorrect));
                     return;
                 }
                 info.poll_storage_operation(
