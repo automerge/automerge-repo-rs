@@ -11,7 +11,11 @@ use tokio::sync::mpsc::channel;
 fn test_requesting_document_connected_peers() {
     // Create two repos.
     let repo_1 = Repo::new(None, Box::new(SimpleStorage));
-    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
+
+    // Keeping a handle to the storage of repo_2,
+    // to later assert requested doc is saved.
+    let storage = InMemoryStorage::default();
+    let repo_2 = Repo::new(None, Box::new(storage.clone()));
 
     // Run the repos in the background.
     let repo_handle_1 = repo_1.run();
@@ -65,6 +69,18 @@ fn test_requesting_document_connected_peers() {
             doc_handle_future.await.unwrap().document_id(),
             document_handle_1.document_id()
         );
+        let _ = tokio::task::spawn_blocking(move || {
+            // Check that the document has been saved in storage.
+            // TODO: replace the loop with an async notification mechanism.
+            loop {
+                if storage.contains_document(document_handle_1.document_id()) {
+                    break;
+                }
+            }
+        })
+        .await;
+
+        // Test is done.
         done_sync_sender.send(()).await.unwrap();
     });
 
