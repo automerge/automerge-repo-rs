@@ -1,24 +1,22 @@
 use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
-use automerge::transaction::Observed;
-use automerge::{AutoCommitWithObs, VecOpObserver};
+use automerge::Automerge;
 use crossbeam_channel::Sender;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// A wrapper around a document shared between a handle and the repo.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedDocument {
-    pub automerge: AutoCommitWithObs<Observed<VecOpObserver>>,
+    pub automerge: Automerge,
 }
 
 #[derive(Debug)]
-/// A handle to a document, held by the client.
+/// A handle to a document, held by the client(s).
 pub struct DocHandle {
-    /// Doc info in repo owns the same state, and sets it to ready.
     /// Document used by the handle for local editing.
-    shared_document: Arc<Mutex<SharedDocument>>,
+    shared_document: Arc<RwLock<SharedDocument>>,
     /// Ref count for handles.
     handle_count: Arc<AtomicUsize>,
     /// Channel used to send events back to the repo.
@@ -59,7 +57,7 @@ impl DocHandle {
     pub(crate) fn new(
         repo_sender: Sender<RepoEvent>,
         document_id: DocumentId,
-        shared_document: Arc<Mutex<SharedDocument>>,
+        shared_document: Arc<RwLock<SharedDocument>>,
         handle_count: Arc<AtomicUsize>,
         local_repo_id: RepoId,
     ) -> Self {
@@ -84,12 +82,12 @@ impl DocHandle {
     /// returns the result of calling the closure.
     /// Important: if `save` is called on the document inside the closure,
     /// no saving via the storage adapter will be triggered.
-    pub fn with_doc_mut<F, T>(&mut self, f: F) -> T
+    pub fn with_doc_mut<F, T>(&self, f: F) -> T
     where
-        F: FnOnce(&mut AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
+        F: FnOnce(&mut Automerge) -> T,
     {
         let res = {
-            let mut state = self.shared_document.lock();
+            let mut state = self.shared_document.write();
             f(&mut state.automerge)
         };
         self.repo_sender
@@ -102,10 +100,10 @@ impl DocHandle {
     /// returns the result of calling the closure.
     pub fn with_doc<F, T>(&self, f: F) -> T
     where
-        F: FnOnce(&AutoCommitWithObs<Observed<VecOpObserver>>) -> T,
+        F: FnOnce(&Automerge) -> T,
     {
         let res = {
-            let state = self.shared_document.lock();
+            let state = self.shared_document.read();
             f(&state.automerge)
         };
         res

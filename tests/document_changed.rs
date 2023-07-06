@@ -21,7 +21,7 @@ fn test_document_changed_over_sync() {
     let expected_repo_id = repo_handle_2.get_repo_id().clone();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Add network adapters
     let mut peers = HashMap::new();
@@ -51,15 +51,16 @@ fn test_document_changed_over_sync() {
     let doc_id = document_handle_1.document_id();
     rt.spawn(async move {
         // Request the document.
-        let mut doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
+        let doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
         doc_handle.with_doc_mut(|doc| {
-            doc.put(
+            let mut tx = doc.transaction();
+            tx.put(
                 automerge::ROOT,
                 "repo_id",
                 format!("{}", repo_handle_2.get_repo_id()),
             )
             .expect("Failed to change the document.");
-            doc.commit();
+            tx.commit();
         });
     });
 
@@ -69,9 +70,10 @@ fn test_document_changed_over_sync() {
     rt.spawn(async move {
         // Edit the document.
         document_handle_1.with_doc_mut(|doc| {
-            doc.put(automerge::ROOT, "repo_id", format!("{}", repo_id))
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "repo_id", format!("{}", repo_id))
                 .expect("Failed to change the document.");
-            doc.commit();
+            tx.commit();
         });
         loop {
             // Await changes until the edit comes through over sync.
@@ -139,7 +141,7 @@ fn test_document_changed_locally() {
     let expected_repo_id = repo_handle_1.get_repo_id().clone();
 
     // Create a document for the repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -169,13 +171,14 @@ fn test_document_changed_locally() {
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", expected_repo_id.clone()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     done_receiver.blocking_recv().unwrap();

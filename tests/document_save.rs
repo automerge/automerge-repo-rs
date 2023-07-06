@@ -22,15 +22,16 @@ fn test_simple_save() {
             let repo_handle = repo.run();
 
             // Create a document for one repo.
-            let mut document_handle = repo_handle.new_document();
+            let document_handle = repo_handle.new_document();
             let document_id = document_handle.document_id();
 
             // Edit the document.
             let expected_value = format!("{}", repo_handle.get_repo_id());
             document_handle.with_doc_mut(|doc| {
-                doc.put(automerge::ROOT, "repo_id", expected_value.clone())
+                let mut tx = doc.transaction();
+                tx.put(automerge::ROOT, "repo_id", expected_value.clone())
                     .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
 
             drop(document_handle);
@@ -89,14 +90,15 @@ fn test_save_on_shutdown() {
         let repo_handle = repo.run();
 
         // Create a document for one repo.
-        let mut document_handle = repo_handle.new_document();
+        let document_handle = repo_handle.new_document();
 
         // Edit the document.
         let expected_value = format!("{}", repo_handle.get_repo_id());
         document_handle.with_doc_mut(|doc| {
-            doc.put(automerge::ROOT, "repo_id", expected_value.clone())
+            let mut tx = doc.transaction();
+            tx.put(automerge::ROOT, "repo_id", expected_value.clone())
                 .expect("Failed to change the document.");
-            doc.commit();
+            tx.commit();
         });
         drop(document_handle);
 
@@ -141,26 +143,28 @@ fn test_multiple_save() {
             let repo_handle = repo.run();
 
             // Create a document for one repo.
-            let mut document_handle = repo_handle.new_document();
+            let document_handle = repo_handle.new_document();
             let document_id = document_handle.document_id();
 
             // Edit the document, once.
             document_handle.with_doc_mut(|doc| {
-                doc.put(
+                let mut tx = doc.transaction();
+                tx.put(
                     automerge::ROOT,
                     "repo_id",
                     format!("{}::1", repo_handle.get_repo_id()),
                 )
                 .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
 
             // Edit the document, twice.
             let expected_value = format!("{}::2", repo_handle.get_repo_id());
             document_handle.with_doc_mut(|doc| {
-                doc.put(automerge::ROOT, "repo_id", expected_value.clone())
+                let mut tx = doc.transaction();
+                tx.put(automerge::ROOT, "repo_id", expected_value.clone())
                     .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
 
             // Shut down the repo.
@@ -219,32 +223,34 @@ fn test_compact_save() {
             let repo_handle = repo.run();
 
             // Create a document for one repo.
-            let mut document_handle = repo_handle.new_document();
+            let document_handle = repo_handle.new_document();
             let document_id = document_handle.document_id();
 
             // Edit the document, once.
             let change_fut = document_handle.changed();
             document_handle.with_doc_mut(|doc| {
-                doc.put(
+                let mut tx = doc.transaction();
+                tx.put(
                     automerge::ROOT,
                     "repo_id",
                     format!("{}::1", repo_handle.get_repo_id()),
                 )
                 .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
             change_fut.await.unwrap();
 
             // Edit the document, again.
             let change_fut = document_handle.changed();
             document_handle.with_doc_mut(|doc| {
-                doc.put(
+                let mut tx = doc.transaction();
+                tx.put(
                     automerge::ROOT,
                     "repo_id",
                     format!("{}::2", repo_handle.get_repo_id()),
                 )
                 .expect("Failed to change the document.");
-                doc.commit();
+                tx.commit();
             });
             change_fut.await.unwrap();
 
@@ -253,13 +259,14 @@ fn test_compact_save() {
             let expected_value = format!("{}::11", repo_handle.get_repo_id());
             document_handle.with_doc_mut(|doc| {
                 for i in 0..12 {
-                    doc.put(
+                    let mut tx = doc.transaction();
+                    tx.put(
                         automerge::ROOT,
                         "repo_id",
                         format!("{}::{}", repo_handle.get_repo_id(), i),
                     )
                     .expect("Failed to change the document.");
-                    doc.commit();
+                    tx.commit();
                 }
             });
             change_fut.await.unwrap();

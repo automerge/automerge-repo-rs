@@ -15,18 +15,19 @@ fn test_loading_document_found_immediately() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let mut document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document();
 
     // Edit the document.
     let expected_repo_id = repo_handle.get_repo_id().clone();
     let doc_data = document_handle.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
         doc.save()
     });
 
@@ -76,18 +77,19 @@ fn test_loading_document_found_async() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let mut document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document();
 
     // Edit the document.
     let expected_repo_id = repo_handle.get_repo_id().clone();
     let doc_data = document_handle.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
         doc.save()
     });
 

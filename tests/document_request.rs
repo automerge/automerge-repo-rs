@@ -11,24 +11,29 @@ use tokio::sync::mpsc::channel;
 fn test_requesting_document_connected_peers() {
     // Create two repos.
     let repo_1 = Repo::new(None, Box::new(SimpleStorage));
-    let repo_2 = Repo::new(None, Box::new(SimpleStorage));
+
+    // Keeping a handle to the storage of repo_2,
+    // to later assert requested doc is saved.
+    let storage = InMemoryStorage::default();
+    let repo_2 = Repo::new(None, Box::new(storage.clone()));
 
     // Run the repos in the background.
     let repo_handle_1 = repo_1.run();
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Add network adapters
@@ -51,6 +56,7 @@ fn test_requesting_document_connected_peers() {
 
     // Request the document.
     let doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
+    let load = repo_handle_2.load(document_handle_1.document_id());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -64,6 +70,22 @@ fn test_requesting_document_connected_peers() {
             doc_handle_future.await.unwrap().document_id(),
             document_handle_1.document_id()
         );
+        let _ = tokio::task::spawn_blocking(move || {
+            // Check that the document has been saved in storage.
+            // TODO: replace the loop with an async notification mechanism.
+            loop {
+                if storage.contains_document(document_handle_1.document_id()) {
+                    break;
+                }
+            }
+        })
+        .await;
+
+        // Load following a request fails, but this API should be improved.
+        // See comment at handling of `RepoEvent::LoadDoc`.
+        assert!(load.await.is_err());
+
+        // Test is done.
         done_sync_sender.send(()).await.unwrap();
     });
 
@@ -117,17 +139,18 @@ fn test_requesting_document_unconnected_peers() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Note: requesting the document while peers aren't connected yet.
@@ -213,17 +236,18 @@ fn test_requesting_document_unconnected_peers_with_storage_load() {
     let repo_handle_1 = repo_1.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Add document to storage.
@@ -270,17 +294,18 @@ fn test_request_with_repo_stop() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Note: requesting the document while peers aren't connected yet.
@@ -316,17 +341,18 @@ fn test_request_twice_ok_bootstrap() {
     let repo_handle_1 = repo_1.run();
 
     // Create a document for one repo.
-    let mut document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document();
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle_1.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Add document to storage(out-of-band).
@@ -377,17 +403,18 @@ fn test_request_twice_ok() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let mut document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document();
 
     // Edit the document.
     document_handle.with_doc_mut(|doc| {
-        doc.put(
+        let mut tx = doc.transaction();
+        tx.put(
             automerge::ROOT,
             "repo_id",
             format!("{}", repo_handle.get_repo_id()),
         )
         .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
 
     // Note: requesting the document while peers aren't connected yet.

@@ -23,6 +23,10 @@ impl InMemoryStorage {
         let entry = documents.entry(doc_id).or_insert_with(Default::default);
         entry.append(&mut doc);
     }
+    
+    pub fn contains_document(&self, doc_id: DocumentId) -> bool {
+        self.documents.lock().contains_key(&doc_id)
+    }
 }
 
 impl Storage for InMemoryStorage {
@@ -50,17 +54,22 @@ impl Storage for InMemoryStorage {
 
     fn append(
         &self,
-        _id: DocumentId,
-        _changes: Vec<u8>,
+        id: DocumentId,
+        mut changes: Vec<u8>,
     ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        let mut documents = self.documents.lock();
+        let entry = documents.entry(id).or_insert_with(Default::default);
+        entry.append(&mut changes);
         Box::new(futures::future::ready(Ok(())))
     }
 
     fn compact(
         &self,
-        _id: DocumentId,
-        _full_doc: Vec<u8>,
+        id: DocumentId,
+        full_doc: Vec<u8>,
     ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+        let mut documents = self.documents.lock();
+        documents.insert(id, full_doc);
         Box::new(futures::future::ready(Ok(())))
     }
 }

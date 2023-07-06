@@ -45,12 +45,13 @@ async fn request_doc(State(state): State<Arc<AppState>>, Json(document_id): Json
 
 #[debug_handler]
 async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
-    let mut doc_handle = state.repo_handle.new_document();
+    let doc_handle = state.repo_handle.new_document();
     let our_id = state.repo_handle.get_repo_id();
     doc_handle.with_doc_mut(|doc| {
-        doc.put(automerge::ROOT, "repo_id", format!("{}", our_id))
+        let mut tx = doc.transaction();
+        tx.put(automerge::ROOT, "repo_id", format!("{}", our_id))
             .expect("Failed to change the document.");
-        doc.commit();
+        tx.commit();
     });
     let doc_id = doc_handle.document_id();
     Json(doc_id)
