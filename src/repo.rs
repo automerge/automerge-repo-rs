@@ -171,7 +171,7 @@ impl RepoHandle {
         &self,
         repo_id: RepoId,
         stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
-        sink: Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>,
+        sink: Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>,
     ) {
         self.repo_sender
             .send(RepoEvent::ConnectRemoteRepo {
@@ -204,7 +204,7 @@ pub(crate) enum RepoEvent {
     ConnectRemoteRepo {
         repo_id: RepoId,
         stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
-        sink: Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>,
+        sink: Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>,
     },
     /// Stop the repo.
     Stop,
@@ -797,11 +797,10 @@ struct PendingListAll {
 /// A sink and stream pair representing a network connection to a remote repo.
 struct RemoteRepo {
     stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
-    sink: Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>,
+    sink: Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>,
 }
 
-type PendingCloseSinks =
-    Vec<Box<dyn Send + Unpin + Sink<Result<RepoMessage, NetworkError>, Error = NetworkError>>>;
+type PendingCloseSinks = Vec<Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>>;
 
 /// The backend of a repo: runs an event-loop in a background thread.
 pub struct Repo {
@@ -956,7 +955,9 @@ impl Repo {
                     let pinned_stream = Pin::new(&mut remote_repo.stream);
                     let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
                     match result {
-                        Poll::Pending => break false,
+                        Poll::Pending => {
+                            break false;
+                        }
                         Poll::Ready(Some(repo_message)) => match repo_message {
                             Ok(RepoMessage::Sync {
                                 from_repo_id,
@@ -1060,7 +1061,7 @@ impl Repo {
                                 document_id,
                                 message: message.encode(),
                             };
-                            let result = pinned_sink.start_send(Ok(outgoing));
+                            let result = pinned_sink.start_send(outgoing);
                             if result.is_err() {
                                 discard = true;
                                 needs_flush = false;
@@ -1096,12 +1097,14 @@ impl Repo {
 
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
+        tracing::trace!(event = ?event, repo_id=?self.repo_id, "Handling repo event");
         match event {
             // TODO: simplify handling of `RepoEvent::NewDoc`.
             // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
             // the doc info could be created here.
             RepoEvent::NewDoc(document_id, mut info) => {
                 if info.is_boostrapping() {
+                    tracing::trace!("adding bootstrapping document");
                     if let Some(existing_info) = self.documents.get_mut(&document_id) {
                         match existing_info.state {
                             DocState::Bootstrap {
@@ -1131,6 +1134,7 @@ impl Repo {
                             &self.repo_id,
                         );
                         if info.state.should_sync() {
+                            tracing::trace!(remotes=?self.remote_repos.keys().collect::<Vec<_>>(), "sending sync message to remotes");
                             // Send a sync message to all other repos we are connected with.
                             for to_repo_id in self.remote_repos.keys().cloned() {
                                 if let Some(message) =
@@ -1333,6 +1337,7 @@ impl Repo {
         // Process incoming events.
         // Handle events.
         for event in mem::take(&mut self.pending_events) {
+            tracing::trace!(repo_id = ?self.repo_id, message = ?event, "processing sync message");
             match event {
                 NetworkEvent::Sync {
                     from_repo_id,
@@ -1435,6 +1440,7 @@ impl Repo {
     /// Handles events from handles and adapters.
     /// Returns a handle for optional clean shutdown.
     pub fn run(mut self) -> RepoHandle {
+        tracing::info!("starting repo event loop");
         let repo_sender = self.repo_sender.clone();
         let repo_id = self.repo_id.clone();
 

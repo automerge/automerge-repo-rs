@@ -54,22 +54,22 @@ impl<T> Network<T> {
     }
 }
 
-impl Stream for Network<Result<RepoMessage, NetworkError>> {
+impl Stream for Network<RepoMessage> {
     type Item = Result<RepoMessage, NetworkError>;
     fn poll_next(
-        self: Pin<&mut Network<Result<RepoMessage, NetworkError>>>,
+        self: Pin<&mut Network<RepoMessage>>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<RepoMessage, NetworkError>>> {
         *self.stream_waker.lock() = Some(cx.waker().clone());
         if let Some(event) = self.buffer.lock().pop_front() {
-            Poll::Ready(Some(event))
+            Poll::Ready(Some(Ok(event)))
         } else {
             Poll::Pending
         }
     }
 }
 
-impl Sink<Result<RepoMessage, NetworkError>> for Network<Result<RepoMessage, NetworkError>> {
+impl Sink<RepoMessage> for Network<RepoMessage> {
     type Error = NetworkError;
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         *self.sink_waker.lock() = Some(cx.waker().clone());
@@ -81,14 +81,14 @@ impl Sink<Result<RepoMessage, NetworkError>> for Network<Result<RepoMessage, Net
     }
     fn start_send(
         self: Pin<&mut Self>,
-        item: Result<RepoMessage, NetworkError>,
+        item: RepoMessage,
     ) -> Result<(), Self::Error> {
         let (from_repo_id, to_repo_id) = match &item {
-            Ok(RepoMessage::Sync {
+            RepoMessage::Sync {
                 from_repo_id,
                 to_repo_id,
                 ..
-            }) => (from_repo_id.clone(), to_repo_id.clone()),
+            } => (from_repo_id.clone(), to_repo_id.clone()),
             _ => todo!(),
         };
 
