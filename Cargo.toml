@@ -8,6 +8,10 @@ name = "tcp-example"
 path = "examples/tcp_example.rs"
 required-features = ["tokio"]
 
+[[test]]
+name = "interop"
+required-features = ["tokio"]
+
 [features]
 tokio = ["dep:tokio", "dep:tokio-util", "dep:tokio-tungstenite", "dep:tungstenite"]
 
