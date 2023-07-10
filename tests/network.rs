@@ -80,19 +80,19 @@ fn test_sinks_closed_on_shutdown() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       Ok(RepoMessage::Sync {
+                       RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       }) => {
+                       } => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                          peer.receive_incoming(Ok(RepoMessage::Sync {
+                          peer.receive_incoming(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                               }));
+                               });
                        }
                        _ => todo!(),
                    }
@@ -185,19 +185,19 @@ fn test_sinks_closed_on_replacement() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       Ok(RepoMessage::Sync {
+                       RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       }) => {
+                       } => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                          peer.receive_incoming(Ok(RepoMessage::Sync {
+                          peer.receive_incoming(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                               }));
+                               });
                        }
                        _ => todo!(),
                    }
@@ -241,19 +241,19 @@ fn test_sinks_closed_on_replacement() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       Ok(RepoMessage::Sync {
+                       RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       }) => {
+                       } => {
                            let peer = peers_clone.get_mut(&from_repo_id).unwrap();
-                          peer.receive_incoming(Ok(RepoMessage::Sync {
+                          peer.receive_incoming(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                               }));
+                               });
                        }
                        _ => todo!(),
                    }
@@ -368,20 +368,20 @@ fn test_streams_chained_on_replacement() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       Ok(RepoMessage::Sync {
+                       RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       }) => {
+                       } => {
 
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                          peer.receive_incoming(Ok(RepoMessage::Sync {
+                          peer.receive_incoming(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                               }));
+                               });
                        }
                        _ => todo!(),
                    }

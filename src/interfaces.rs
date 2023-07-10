@@ -77,7 +77,7 @@ pub enum Message {
     Join(RepoId),
     /// Sent by the accepting peer after having received [`Join`] to tell the
     /// connecting peer their repo ID.
-    Joined(RepoId),
+    Peer(RepoId),
     /// A repo message for a particular document
     Repo(RepoMessage),
 }

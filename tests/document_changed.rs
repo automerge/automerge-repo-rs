@@ -103,19 +103,19 @@ fn test_document_changed_over_sync() {
                        peer.take_outgoing()
                    };
                    match incoming {
-                       Ok(RepoMessage::Sync {
+                       RepoMessage::Sync {
                            from_repo_id,
                            to_repo_id,
                            document_id,
                            message,
-                       }) => {
+                       } => {
                            let peer = peers.get_mut(&from_repo_id).unwrap();
-                          peer.receive_incoming(Ok(RepoMessage::Sync {
+                          peer.receive_incoming(RepoMessage::Sync {
                                from_repo_id,
                                to_repo_id,
                                document_id,
                                message,
-                               }));
+                               });
                        }
                        _ => todo!(),
                    }
