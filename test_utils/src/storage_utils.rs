@@ -89,7 +89,7 @@ enum StorageRequest {
     Append(DocumentId, Vec<u8>, OneShot<()>),
     Compact(DocumentId, Vec<u8>, OneShot<()>),
     ListAll(OneShot<Vec<DocumentId>>),
-    ProcessNextResult,
+    ProcessResults,
 }
 
 #[derive(Clone, Debug)]
@@ -145,17 +145,13 @@ impl AsyncInMemoryStorage {
                             let _ = sender.send(());
                         });
                     }
-                    StorageRequest::ProcessNextResult => {
-                        if let Some(sender) = results.pop_front() {
-                            let _ = sender.send(());
-                        } else {
-                            can_send_result = true;
-                        }
+                    StorageRequest::ProcessResults => {
+                        can_send_result = true;
                     }
                 }
                 if !with_step || can_send_result {
-                    if let Some(sender) = results.pop_front() {
-                        sender.send(()).unwrap();
+                    for sender in results.drain(..) {
+                        let _ = sender.send(());
                     }
                 }
             }
@@ -165,9 +161,9 @@ impl AsyncInMemoryStorage {
         }
     }
 
-    pub async fn process_next_result(&self) {
+    pub async fn process_results(&self) {
         self.chan
-            .send(StorageRequest::ProcessNextResult)
+            .send(StorageRequest::ProcessResults)
             .await
             .unwrap();
     }
