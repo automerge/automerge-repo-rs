@@ -1,7 +1,8 @@
+use std::fmt::Debug;
+
 use bytes::{Buf, BytesMut};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::ToSocketAddrs;
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{repo::RepoHandle, ConnDirection};
@@ -17,7 +18,7 @@ impl RepoHandle {
     ) -> Result<(), CodecError>
     where
         Io: AsyncRead + AsyncWrite + Send + 'static,
-        Source: ToSocketAddrs,
+        Source: Debug,
     {
         let codec = Codec::new();
         let framed = tokio_util::codec::Framed::new(io, codec);
