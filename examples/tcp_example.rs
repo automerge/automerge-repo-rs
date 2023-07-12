@@ -8,11 +8,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_macros::debug_handler;
 use clap::Parser;
-use futures::future::TryFutureExt;
-use futures::Future;
+use futures::future::{BoxFuture, TryFutureExt};
 use futures::FutureExt;
 use std::collections::HashMap;
-use std::marker::Unpin;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
@@ -118,49 +116,44 @@ impl AsyncInMemoryStorage {
 }
 
 impl Storage for AsyncInMemoryStorage {
-    fn get(
-        &self,
-        id: DocumentId,
-    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
+    fn get(&self, id: DocumentId) -> BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>> {
         let (tx, rx) = oneshot();
         self.chan
             .blocking_send(StorageRequest::Load(id, tx))
             .unwrap();
-        Box::new(rx.map_err(|_| StorageError::Error))
+        rx.map_err(|_| StorageError::Error).boxed()
     }
 
-    fn list_all(
-        &self,
-    ) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
+    fn list_all(&self) -> BoxFuture<'static, Result<Vec<DocumentId>, StorageError>> {
         let (tx, rx) = oneshot();
         self.chan
             .blocking_send(StorageRequest::ListAll(tx))
             .unwrap();
-        Box::new(rx.map_err(|_| StorageError::Error))
+        rx.map_err(|_| StorageError::Error).boxed()
     }
 
     fn append(
         &self,
         id: DocumentId,
         changes: Vec<u8>,
-    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+    ) -> BoxFuture<'static, Result<(), StorageError>> {
         let (tx, rx) = oneshot();
         self.chan
             .blocking_send(StorageRequest::Append(id, changes, tx))
             .unwrap();
-        Box::new(rx.map_err(|_| StorageError::Error))
+        rx.map_err(|_| StorageError::Error).boxed()
     }
 
     fn compact(
         &self,
         id: DocumentId,
         full_doc: Vec<u8>,
-    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
+    ) -> BoxFuture<'static, Result<(), StorageError>> {
         let (tx, rx) = oneshot();
         self.chan
             .blocking_send(StorageRequest::Compact(id, full_doc, tx))
             .unwrap();
-        Box::new(rx.map_err(|_| StorageError::Error))
+        rx.map_err(|_| StorageError::Error).boxed()
     }
 }
 

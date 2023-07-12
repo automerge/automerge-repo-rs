@@ -5,7 +5,7 @@ use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::Automerge;
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
-use futures::future::Future;
+use futures::future::{BoxFuture, Future};
 use futures::stream::Stream;
 use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll, Waker};
@@ -268,8 +268,7 @@ impl<T> Future for RepoFuture<T> {
     }
 }
 
-type BootstrapStorageFut =
-    Option<Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>>;
+type BootstrapStorageFut = Option<BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>>;
 
 /// The doc info state machine.
 pub(crate) enum DocState {
@@ -282,7 +281,7 @@ pub(crate) enum DocState {
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending {
         resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
-        storage_fut: Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>,
+        storage_fut: BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>,
     },
     /// A document that has been locally created,
     /// and not edited yet,
@@ -292,12 +291,12 @@ pub(crate) enum DocState {
     /// The doc is syncing(can be edited locally),
     /// and polling an optional future representing
     /// a pending storage save operation.
-    Sync(Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>),
+    Sync(Option<BoxFuture<'static, Result<(), StorageError>>>),
     /// Doc is pending removal,
     /// removal can proceed when storage fut is none,
     /// and edit count is zero.
     PendingRemoval {
-        storage_fut: Option<Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin>>,
+        storage_fut: Option<BoxFuture<'static, Result<(), StorageError>>>,
         pending_edits: usize,
     },
     /// The document is in a corrupted state,
@@ -438,7 +437,7 @@ impl DocState {
 
     fn add_boostrap_storage_fut(
         &mut self,
-        fut: Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>,
+        fut: BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>,
     ) {
         match self {
             DocState::Bootstrap {
@@ -791,7 +790,7 @@ impl ArcWake for RepoWaker {
 /// using the result of the first call.
 struct PendingListAll {
     resolvers: Vec<RepoFutureResolver<Result<Vec<DocumentId>, RepoError>>>,
-    storage_fut: Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin>,
+    storage_fut: BoxFuture<'static, Result<Vec<DocumentId>, StorageError>>,
 }
 
 /// A sink and stream pair representing a network connection to a remote repo.
