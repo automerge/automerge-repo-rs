@@ -20,6 +20,12 @@ impl<'a> From<&'a str> for RepoId {
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct DocumentId(pub String);
 
+impl AsRef<[u8]> for DocumentId {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 impl Display for DocumentId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

@@ -12,4 +12,6 @@ pub use crate::network_connect::ConnDirection;
 pub use crate::repo::{Repo, RepoError, RepoHandle};
 
 #[cfg(feature = "tokio")]
-mod tokio;
+pub mod tokio;
+
+pub mod fs_store;

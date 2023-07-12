@@ -7,6 +7,9 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::{repo::RepoHandle, ConnDirection};
 use crate::{Message, NetworkError};
 
+mod fs_storage;
+pub use fs_storage::FsStorage;
+
 impl RepoHandle {
     /// Connect a tokio io object
     pub async fn connect_tokio_io<Io, Source>(
