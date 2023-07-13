@@ -254,7 +254,7 @@ impl DocIdPaths {
     }
 
     /// The first level of the directory hierarchy, i.e.
-    ///     <root>/<first two bytes of SHA256 hash of document ID>
+    ///     `<root>/<first two bytes of SHA256 hash of document ID>`
     fn level1_path<P: AsRef<Path>>(&self, root: P) -> std::path::PathBuf {
         let mut path = root.as_ref().to_path_buf();
         path.push(hex::encode(self.prefix));
@@ -262,7 +262,7 @@ impl DocIdPaths {
     }
 
     /// The second level of the directory hierarchy, i.e.
-    ///     <root>/<first two bytes of SHA256 hash of document ID>/<hex encoded bytes of document ID>
+    ///     `<root>/<first two bytes of SHA256 hash of document ID>/<hex encoded bytes of document ID>`
     fn level2_path<P: AsRef<Path>>(&self, root: P) -> std::path::PathBuf {
         let mut path = self.level1_path(root);
         path.push(hex::encode(self.doc_id.as_ref()));

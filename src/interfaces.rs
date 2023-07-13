@@ -80,7 +80,7 @@ pub enum Message {
     /// Sent by the connecting peer on opening a connection to tell the other
     /// end their repo ID
     Join(RepoId),
-    /// Sent by the accepting peer after having received [`Join`] to tell the
+    /// Sent by the accepting peer after having received [`Self::Join`] to tell the
     /// connecting peer their repo ID.
     Peer(RepoId),
     /// A repo message for a particular document
