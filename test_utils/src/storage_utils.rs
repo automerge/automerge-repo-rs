@@ -154,8 +154,9 @@ impl AsyncInMemoryStorage {
                     }
                 }
                 if !with_step || can_send_result {
-                    let sender: OneShot<()> = results.pop_front().unwrap();
-                    let _ = sender.send(());
+                    if let Some(sender) = results.pop_front() {
+                        sender.send(()).unwrap();
+                    }
                 }
             }
         });
