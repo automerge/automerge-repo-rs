@@ -3,6 +3,7 @@ extern crate test_utils;
 use automerge::transaction::Transactable;
 use automerge_repo::{Repo, RepoMessage};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use test_utils::network_utils::Network;
 use test_utils::storage_utils::SimpleStorage;
 use tokio::sync::mpsc::channel;
@@ -103,9 +104,24 @@ fn test_sinks_closed_on_shutdown() {
 
     done_sync_receiver.blocking_recv().unwrap();
 
-    // Stop the repos.
-    repo_handle_1.stop().unwrap();
-    repo_handle_2.stop().unwrap();
+    let stopping = std::thread::spawn(|| {
+        // Stop the repos.
+        repo_handle_1.stop().unwrap();
+        repo_handle_2.stop().unwrap();
+    });
+
+    let stop_started = Instant::now();
+    loop {
+        if stopping.is_finished() {
+            break;
+        }
+        if stop_started.elapsed().as_secs() > 5 {
+            panic!("Repo stop timed out.");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    stopping.join().unwrap();
 
     // Assert all sinks were closed on shutdown.
     assert!(!peers_clone.is_empty());
