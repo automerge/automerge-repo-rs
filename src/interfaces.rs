@@ -1,7 +1,6 @@
-use futures::Future;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
-use std::marker::Unpin;
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub struct RepoId(pub String);
@@ -20,6 +19,12 @@ impl<'a> From<&'a str> for RepoId {
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 pub struct DocumentId(pub String);
+
+impl AsRef<[u8]> for DocumentId {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
 
 impl Display for DocumentId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -90,32 +95,23 @@ pub enum StorageError {
 
 /// The Storage API.
 pub trait Storage: Send {
-    fn get(
+    fn get<'a>(
         &self,
         _id: DocumentId,
-    ) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin> {
-        Box::new(futures::future::ready(Ok(None)))
-    }
+        //) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>;
+    ) -> BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>;
 
-    fn list_all(
-        &self,
-    ) -> Box<dyn Future<Output = Result<Vec<DocumentId>, StorageError>> + Send + Unpin> {
-        Box::new(futures::future::ready(Ok(vec![])))
-    }
+    fn list_all(&self) -> BoxFuture<'static, Result<Vec<DocumentId>, StorageError>>;
 
     fn append(
         &self,
         _id: DocumentId,
         _changes: Vec<u8>,
-    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
-        Box::new(futures::future::ready(Ok(())))
-    }
+    ) -> BoxFuture<'static, Result<(), StorageError>>;
 
     fn compact(
         &self,
         _id: DocumentId,
         _full_doc: Vec<u8>,
-    ) -> Box<dyn Future<Output = Result<(), StorageError>> + Send + Unpin> {
-        Box::new(futures::future::ready(Ok(())))
-    }
+    ) -> BoxFuture<'static, Result<(), StorageError>>;
 }
