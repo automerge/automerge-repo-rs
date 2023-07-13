@@ -36,7 +36,7 @@ fn test_sinks_closed_on_shutdown() {
     let mut peers = HashMap::new();
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
-    let network_2 = Network::new(sender.clone());
+    let network_2 = Network::new(sender);
     repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
@@ -143,7 +143,7 @@ fn test_sinks_closed_on_replacement() {
     let mut peers = HashMap::new();
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
-    let network_2 = Network::new(sender.clone());
+    let network_2 = Network::new(sender);
     repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
@@ -213,7 +213,7 @@ fn test_sinks_closed_on_replacement() {
     // Replace the peers.
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
-    let network_2 = Network::new(sender.clone());
+    let network_2 = Network::new(sender);
     repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
@@ -320,7 +320,7 @@ fn test_streams_chained_on_replacement() {
     let mut peers = HashMap::new();
     let (sender, mut network_receiver) = channel(1);
     let network_1 = Network::new(sender.clone());
-    let network_2 = Network::new(sender.clone());
+    let network_2 = Network::new(sender);
     repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
@@ -397,12 +397,12 @@ fn test_streams_chained_on_replacement() {
     repo_handle_1.new_remote_repo(
         repo_handle_2.get_repo_id().clone(),
         Box::new(network_1.clone()),
-        Box::new(network_1.clone()),
+        Box::new(network_1),
     );
     repo_handle_2.new_remote_repo(
         repo_handle_1.get_repo_id().clone(),
         Box::new(network_2.clone()),
-        Box::new(network_2.clone()),
+        Box::new(network_2),
     );
 
     // Start routing messages

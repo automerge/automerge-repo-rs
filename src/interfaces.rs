@@ -95,7 +95,7 @@ pub enum StorageError {
 
 /// The Storage API.
 pub trait Storage: Send {
-    fn get<'a>(
+    fn get(
         &self,
         _id: DocumentId,
         //) -> Box<dyn Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send + Unpin>;
