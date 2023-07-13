@@ -1,12 +1,14 @@
 use std::fmt::Debug;
 
 use bytes::{Buf, BytesMut};
-use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{repo::RepoHandle, ConnDirection};
 use crate::{Message, NetworkError};
+
+#[cfg(feature = "tokio-tungstenite")]
+use futures::{Sink, SinkExt, Stream, StreamExt};
 
 mod fs_storage;
 pub use fs_storage::FsStorage;
@@ -31,6 +33,7 @@ impl RepoHandle {
         Ok(())
     }
 
+    #[cfg(feature = "tokio-tungstenite")]
     pub async fn connect_tungstenite<S>(
         &self,
         stream: S,
@@ -118,7 +121,6 @@ impl Decoder for Codec {
     }
 }
 
-#[cfg(feature = "tokio")]
 impl Encoder<Message> for Codec {
     type Error = CodecError;
 
