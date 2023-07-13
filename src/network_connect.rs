@@ -1,4 +1,4 @@
-use crate::interfaces::{DocumentId, Message, NetworkError, RepoId, RepoMessage};
+use crate::interfaces::{Message, NetworkError, RepoId, RepoMessage};
 use crate::repo::RepoHandle;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
@@ -77,7 +77,7 @@ impl RepoHandle {
                 if let Some(msg) = stream.next().await {
                     let other_id = match msg {
                         Ok(Message::Join(other_id)) => other_id,
-                        _ => return Err(NetworkError::Error.into()),
+                        _ => return Err(NetworkError::Error),
                     };
                     let msg = Message::Peer(self.get_repo_id().clone());
                     sink.send(msg).await.map_err(|_| NetworkError::Error)?;

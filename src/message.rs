@@ -79,6 +79,7 @@ impl Message {
                 encoder.str("channelId").unwrap();
                 encoder.str(document_id.0.as_str()).unwrap();
                 encoder.str("message").unwrap();
+                encoder.tag(minicbor::data::Tag::Unassigned(64)).unwrap();
                 encoder.bytes(message.as_slice()).unwrap();
             }
             Self::Peer(repo_id) => {
