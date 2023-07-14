@@ -55,13 +55,11 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
     
     // Wait for all peers to have acknowlegded the new output.
     loop {
-        println!("Start of increment loop");
         doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
         let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
-        println!("Bakery closing: {:?}", bakery.closing);
         if bakery.closing {
             return Err(());
         }
