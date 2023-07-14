@@ -37,7 +37,7 @@ async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> 
 }
 
 async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u32, ()> {
-    let latest = doc_handle.with_doc_mut(|doc| {
+    let (latest, closing) = doc_handle.with_doc_mut(|doc| {
         let mut bakery: Bakery = hydrate(doc).unwrap();
         bakery.output += 1;
         bakery
@@ -46,16 +46,22 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
         let mut tx = doc.transaction();
         reconcile(&mut tx, &bakery).unwrap();
         tx.commit();
-        bakery.output
+        (bakery.output, bakery.closing)
     });
+
+    if closing {
+        return Err(());
+    }
+    
     // Wait for all peers to have acknowlegded the new output.
     loop {
+        println!("Start of increment loop");
         doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
         let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
-
+        println!("Bakery closing: {:?}", bakery.closing);
         if bakery.closing {
             return Err(());
         }
@@ -79,7 +85,7 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
 }
 
 async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
-    let our_number = doc_handle.with_doc_mut(|doc| {
+    let (our_number, closing) = doc_handle.with_doc_mut(|doc| {
         // Pick a number that is higher than all others.
         let mut bakery: Bakery = hydrate(doc).unwrap();
         let customers_with_number = bakery
@@ -96,8 +102,12 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
         let mut tx = doc.transaction();
         reconcile(&mut tx, &bakery).unwrap();
         tx.commit();
-        our_number
+        (our_number, bakery.closing)
     });
+
+    if closing {
+        return;
+    }
 
     loop {
         doc_handle.changed().await.unwrap();
@@ -164,12 +174,21 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
 }
 
 async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
-    let (mut our_view, mut output_seen) = doc_handle.with_doc(|doc| {
+    let (mut our_view, mut output_seen, closing) = doc_handle.with_doc(|doc| {
         let bakery: Bakery = hydrate(doc).unwrap();
         let our_info = bakery.customers.get(&customer_id).unwrap();
         let output_seen = bakery.output_seen.get(&customer_id).unwrap();
-        (our_info.views_of_others.clone(), *output_seen)
+        (
+            our_info.views_of_others.clone(),
+            *output_seen,
+            bakery.closing,
+        )
     });
+    
+    if closing {
+        return;
+    }
+    
     loop {
         doc_handle.changed().await.unwrap();
 
@@ -506,7 +525,12 @@ async fn main() {
 
             // Clean shutdown:
 
-            // 1. Shutdown the bakery,
+            // 1.  Shutdown the increment requesting task.
+            let (tx, rx) = oneshot();
+            increment_stop_tx.send(tx).await.unwrap();
+            rx.await.unwrap();
+
+            // 2. Shutdown the bakery,
             //    which acts as a shutdown signal
             //    to tasks reading the doc.
             app_state.doc_handle.with_doc_mut(|doc| {
@@ -516,11 +540,6 @@ async fn main() {
                 reconcile(&mut tx, &bakery).unwrap();
                 tx.commit();
             });
-
-            // 2.  Shutdown the increment requesting task.
-            let (tx, rx) = oneshot();
-            increment_stop_tx.send(tx).await.unwrap();
-            rx.await.unwrap();
 
             // 3. Shutdown the repo.
             Handle::current()
