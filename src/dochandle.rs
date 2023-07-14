@@ -109,7 +109,7 @@ impl DocHandle {
             let doc_changed = start_heads != new_heads;
 
             // Always note the last heads seen by the handle,
-            // for use with `changed`. 
+            // for use with `changed`.
             *self.last_heads.lock() = new_heads;
 
             // If the document wasn't actually mutated,

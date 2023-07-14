@@ -10,29 +10,33 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
+use tokio::sync::mpsc::{self, Receiver};
+use tokio::sync::oneshot::{channel as oneshot, Sender as OneShotSender};
 use tokio::time::{sleep, Duration};
 
 async fn get_doc_id(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
     Json(state.doc_handle.document_id())
 }
 
-async fn increment(State(state): State<Arc<AppState>>) -> Json<u32> {
+async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> {
     // Enter the critical section.
     run_bakery_algorithm(&state.doc_handle, &state.customer_id).await;
     println!("Entered critical section.");
 
     // Increment the output
-    let output = increment_output(&state.doc_handle, &state.customer_id).await;
-    println!("Incremented output to {:?}.", output);
+    if let Ok(output) = increment_output(&state.doc_handle, &state.customer_id).await {
+        println!("Incremented output to {:?}.", output);
 
-    // Exit the critical section.
-    start_outside_the_bakery(&state.doc_handle, &state.customer_id).await;
-    println!("Exited critical section.");
+        // Exit the critical section.
+        start_outside_the_bakery(&state.doc_handle, &state.customer_id).await;
 
-    Json(output)
+        println!("Exited critical section.");
+        return Ok(Json(output));
+    }
+    Err(())
 }
 
-async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> u32 {
+async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u32, ()> {
     let latest = doc_handle.with_doc_mut(|doc| {
         let mut bakery: Bakery = hydrate(doc).unwrap();
         bakery.output += 1;
@@ -46,14 +50,16 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> u32 {
     });
     // Wait for all peers to have acknowlegded the new output.
     loop {
-        if doc_handle.changed().await.is_err() {
-            // Shutdown.
-            break;
-        }
+        doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
         let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
+
+        if bakery.closing {
+            return Err(());
+        }
+
         let acked_by_all =
             bakery.output_seen.values().fold(
                 true,
@@ -69,7 +75,7 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> u32 {
             break;
         }
     }
-    latest
+    Ok(latest)
 }
 
 async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
@@ -94,14 +100,15 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
     });
 
     loop {
-        if doc_handle.changed().await.is_err() {
-            // Shutdown.
-            break;
-        }
+        doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
         let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
+
+        if bakery.closing {
+            return;
+        }
 
         // Wait for all peers to have acknowlegded our number.
         let acked_by_all = bakery
@@ -164,14 +171,24 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
         (our_info.views_of_others.clone(), *output_seen)
     });
     loop {
-        if doc_handle.changed().await.is_err() {
-            // Shutdown.
-            break;
+        doc_handle.changed().await.unwrap();
+
+        // Perform reads outside of closure,
+        // to avoid holding read lock.
+        let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
+
+        if bakery.closing {
+            return;
         }
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
         let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
+
+        if bakery.closing {
+            return;
+        }
+
         let (customers_with_number, new_output): (HashMap<String, u32>, u32) = {
             let numbers = bakery
                 .customers
@@ -226,6 +243,11 @@ async fn start_outside_the_bakery(doc_handle: &DocHandle, customer_id: &String) 
         // Perform reads outside of closure,
         // to avoid holding read lock.
         let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
+
+        if bakery.closing {
+            return;
+        }
+
         let synced = bakery.customers.iter().fold(true, |acc, (_id, c)| {
             if !acc {
                 acc
@@ -237,31 +259,39 @@ async fn start_outside_the_bakery(doc_handle: &DocHandle, customer_id: &String) 
         if synced {
             break;
         }
-        if doc_handle.changed().await.is_err() {
-            // Shutdown.
-            break;
-        }
+        doc_handle.changed().await.unwrap();
     }
 }
 
-async fn request_increment(doc_handle: DocHandle, http_addrs: Vec<String>) {
+async fn request_increment(
+    doc_handle: DocHandle,
+    http_addrs: Vec<String>,
+    mut stop_rx: Receiver<OneShotSender<()>>,
+) {
     let client = reqwest::Client::new();
     let mut last = 0;
     loop {
         for addr in http_addrs.iter() {
-            sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(1000)).await;
             let url = format!("http://{}/increment", addr);
             if let Ok(new) = client.get(url).send().await {
-                let new = new.json().await.unwrap();
-                println!("Got new increment: {:?}, versus old one: {:?}", new, last);
-                assert!(new > last);
-                last = new;
+                if let Ok(new) = new.json().await {
+                    println!("Got new increment: {:?}, versus old one: {:?}", new, last);
+                    assert!(new > last);
+                    last = new;
+                }
             }
         }
-        if doc_handle.changed().await.is_err() {
-            // Shutdown.
-            break;
-        }
+        tokio::select! {
+            biased;
+            tx = stop_rx.recv() => {
+                tx.unwrap().send(()).unwrap();
+                // Shutdown.
+                return;
+            }
+            _ = doc_handle.changed() => {
+            }
+        };
     }
 }
 
@@ -290,6 +320,7 @@ struct Bakery {
     pub customers: HashMap<String, Customer>,
     pub output: u32,
     pub output_seen: HashMap<String, u32>,
+    pub closing: bool,
 }
 
 struct NoStorage;
@@ -380,7 +411,7 @@ async fn main() {
             let stream = loop {
                 let res = TcpStream::connect(addr.clone()).await;
                 if res.is_err() {
-                    sleep(Duration::from_millis(1000)).await;
+                    sleep(Duration::from_millis(100)).await;
                     continue;
                 }
                 break res.unwrap();
@@ -396,6 +427,7 @@ async fn main() {
         // The initial bakery.
         let mut bakery: Bakery = Bakery {
             output: 0,
+            closing: false,
             ..Default::default()
         };
         bakery.output = 0;
@@ -446,6 +478,9 @@ async fn main() {
         repo_handle.request_document(doc_id.unwrap()).await.unwrap()
     };
 
+    // Shutdown signals for background tasks.
+    let (increment_stop_tx, increment_stop_rx) = mpsc::channel(1);
+
     let app_state = Arc::new(AppState {
         doc_handle: doc_handle.clone(),
         customer_id: customer_id.clone(),
@@ -460,7 +495,7 @@ async fn main() {
         start_outside_the_bakery(&doc_handle_clone, &customer_id_clone).await;
 
         // Continuously request new increments.
-        request_increment(doc_handle_clone, http_addrs).await;
+        request_increment(doc_handle_clone, http_addrs, increment_stop_rx).await;
     });
 
     // A task that continuously acknowledges changes made by others.
@@ -471,11 +506,31 @@ async fn main() {
     let app = Router::new()
         .route("/get_doc_id", get(get_doc_id))
         .route("/increment", get(increment))
-        .with_state(app_state);
+        .with_state(app_state.clone());
     let serve = axum::Server::bind(&our_http_addr.parse().unwrap()).serve(app.into_make_service());
     tokio::select! {
         _ = serve.fuse() => {},
         _ = tokio::signal::ctrl_c().fuse() => {
+
+            // Clean shutdown:
+
+            // 1. Shutdown the bakery,
+            //    which acts as a shutdown signal
+            //    to tasks reading the doc.
+            app_state.doc_handle.with_doc_mut(|doc| {
+                let mut bakery: Bakery = hydrate(doc).unwrap();
+                bakery.closing = true;
+                let mut tx = doc.transaction();
+                reconcile(&mut tx, &bakery).unwrap();
+                tx.commit();
+            });
+
+            // 2.  Shutdown the increment requesting task.
+            let (tx, rx) = oneshot();
+            increment_stop_tx.send(tx).await.unwrap();
+            rx.await.unwrap();
+
+            // 3. Shutdown the repo.
             Handle::current()
                 .spawn_blocking(|| {
                     repo_handle.stop().unwrap();

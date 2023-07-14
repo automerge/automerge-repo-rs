@@ -83,6 +83,14 @@ pub(crate) fn new_repo_future_with_resolver<F>() -> (RepoFuture<F>, RepoFutureRe
 }
 
 impl RepoHandle {
+    /// Stop the repo running in the background. 
+    /// This call will block the current thread. 
+    /// In an async context, use a variant of `spawn_blocking`.
+    ///
+    /// How to do clean shutdown:
+    /// 1. Stop all the tasks that may still write to a document.
+    /// 2. Call this method.
+    /// 3. Stop your network and storage implementations. 
     pub fn stop(self) -> Result<(), RepoError> {
         let _ = self.repo_sender.send(RepoEvent::Stop);
         if let Some(handle) = self.handle.lock().take() {
