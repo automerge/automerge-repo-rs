@@ -83,14 +83,14 @@ pub(crate) fn new_repo_future_with_resolver<F>() -> (RepoFuture<F>, RepoFutureRe
 }
 
 impl RepoHandle {
-    /// Stop the repo running in the background. 
-    /// This call will block the current thread. 
+    /// Stop the repo running in the background.
+    /// This call will block the current thread.
     /// In an async context, use a variant of `spawn_blocking`.
     ///
     /// How to do clean shutdown:
     /// 1. Stop all the tasks that may still write to a document.
     /// 2. Call this method.
-    /// 3. Stop your network and storage implementations. 
+    /// 3. Stop your network and storage implementations.
     pub fn stop(self) -> Result<(), RepoError> {
         let _ = self.repo_sender.send(RepoEvent::Stop);
         if let Some(handle) = self.handle.lock().take() {
@@ -735,27 +735,27 @@ impl DocumentInfo {
 
     /// Apply incoming sync messages,
     /// returns whether the document changed due to applying the message.
-    fn receive_sync_message(&mut self, repo_id: RepoId, messages: VecDeque<SyncMessage>) -> bool {
-        let sync_state = self
-            .sync_states
-            .entry(repo_id)
-            .or_insert_with(SyncState::new);
-
+    fn receive_sync_message(&mut self, per_remote: HashMap<RepoId, VecDeque<SyncMessage>>) -> bool {
         let (start_heads, new_heads) = {
             let mut document = self.document.write();
-
             let start_heads = document.automerge.get_heads();
-            // TODO: remove remote if there is an error.
-            for message in messages {
-                document
-                    .automerge
-                    .receive_sync_message(sync_state, message)
-                    .expect("Failed to apply sync message.");
+            for (repo_id, messages) in per_remote {
+                let sync_state = self
+                    .sync_states
+                    .entry(repo_id)
+                    .or_insert_with(SyncState::new);
+
+                // TODO: remove remote if there is an error.
+                for message in messages {
+                    document
+                        .automerge
+                        .receive_sync_message(sync_state, message)
+                        .expect("Failed to apply sync message.");
+                }
             }
             let new_heads = document.automerge.get_heads();
             (start_heads, new_heads)
         };
-
         start_heads != new_heads
     }
 
@@ -1429,13 +1429,7 @@ impl Repo {
                 .get_mut(&document_id)
                 .expect("Doc should have an info by now.");
 
-            let mut doc_changed = false;
-            for (from_repo_id, messages) in per_remote {
-                if info.receive_sync_message(from_repo_id, messages) {
-                    doc_changed = true;
-                }
-            }
-            if doc_changed {
+            if info.receive_sync_message(per_remote) {
                 info.note_changes();
                 self.documents_with_changes.push(document_id.clone());
             }

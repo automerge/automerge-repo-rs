@@ -272,7 +272,7 @@ async fn request_increment(
     let mut last = 0;
     loop {
         for addr in http_addrs.iter() {
-            sleep(Duration::from_millis(1000)).await;
+            sleep(Duration::from_millis(100)).await;
             let url = format!("http://{}/increment", addr);
             if let Ok(new) = client.get(url).send().await {
                 if let Ok(new) = new.json().await {
