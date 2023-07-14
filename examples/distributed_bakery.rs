@@ -181,14 +181,6 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
             return;
         }
 
-        // Perform reads outside of closure,
-        // to avoid holding read lock.
-        let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
-
-        if bakery.closing {
-            return;
-        }
-
         let (customers_with_number, new_output): (HashMap<String, u32>, u32) = {
             let numbers = bakery
                 .customers
