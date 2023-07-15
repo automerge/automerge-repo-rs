@@ -12,6 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneShotSender};
+use tokio::sync::Semaphore;
 use tokio::time::{sleep, Duration};
 
 async fn get_doc_id(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
@@ -19,6 +20,12 @@ async fn get_doc_id(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
 }
 
 async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> {
+    let permit = state.handler_sem.acquire().await;
+    if permit.is_err() {
+        // Shutdown
+        return Err(());
+    }
+
     // Enter the critical section.
     run_bakery_algorithm(&state.doc_handle, &state.customer_id).await;
     println!("Entered critical section.");
@@ -52,7 +59,7 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
     if closing {
         return Err(());
     }
-    
+
     // Wait for all peers to have acknowlegded the new output.
     loop {
         doc_handle.changed().await.unwrap();
@@ -182,11 +189,11 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
             bakery.closing,
         )
     });
-    
+
     if closing {
         return;
     }
-    
+
     loop {
         doc_handle.changed().await.unwrap();
 
@@ -316,6 +323,7 @@ struct Args {
 struct AppState {
     doc_handle: DocHandle,
     customer_id: String,
+    handler_sem: Semaphore,
 }
 
 #[derive(Debug, Clone, Reconcile, Hydrate, PartialEq)]
@@ -493,6 +501,7 @@ async fn main() {
     let app_state = Arc::new(AppState {
         doc_handle: doc_handle.clone(),
         customer_id: customer_id.clone(),
+        handler_sem: Semaphore::new(1),
     });
 
     // Do the below in a task, so that the server immediatly starts running.
@@ -531,6 +540,7 @@ async fn main() {
             // 2. Shutdown the bakery,
             //    which acts as a shutdown signal
             //    to tasks reading the doc.
+            // Note: this prevents peers from re-joining after shutdown.
             app_state.doc_handle.with_doc_mut(|doc| {
                 let mut bakery: Bakery = hydrate(doc).unwrap();
                 bakery.closing = true;
@@ -539,7 +549,11 @@ async fn main() {
                 tx.commit();
             });
 
-            // 3. Shutdown the repo.
+            // 3. Ensure the `increment` handler cannot run after this.
+            let _permit = app_state.handler_sem.acquire().await;
+            app_state.handler_sem.close();
+
+            // 4. Shutdown the repo.
             Handle::current()
                 .spawn_blocking(|| {
                     repo_handle.stop().unwrap();

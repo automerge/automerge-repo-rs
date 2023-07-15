@@ -23,8 +23,8 @@ Project goal: add an integration layer between automerge and client code, compat
 An implementation of the [distributed bakery algorithm](https://lamport.azurewebsites.net/pubs/bakery/dbakery-complete.pdf)
 
 1. Start the bootstap peer:
-   - `cargo run --example distributed-bakery --features="tokio" -- --bootstrap --customer-id "1"`
+   - `cargo run --release --example distributed-bakery --features="tokio" -- --bootstrap --customer-id "1"`
 2. Start two other peers:
-   - `cargo run --example distributed-bakery --features="tokio" -- --customer-id "2"`
-   - `cargo run --example distributed-bakery --features="tokio" -- --customer-id "3"`
+   - `cargo run --release --example distributed-bakery --features="tokio" -- --customer-id "2"`
+   - `cargo run --release --example distributed-bakery --features="tokio" -- --customer-id "3"`
 3. Watch the peers request new increments from each other, and enter/exit their critical sections(printed out).
