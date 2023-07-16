@@ -771,10 +771,10 @@ impl DocumentInfo {
 
     /// Generate outgoing sync message for all repos we are syncing with.
     fn generate_sync_messages(&mut self) -> Vec<(RepoId, SyncMessage)> {
+        let document = self.document.read();
         self.sync_states
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
-                let document = self.document.read();
                 let message = document.automerge.generate_sync_message(sync_state);
                 message.map(|msg| (repo_id.clone(), msg))
             })

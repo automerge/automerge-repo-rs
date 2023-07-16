@@ -62,6 +62,7 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
 
     // Wait for all peers to have acknowlegded the new output.
     loop {
+        println!("Start increment_output loop");
         doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
@@ -83,6 +84,7 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
                 },
             );
         if acked_by_all {
+            println!("End increment_output loop");
             break;
         }
     }
@@ -115,6 +117,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
     }
 
     loop {
+        println!("Start run_bakery_algorithm loop");
         doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
@@ -158,6 +161,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
 
         // Everyone else is at zero.
         if has_lower.is_none() {
+            println!("End run_bakery_algorithm loop");
             return;
         }
 
@@ -166,6 +170,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
         if lowest_number == our_number {
             // Break tie by customer id.
             if customer_id < id {
+                println!("End run_bakery_algorithm loop");
                 return;
             } else {
                 continue;
@@ -173,6 +178,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
         }
 
         if lowest_number > our_number {
+            println!("End run_bakery_algorithm loop");
             return;
         }
     }
@@ -195,6 +201,7 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
     }
 
     loop {
+        println!("Start acknowlegde_changes loop");
         doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
