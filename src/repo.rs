@@ -1112,7 +1112,11 @@ impl Repo {
                         Arc::new(RepoWaker::Sink(self.wake_sender.clone(), repo_id.clone()));
                     let waker = waker_ref(&sink_waker);
                     let pinned_sink = Pin::new(&mut remote_repo.sink);
-                    let _ = pinned_sink.poll_flush(&mut Context::from_waker(&waker));
+                    if let Poll::Ready(Err(_)) =
+                        pinned_sink.poll_flush(&mut Context::from_waker(&waker))
+                    {
+                        discard = true;
+                    }
                 }
                 discard
             } else {
