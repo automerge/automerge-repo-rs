@@ -1106,7 +1106,7 @@ impl Repo {
                     }
                 }
 
-                // Flusk the sink if any messages have been sent.
+                // Flush the sink if any messages have been sent.
                 if needs_flush {
                     let sink_waker =
                         Arc::new(RepoWaker::Sink(self.wake_sender.clone(), repo_id.clone()));
