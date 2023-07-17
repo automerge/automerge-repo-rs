@@ -253,30 +253,6 @@ async fn start_outside_the_bakery(doc_handle: &DocHandle, customer_id: &String) 
         reconcile(&mut tx, &bakery).unwrap();
         tx.commit();
     });
-
-    // Wait for acks from peers.
-    loop {
-        // Perform reads outside of closure,
-        // to avoid holding read lock.
-        let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
-
-        if bakery.closing {
-            return;
-        }
-
-        let synced = bakery.customers.iter().fold(true, |acc, (_id, c)| {
-            if !acc {
-                acc
-            } else {
-                let view_of_our_number = c.views_of_others.get(customer_id).unwrap();
-                view_of_our_number == &0
-            }
-        });
-        if synced {
-            break;
-        }
-        doc_handle.changed().await.unwrap();
-    }
 }
 
 async fn request_increment(
@@ -287,8 +263,8 @@ async fn request_increment(
     let client = reqwest::Client::new();
     let mut last = 0;
     loop {
+        sleep(Duration::from_millis(1000)).await;
         for addr in http_addrs.iter() {
-            sleep(Duration::from_millis(100)).await;
             let url = format!("http://{}/increment", addr);
             if let Ok(new) = client.get(url).send().await {
                 if let Ok(new) = new.json().await {
