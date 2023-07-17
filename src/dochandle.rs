@@ -133,9 +133,12 @@ impl DocHandle {
     where
         F: FnOnce(&Automerge) -> T,
     {
-        let state = self.shared_document.read();
-        let res = f(&state.automerge);
-        *self.last_heads.lock() = state.automerge.get_heads();
+        let (res, new_heads) = {
+            let state = self.shared_document.read();
+            let res = f(&state.automerge);
+            (res, state.automerge.get_heads())
+        };
+        *self.last_heads.lock() = new_heads;
         res
     }
 
