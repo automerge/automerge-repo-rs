@@ -28,6 +28,7 @@ pub struct DocHandle {
     /// or the last time it was access by any of the `with_doc` methods.
     /// Putting it in a mutex to maintain an API
     /// that doesn't require a mutabale reference to the handle.
+    /// Note: the mutex is not shared between clones of the same handle.
     last_heads: Mutex<Vec<ChangeHash>>,
 }
 

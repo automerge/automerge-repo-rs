@@ -84,6 +84,8 @@ pub(crate) fn new_repo_future_with_resolver<F>() -> (RepoFuture<F>, RepoFutureRe
 
 impl RepoHandle {
     /// Stop the repo running in the background.
+    /// All documents will have been saved when this returns.
+    ///
     /// This call will block the current thread.
     /// In an async context, use a variant of `spawn_blocking`.
     ///
