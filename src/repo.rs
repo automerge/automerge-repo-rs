@@ -1379,7 +1379,8 @@ impl Repo {
 
     /// Apply incoming sync messages, and generate outgoing ones.
     fn sync_documents(&mut self) {
-        // Re-organize messages so as to acquire the write lock on the document only once per remote.
+        // Re-organize messages so as to acquire the write lock 
+        // on the document only once per document.
         let mut per_doc_messages: HashMap<DocumentId, HashMap<RepoId, VecDeque<SyncMessage>>> =
             Default::default();
         for event in mem::take(&mut self.pending_events) {
