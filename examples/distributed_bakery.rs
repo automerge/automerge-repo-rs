@@ -60,32 +60,6 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
         return Err(());
     }
 
-    // Wait for all peers to have acknowlegded the new output.
-    loop {
-        doc_handle.changed().await.unwrap();
-
-        // Perform reads outside of closure,
-        // to avoid holding read lock.
-        let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
-        if bakery.closing {
-            return Err(());
-        }
-
-        let acked_by_all =
-            bakery.output_seen.values().fold(
-                true,
-                |acc, output| {
-                    if !acc {
-                        acc
-                    } else {
-                        output == &latest
-                    }
-                },
-            );
-        if acked_by_all {
-            break;
-        }
-    }
     Ok(latest)
 }
 
@@ -158,7 +132,8 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
                     Some((id, c.number))
                 }
             })
-            .min_by_key(|(_, num)| *num);
+            // Break tie by customer id.
+            .min_by_key(|(id, num)| (*num, *id));
 
         // Everyone else is at zero.
         if has_lower.is_none() {
@@ -168,7 +143,6 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
         let (id, lowest_number) = has_lower.unwrap();
 
         if lowest_number == our_number {
-            // Break tie by customer id.
             if customer_id < id {
                 return;
             } else {
