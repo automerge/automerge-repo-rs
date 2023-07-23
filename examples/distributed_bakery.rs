@@ -64,35 +64,31 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
 }
 
 async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
+    let (our_number, closing) = doc_handle.with_doc_mut(|doc| {
+        // At the start of the algorithm,
+        // pick a number that is higher than all others.
+        let mut bakery: Bakery = hydrate(doc).unwrap();
+        let customers_with_number = bakery
+            .customers
+            .clone()
+            .iter()
+            .map(|(id, c)| (id.clone(), c.number))
+            .collect();
+        let highest_number = bakery.customers.values().map(|c| c.number).max().unwrap();
+        let our_number = highest_number + 1;
+        let our_info = bakery.customers.get_mut(customer_id).unwrap();
+        our_info.views_of_others = customers_with_number;
+        our_info.number = our_number;
+        let mut tx = doc.transaction();
+        reconcile(&mut tx, &bakery).unwrap();
+        tx.commit();
+        (our_number, bakery.closing)
+    });
+
+    if closing {
+        return;
+    }
     loop {
-        let (our_number, closing) = doc_handle.with_doc_mut(|doc| {
-            // At the start of each iteration,
-            // pick a number that is higher than all others.
-            // This means picking a new, and higher,
-            // number than at the last iteration,
-            // if others have chosen new ones since last try.
-            let mut bakery: Bakery = hydrate(doc).unwrap();
-            let customers_with_number = bakery
-                .customers
-                .clone()
-                .iter()
-                .map(|(id, c)| (id.clone(), c.number))
-                .collect();
-            let highest_number = bakery.customers.values().map(|c| c.number).max().unwrap();
-            let our_number = highest_number + 1;
-            let our_info = bakery.customers.get_mut(customer_id).unwrap();
-            our_info.views_of_others = customers_with_number;
-            our_info.number = our_number;
-            let mut tx = doc.transaction();
-            reconcile(&mut tx, &bakery).unwrap();
-            tx.commit();
-            (our_number, bakery.closing)
-        });
-
-        if closing {
-            return;
-        }
-
         doc_handle.changed().await.unwrap();
 
         // Perform reads outside of closure,
@@ -121,7 +117,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
             continue;
         }
 
-        // Lowest non-negative number.
+        // Lowest pair of non-negative number and id.
         let has_lower = bakery
             .customers
             .iter()
@@ -132,7 +128,6 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
                     Some((id, c.number))
                 }
             })
-            // Break tie by customer id.
             .min_by_key(|(id, num)| (*num, *id));
 
         // Everyone else is at zero.
@@ -143,6 +138,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
         let (id, lowest_number) = has_lower.unwrap();
 
         if lowest_number == our_number {
+            // Break tie by customer id.
             if customer_id < id {
                 return;
             } else {
@@ -157,15 +153,27 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
 }
 
 async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
-    let (mut our_view, mut output_seen, closing) = doc_handle.with_doc(|doc| {
-        let bakery: Bakery = hydrate(doc).unwrap();
-        let our_info = bakery.customers.get(&customer_id).unwrap();
-        let output_seen = bakery.output_seen.get(&customer_id).unwrap();
-        (
-            our_info.views_of_others.clone(),
-            *output_seen,
-            bakery.closing,
-        )
+    let (mut our_view, mut output_seen, closing) = doc_handle.with_doc_mut(|doc| {
+        let mut bakery: Bakery = hydrate(doc).unwrap();
+        let customers_with_number: HashMap<String, u32> = bakery
+            .customers
+            .clone()
+            .iter()
+            .map(|(id, c)| (id.clone(), c.number))
+            .collect();
+        let our_info = bakery.customers.get_mut(&customer_id).unwrap();
+        // Ack changes made by others.
+        our_info.views_of_others = customers_with_number.clone();
+
+        // Ack any new output.
+        bakery
+            .output_seen
+            .insert(customer_id.clone(), bakery.output);
+
+        let mut tx = doc.transaction();
+        reconcile(&mut tx, &bakery).unwrap();
+        tx.commit();
+        (customers_with_number, bakery.output, bakery.closing)
     });
 
     if closing {
@@ -451,20 +459,14 @@ async fn main() {
         handler_sem: Semaphore::new(1),
     });
 
-    // Do the below in a task, so that the server immediatly starts running.
-    let customer_id_clone = customer_id.clone();
     let doc_handle_clone = doc_handle.clone();
     handle.spawn(async move {
-        // Start the algorithm "outside the bakery".
-        // The acks makes this wait for all others to be up and running.
-        start_outside_the_bakery(&doc_handle_clone, &customer_id_clone).await;
-
         // Continuously request new increments.
         request_increment(doc_handle_clone, http_addrs, increment_stop_rx).await;
     });
 
-    // A task that continuously acknowledges changes made by others.
     handle.spawn(async move {
+        // Continuously acknowledges changes made by others.
         acknowlegde_changes(doc_handle, customer_id).await;
     });
 
