@@ -117,7 +117,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
             continue;
         }
 
-        // Lowest pair of non-negative number and id.
+        // Lowest non-negative number.
         let has_lower = bakery
             .customers
             .iter()
@@ -128,7 +128,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
                     Some((id, c.number))
                 }
             })
-            .min_by_key(|(id, num)| (*num, *id));
+            .min_by_key(|(_, num)| *num);
 
         // Everyone else is at zero.
         if has_lower.is_none() {
