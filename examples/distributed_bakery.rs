@@ -60,38 +60,13 @@ async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u
         return Err(());
     }
 
-    // Wait for all peers to have acknowlegded the new output.
-    loop {
-        doc_handle.changed().await.unwrap();
-
-        // Perform reads outside of closure,
-        // to avoid holding read lock.
-        let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
-        if bakery.closing {
-            return Err(());
-        }
-
-        let acked_by_all =
-            bakery.output_seen.values().fold(
-                true,
-                |acc, output| {
-                    if !acc {
-                        acc
-                    } else {
-                        output == &latest
-                    }
-                },
-            );
-        if acked_by_all {
-            break;
-        }
-    }
     Ok(latest)
 }
 
 async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
     let (our_number, closing) = doc_handle.with_doc_mut(|doc| {
-        // Pick a number that is higher than all others.
+        // At the start of the algorithm,
+        // pick a number that is higher than all others.
         let mut bakery: Bakery = hydrate(doc).unwrap();
         let customers_with_number = bakery
             .customers
@@ -113,7 +88,6 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
     if closing {
         return;
     }
-
     loop {
         doc_handle.changed().await.unwrap();
 
@@ -179,15 +153,27 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
 }
 
 async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
-    let (mut our_view, mut output_seen, closing) = doc_handle.with_doc(|doc| {
-        let bakery: Bakery = hydrate(doc).unwrap();
-        let our_info = bakery.customers.get(&customer_id).unwrap();
-        let output_seen = bakery.output_seen.get(&customer_id).unwrap();
-        (
-            our_info.views_of_others.clone(),
-            *output_seen,
-            bakery.closing,
-        )
+    let (mut our_view, mut output_seen, closing) = doc_handle.with_doc_mut(|doc| {
+        let mut bakery: Bakery = hydrate(doc).unwrap();
+        let customers_with_number: HashMap<String, u32> = bakery
+            .customers
+            .clone()
+            .iter()
+            .map(|(id, c)| (id.clone(), c.number))
+            .collect();
+        let our_info = bakery.customers.get_mut(&customer_id).unwrap();
+        // Ack changes made by others.
+        our_info.views_of_others = customers_with_number.clone();
+
+        // Ack any new output.
+        bakery
+            .output_seen
+            .insert(customer_id.clone(), bakery.output);
+
+        let mut tx = doc.transaction();
+        reconcile(&mut tx, &bakery).unwrap();
+        tx.commit();
+        (customers_with_number, bakery.output, bakery.closing)
     });
 
     if closing {
@@ -426,15 +412,8 @@ async fn main() {
         bakery.output = 0;
         for customer_id in customers.clone() {
             let customer = Customer {
-                // Start with anything but 0,
-                // so that peers block on acks
-                // until all others are up and running.
-                number: u32::MAX,
-                views_of_others: customers
-                    .clone()
-                    .into_iter()
-                    .map(|id| (id, u32::MAX))
-                    .collect(),
+                number: 0,
+                views_of_others: customers.clone().into_iter().map(|id| (id, 0)).collect(),
             };
             bakery.customers.insert(customer_id.to_string(), customer);
             bakery.output_seen.insert(customer_id.to_string(), 0);
@@ -480,20 +459,14 @@ async fn main() {
         handler_sem: Semaphore::new(1),
     });
 
-    // Do the below in a task, so that the server immediatly starts running.
-    let customer_id_clone = customer_id.clone();
     let doc_handle_clone = doc_handle.clone();
     handle.spawn(async move {
-        // Start the algorithm "outside the bakery".
-        // The acks makes this wait for all others to be up and running.
-        start_outside_the_bakery(&doc_handle_clone, &customer_id_clone).await;
-
         // Continuously request new increments.
         request_increment(doc_handle_clone, http_addrs, increment_stop_rx).await;
     });
 
-    // A task that continuously acknowledges changes made by others.
     handle.spawn(async move {
+        // Continuously acknowledges changes made by others.
         acknowlegde_changes(doc_handle, customer_id).await;
     });
 

@@ -20,7 +20,8 @@ Project goal: add an integration layer between automerge and client code, compat
 
 ### Distributed Bakery Algorithm
 
-An implementation of the [distributed bakery algorithm](https://lamport.azurewebsites.net/pubs/bakery/dbakery-complete.pdf)
+An implementation of the [distributed bakery algorithm](https://lamport.azurewebsites.net/pubs/bakery/dbakery-complete.pdf), 
+based on this [TLA+ specification](https://gist.github.com/gterzian/d9898f3206fedb921d916399d287780f).
 
 1. Start the bootstap peer:
    - `cargo run --release --example distributed-bakery --features="tokio" -- --bootstrap --customer-id "1"`
