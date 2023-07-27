@@ -305,7 +305,7 @@ struct Bakery {
 struct NoStorage;
 
 impl Storage for NoStorage {
-    fn get<'a>(
+    fn get(
         &self,
         _id: DocumentId,
     ) -> BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>> {
