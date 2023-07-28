@@ -283,7 +283,6 @@ struct Customer {
 struct Bakery {
     pub customers: HashMap<String, Customer>,
     pub output: u32,
-    pub output_seen: HashMap<String, u32>,
     pub closing: bool,
 }
 
@@ -391,14 +390,12 @@ async fn main() {
             closing: false,
             ..Default::default()
         };
-        bakery.output = 0;
         for customer_id in customers.clone() {
             let customer = Customer {
                 number: 0,
                 views_of_others: customers.clone().into_iter().map(|id| (id, 0)).collect(),
             };
             bakery.customers.insert(customer_id.to_string(), customer);
-            bakery.output_seen.insert(customer_id.to_string(), 0);
         }
 
         // The initial document.
