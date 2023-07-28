@@ -31,7 +31,7 @@ async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> 
     println!("Entered critical section.");
 
     // Increment the output
-    if let Ok(output) = increment_output(&state.doc_handle, &state.customer_id).await {
+    if let Ok(output) = increment_output(&state.doc_handle).await {
         println!("Incremented output to {:?}.", output);
 
         // Exit the critical section.
@@ -43,13 +43,10 @@ async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> 
     Err(())
 }
 
-async fn increment_output(doc_handle: &DocHandle, customer_id: &str) -> Result<u32, ()> {
+async fn increment_output(doc_handle: &DocHandle) -> Result<u32, ()> {
     let (latest, closing) = doc_handle.with_doc_mut(|doc| {
         let mut bakery: Bakery = hydrate(doc).unwrap();
         bakery.output += 1;
-        bakery
-            .output_seen
-            .insert(customer_id.to_string(), bakery.output);
         let mut tx = doc.transaction();
         reconcile(&mut tx, &bakery).unwrap();
         tx.commit();
@@ -153,7 +150,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
 }
 
 async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
-    let (mut our_view, mut output_seen, closing) = doc_handle.with_doc_mut(|doc| {
+    let (mut our_view, closing) = doc_handle.with_doc_mut(|doc| {
         let mut bakery: Bakery = hydrate(doc).unwrap();
         let customers_with_number: HashMap<String, u32> = bakery
             .customers
@@ -162,18 +159,14 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
             .map(|(id, c)| (id.clone(), c.number))
             .collect();
         let our_info = bakery.customers.get_mut(&customer_id).unwrap();
+
         // Ack changes made by others.
         our_info.views_of_others = customers_with_number.clone();
-
-        // Ack any new output.
-        bakery
-            .output_seen
-            .insert(customer_id.clone(), bakery.output);
 
         let mut tx = doc.transaction();
         reconcile(&mut tx, &bakery).unwrap();
         tx.commit();
-        (customers_with_number, bakery.output, bakery.closing)
+        (customers_with_number, bakery.closing)
     });
 
     if closing {
@@ -191,21 +184,18 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
             return;
         }
 
-        let (customers_with_number, new_output): (HashMap<String, u32>, u32) = {
-            let numbers = bakery
-                .customers
-                .iter()
-                .map(|(id, c)| (id.clone(), c.number))
-                .collect();
-            (numbers, bakery.output)
-        };
+        let customers_with_number: HashMap<String, u32> = bakery
+            .customers
+            .iter()
+            .map(|(id, c)| (id.clone(), c.number))
+            .collect();
 
         // Only change the doc if something needs acknowledgement.
-        if customers_with_number == our_view && output_seen == new_output {
+        if customers_with_number == our_view {
             continue;
         }
 
-        (our_view, output_seen) = doc_handle.with_doc_mut(|doc| {
+        our_view = doc_handle.with_doc_mut(|doc| {
             let mut bakery: Bakery = hydrate(doc).unwrap();
             let customers_with_number: HashMap<String, u32> = bakery
                 .customers
@@ -217,15 +207,10 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
             // Ack changes made by others.
             our_info.views_of_others = customers_with_number.clone();
 
-            // Ack any new output.
-            bakery
-                .output_seen
-                .insert(customer_id.clone(), bakery.output);
-
             let mut tx = doc.transaction();
             reconcile(&mut tx, &bakery).unwrap();
             tx.commit();
-            (customers_with_number, bakery.output)
+            customers_with_number
         });
     }
 }
@@ -305,10 +290,7 @@ struct Bakery {
 struct NoStorage;
 
 impl Storage for NoStorage {
-    fn get(
-        &self,
-        _id: DocumentId,
-    ) -> BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>> {
+    fn get(&self, _id: DocumentId) -> BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>> {
         Box::pin(futures::future::ready(Ok(None)))
     }
 
