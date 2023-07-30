@@ -125,7 +125,7 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
                     Some((id, c.number))
                 }
             })
-            .min_by_key(|(_, num)| *num);
+            .min_by_key(|(id, num)| (*num, *id));
 
         // Everyone else is at zero.
         if has_lower.is_none() {
