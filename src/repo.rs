@@ -761,15 +761,19 @@ impl DocumentInfo {
             for (repo_id, messages) in per_remote {
                 let sync_state = self
                     .sync_states
-                    .entry(repo_id)
+                    .entry(repo_id.clone())
                     .or_insert_with(SyncState::new);
 
                 // TODO: remove remote if there is an error.
+                println!("Messages received from {:?} {:?}", repo_id, messages.len());
                 for message in messages {
+                    let now = std::time::Instant::now();
                     document
                         .automerge
                         .receive_sync_message(sync_state, message)
                         .expect("Failed to apply sync message.");
+                        let elapsed_time = now.elapsed();
+                        println!("Running receive_sync_message took {} milliseconds.", elapsed_time.as_nanos());
                 }
             }
             let new_heads = document.automerge.get_heads();
@@ -791,13 +795,20 @@ impl DocumentInfo {
     /// Generate outgoing sync message for all repos we are syncing with.
     fn generate_sync_messages(&mut self) -> Vec<(RepoId, SyncMessage)> {
         let document = self.document.read();
-        self.sync_states
+        let now = std::time::Instant::now();
+        let res: Vec<_> = self.sync_states
             .iter_mut()
             .filter_map(|(repo_id, sync_state)| {
+                let now = std::time::Instant::now();
                 let message = document.automerge.generate_sync_message(sync_state);
+                let elapsed_time = now.elapsed();
+                println!("Running generate_sync_message took {} milliseconds.", elapsed_time.as_nanos());
                 message.map(|msg| (repo_id.clone(), msg))
             })
-            .collect()
+            .collect();
+       let elapsed_time = now.elapsed(); 
+       println!("Generating {:?} sync messages {} milliseconds.",  res.len(), elapsed_time.as_nanos());
+       res
     }
 }
 
@@ -1400,6 +1411,8 @@ impl Repo {
         // on the document only once per document.
         let mut per_doc_messages: HashMap<DocumentId, HashMap<RepoId, VecDeque<SyncMessage>>> =
             Default::default();
+            let now = std::time::Instant::now();
+            let mut total_messages = 0;
         for event in mem::take(&mut self.pending_events) {
             tracing::trace!(repo_id = ?self.repo_id, message = ?event, "processing sync message");
             match event {
@@ -1443,6 +1456,7 @@ impl Repo {
                         .or_insert_with(Default::default);
                     let per_remote = per_doc.entry(from_repo_id).or_insert_with(Default::default);
                     per_remote.push_back(message.clone());
+                    total_messages += 1;
                 }
             }
         }
@@ -1492,6 +1506,8 @@ impl Repo {
                 info.state = DocState::Sync(vec![]);
             }
         }
+        let elapsed_time = now.elapsed(); 
+        println!("Syncing docs with {:?} sync messages took {} milliseconds.",  total_messages, elapsed_time.as_nanos());
     }
 
     fn poll_close_sinks(&mut self, repo_id: RepoId) {
