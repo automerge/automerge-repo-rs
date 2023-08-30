@@ -22,7 +22,7 @@ tokio = ["dep:tokio", "dep:tokio-util"]
 tokio-tungstenite = ["tokio", "dep:tokio-tungstenite", "dep:tungstenite"]
 
 [dependencies]
-automerge = { version = "0.5.0" }
+automerge = { version = "0.5.1" }
 uuid = { version = "1.2.2"}
 crossbeam-channel = { version = "0.5.8" }
 parking_lot = { version = "0.12.1" }
@@ -53,4 +53,7 @@ test-log = "0.2.12"
 env_logger = "0.10.0"
 tracing-subscriber = "0.3.17"
 itertools = "0.11.0"
-autosurgeon = "0.8.0"
+autosurgeon = "0.8"
+
+[patch.crates-io]
+automerge  = { path = "../automerge/rust/automerge" }

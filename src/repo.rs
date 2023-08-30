@@ -773,7 +773,7 @@ impl DocumentInfo {
                         .receive_sync_message(sync_state, message)
                         .expect("Failed to apply sync message.");
                         let elapsed_time = now.elapsed();
-                        println!("Running receive_sync_message took {} milliseconds.", elapsed_time.as_nanos());
+                        println!("Running receive_sync_message took {} milliseconds.", elapsed_time.as_millis());
                 }
             }
             let new_heads = document.automerge.get_heads();
@@ -802,12 +802,12 @@ impl DocumentInfo {
                 let now = std::time::Instant::now();
                 let message = document.automerge.generate_sync_message(sync_state);
                 let elapsed_time = now.elapsed();
-                println!("Running generate_sync_message took {} milliseconds.", elapsed_time.as_nanos());
+                println!("Running generate_sync_message took {} milliseconds.", elapsed_time.as_millis());
                 message.map(|msg| (repo_id.clone(), msg))
             })
             .collect();
        let elapsed_time = now.elapsed(); 
-       println!("Generating {:?} sync messages {} milliseconds.",  res.len(), elapsed_time.as_nanos());
+       println!("Generating {:?} sync messages {} milliseconds.",  res.len(), elapsed_time.as_millis());
        res
     }
 }
@@ -1507,7 +1507,7 @@ impl Repo {
             }
         }
         let elapsed_time = now.elapsed(); 
-        println!("Syncing docs with {:?} sync messages took {} milliseconds.",  total_messages, elapsed_time.as_nanos());
+        println!("Syncing docs with {:?} sync messages took {} milliseconds.",  total_messages, elapsed_time.as_millis());
     }
 
     fn poll_close_sinks(&mut self, repo_id: RepoId) {
