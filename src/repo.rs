@@ -1552,24 +1552,6 @@ impl Repo {
                                         &self.repo_sender,
                                         &self.repo_id,
                                     );
-                                    if info.state.should_sync() {
-                                        // Send a sync message to all other repos we are connected with.
-                                        for to_repo_id in self.remote_repos.keys().cloned() {
-                                            if let Some(message) = info.generate_first_sync_message(to_repo_id.clone()) {
-                                                let outgoing = NetworkMessage::Sync {
-                                                    from_repo_id: self.repo_id.clone(),
-                                                    to_repo_id: to_repo_id.clone(),
-                                                    document_id: doc_id.clone(),
-                                                    message,
-                                                };
-                                                self.pending_messages
-                                                    .entry(to_repo_id.clone())
-                                                    .or_insert_with(Default::default)
-                                                    .push_back(outgoing);
-                                                self.sinks_to_poll.insert(to_repo_id);
-                                            }
-                                        }
-                                    }
                                 }
                             }
                             WakeSignal::PendingCloseSink(repo_id) => self.poll_close_sinks(repo_id),
