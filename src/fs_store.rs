@@ -51,7 +51,7 @@ use error::ErrorKind;
 /// 2. Load the data into an automerge document
 /// 3. `automerge::Automerge::save` the document to a temporary file
 /// 4. Rename the temporary file to a file in the data directory named
-///    `SHA356(automerge::Automerge::get_heads)`.snapshot`
+///    `SHA256(automerge::Automerge::get_heads)`.snapshot`
 /// 5. Delete all the files we loaded in step 1.
 ///
 /// The fact that we name the file after the heads of the document means that
@@ -86,7 +86,7 @@ impl FsStore {
     pub fn get(&self, id: &DocumentId) -> Result<Option<Vec<u8>>, Error> {
         let chunks = Chunks::load(&self.root, id)?;
         let Some(chunks) = chunks else {
-            return Ok(None)
+            return Ok(None);
         };
         let mut result = Vec::new();
         result.extend(chunks.snapshots.into_values().flatten());
@@ -122,14 +122,14 @@ impl FsStore {
                 let metadata = entry
                     .metadata()
                     .map_err(|e| Error(ErrorKind::ErrReadingLevel2Path(entry.path(), e)))?;
-                if metadata.is_dir() {
+                if !metadata.is_dir() {
                     tracing::warn!(
                         non_file_path=%entry.path().display(),
-                        "unexpected directory at level2 of database"
+                        "unexpected non-directory at level2 of database"
                     );
                     continue;
                 }
-                let Some(doc_paths) = DocIdPaths::parse(&level1, entry.path()) else {
+                let Some(doc_paths) = DocIdPaths::parse(entry.path()) else {
                     tracing::warn!(
                         non_doc_path=%entry.path().display(),
                         "unexpected non-document path at level2 of database"
@@ -163,7 +163,7 @@ impl FsStore {
         // Load all the data we have into a doc
         let Some(chunks) = Chunks::load(&self.root, id)? else {
             tracing::warn!(doc_id=%id, "attempted to compact non-existent document");
-            return Ok(())
+            return Ok(());
         };
         let mut doc = chunks
             .to_doc()
@@ -195,7 +195,7 @@ fn write_chunk(
 ) -> Result<(), Error> {
     // Write to a temp file and then rename to avoid partial writes
     let mut temp_save =
-        tempfile::NamedTempFile::new().map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
+        tempfile::NamedTempFile::new_in(root).map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
     let temp_save_path = temp_save.path().to_owned();
     temp_save
         .as_file_mut()
@@ -236,16 +236,18 @@ impl<'a> From<&'a DocumentId> for DocIdPaths {
 }
 
 impl DocIdPaths {
-    fn parse<P1: AsRef<Path>, P2: AsRef<Path>>(level1: P1, level2: P2) -> Option<Self> {
-        let level1 = level1.as_ref().to_str()?;
+    fn parse(level2: PathBuf) -> Option<Self> {
+        let level1 = level2.parent()?.file_name()?.to_str()?;
+        let level2 = level2.file_name()?.to_str()?;
+
         let prefix = hex::decode(level1).ok()?;
         let prefix = <[u8; 2]>::try_from(prefix).ok()?;
 
-        let level2 = level2.as_ref().to_str()?;
         let doc_id_bytes = hex::decode(level2).ok()?;
         let doc_id_str = String::from_utf8(doc_id_bytes).ok()?;
         let doc_id = DocumentId::from(doc_id_str.as_str());
         let result = Self::from(&doc_id);
+
         if result.prefix != prefix {
             None
         } else {
@@ -382,7 +384,8 @@ impl Chunks {
                 tracing::warn!(bad_file=%path.display(), "unexpected non-file in level2 path");
                 continue;
             }
-            let Some(chunk_name) = entry.file_name().to_str().and_then(SavedChunkName::parse) else {
+            let Some(chunk_name) = entry.file_name().to_str().and_then(SavedChunkName::parse)
+            else {
                 tracing::warn!(bad_file=%path.display(), "unexpected non-chunk file in level2 path");
                 continue;
             };
