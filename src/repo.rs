@@ -22,6 +22,9 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
 
+// TODO Feature
+use metrics::increment_counter;
+
 /// Front-end of the repo.
 #[derive(Debug, Clone)]
 pub struct RepoHandle {
@@ -557,7 +560,11 @@ pub(crate) struct DocumentInfo {
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
     /// Counter of patches since last save,
     /// used to make decisions about full or incemental saves.
+    #[deprecated]
     patches_since_last_save: usize,
+    /// Time since last save
+    /// used to make decisions about full or incremental saves.
+    time_since_last_full_save: std::time::Instant,
 }
 
 impl DocumentInfo {
@@ -573,6 +580,7 @@ impl DocumentInfo {
             sync_states: Default::default(),
             change_observers: Default::default(),
             patches_since_last_save: 0,
+            time_since_last_full_save: std::time::Instant::now(),
         }
     }
 
@@ -707,20 +715,28 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let should_compact = self.patches_since_last_save > 10;
+        let since_last_compact = std::time::Instant::now() - self.time_since_last_full_save;
+        let should_compact = since_last_compact.as_secs() > 60;
         let storage_fut = if should_compact {
             let to_save = {
                 let mut doc = self.document.write();
                 doc.automerge.save()
             };
+            // Since this is a future it's possible that if our magic numbers
+            // are too low, we'll autosave every time.
+            self.time_since_last_full_save = std::time::Instant::now();
+            self.patches_since_last_save = 0;
+            increment_counter!("save_compact");
             storage.compact(document_id.clone(), to_save)
         } else {
             let to_save = {
                 let mut doc = self.document.write();
+                increment_counter!("save_incremental");
                 doc.automerge.save_incremental()
             };
             storage.append(document_id.clone(), to_save)
         };
+
         match self.state {
             DocState::Sync(ref mut futs) => {
                 futs.push(storage_fut);
@@ -732,7 +748,6 @@ impl DocumentInfo {
         }
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
-        self.patches_since_last_save = 0;
     }
 
     /// Apply incoming sync messages,
