@@ -726,11 +726,13 @@ impl DocumentInfo {
             // are too low, we'll autosave every time.
             self.time_since_last_full_save = std::time::Instant::now();
             self.patches_since_last_save = 0;
+            tracing::debug!("Compacting Document");
             increment_counter!("save_compact");
             storage.compact(document_id.clone(), to_save)
         } else {
             let to_save = {
                 let mut doc = self.document.write();
+                tracing::debug!("Incremental Update");
                 increment_counter!("save_incremental");
                 doc.automerge.save_incremental()
             };
