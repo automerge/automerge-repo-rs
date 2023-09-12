@@ -716,7 +716,8 @@ impl DocumentInfo {
             return;
         }
         let since_last_compact = std::time::Instant::now() - self.time_since_last_full_save;
-        let should_compact = since_last_compact.as_secs() > 60;
+        // TODO -- don't `true` this...
+        let should_compact = true;
         let storage_fut = if should_compact {
             let to_save = {
                 let mut doc = self.document.write();
