@@ -136,8 +136,8 @@ impl AsyncInMemoryStorage {
                     StorageRequest::Compact(doc_id, data, sender) => {
                         let _entry = documents
                             .entry(doc_id)
-                            .and_modify(|entry| *entry = data)
-                            .or_insert_with(Default::default);
+                            .and_modify(|entry| *entry = data.clone())
+                            .or_insert_with(|| data);
                         let (tx, rx) = oneshot();
                         results.push_back(tx);
                         tokio::spawn(async move {
