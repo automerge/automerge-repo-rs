@@ -157,7 +157,7 @@ impl FsStore {
         // Load all the data we have into a doc
         match Chunks::load(&self.root, id) {
             Ok(Some(chunks)) => {
-                let mut doc = chunks
+                let doc = chunks
                     .to_doc()
                     .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
 
