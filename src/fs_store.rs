@@ -86,7 +86,7 @@ impl FsStore {
     pub fn get(&self, id: &DocumentId) -> Result<Option<Vec<u8>>, Error> {
         let chunks = Chunks::load(&self.root, id)?;
         let Some(chunks) = chunks else {
-            return Ok(None)
+            return Ok(None);
         };
         let mut result = Vec::new();
         result.extend(chunks.snapshots.into_values().flatten());
@@ -163,7 +163,7 @@ impl FsStore {
         // Load all the data we have into a doc
         let Some(chunks) = Chunks::load(&self.root, id)? else {
             tracing::warn!(doc_id=%id, "attempted to compact non-existent document");
-            return Ok(())
+            return Ok(());
         };
         let mut doc = chunks
             .to_doc()
@@ -382,7 +382,8 @@ impl Chunks {
                 tracing::warn!(bad_file=%path.display(), "unexpected non-file in level2 path");
                 continue;
             }
-            let Some(chunk_name) = entry.file_name().to_str().and_then(SavedChunkName::parse) else {
+            let Some(chunk_name) = entry.file_name().to_str().and_then(SavedChunkName::parse)
+            else {
                 tracing::warn!(bad_file=%path.display(), "unexpected non-chunk file in level2 path");
                 continue;
             };
