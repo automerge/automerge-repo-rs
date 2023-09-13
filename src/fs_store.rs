@@ -144,12 +144,6 @@ impl FsStore {
 
     pub fn append(&self, id: &DocumentId, changes: &[u8]) -> Result<(), Error> {
         let paths = DocIdPaths::from(id);
-        std::fs::create_dir_all(paths.level2_path(&self.root)).map_err(|e| {
-            Error(ErrorKind::CreateLevel2Path(
-                paths.level2_path(&self.root),
-                e,
-            ))
-        })?;
 
         let chunk_name = SavedChunkName::new_incremental(changes);
         write_chunk(&self.root, &paths, changes, chunk_name)?;
@@ -157,31 +151,44 @@ impl FsStore {
         Ok(())
     }
 
-    pub fn compact(&self, id: &DocumentId, _full_doc: &[u8]) -> Result<(), Error> {
+    pub fn compact(&self, id: &DocumentId, full_doc: &[u8]) -> Result<(), Error> {
         let paths = DocIdPaths::from(id);
 
         // Load all the data we have into a doc
-        let Some(chunks) = Chunks::load(&self.root, id)? else {
-            tracing::warn!(doc_id=%id, "attempted to compact non-existent document");
-            return Ok(());
-        };
-        let mut doc = chunks
-            .to_doc()
-            .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
+        match Chunks::load(&self.root, id) {
+            Ok(Some(chunks)) => {
+                let mut doc = chunks
+                    .to_doc()
+                    .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
 
-        // Write the snapshot
-        let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
-        let chunk = doc.save();
-        write_chunk(&self.root, &paths, &chunk, output_chunk_name)?;
+                // Write the snapshot
+                let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
+                let chunk = doc.save();
+                write_chunk(&self.root, &paths, &chunk, output_chunk_name)?;
 
-        // Remove all the old data
-        for incremental in chunks.incrementals.keys() {
-            let path = paths.chunk_path(&self.root, incremental);
-            std::fs::remove_file(&path).map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
-        }
-        for snapshot in chunks.snapshots.keys() {
-            let path = paths.chunk_path(&self.root, snapshot);
-            std::fs::remove_file(&path).map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
+                // Remove all the old data
+                for incremental in chunks.incrementals.keys() {
+                    let path = paths.chunk_path(&self.root, incremental);
+                    std::fs::remove_file(&path)
+                        .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
+                }
+                for snapshot in chunks.snapshots.keys() {
+                    let path = paths.chunk_path(&self.root, snapshot);
+                    std::fs::remove_file(&path)
+                        .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
+                }
+            }
+            Ok(None) => {
+                let output_chunk_name = SavedChunkName {
+                    hash: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                    chunk_type: ChunkType::Snapshot,
+                };
+                // Write the snapshot
+                write_chunk(&self.root, &paths, &full_doc, output_chunk_name)?;
+            }
+            Err(e) => {
+                tracing::error!(e=%e, "Error loading chunks");
+            }
         }
         Ok(())
     }
@@ -205,6 +212,9 @@ fn write_chunk(
         .as_file_mut()
         .sync_all()
         .map_err(|e| Error(ErrorKind::WriteTempFile(temp_save_path.clone(), e)))?;
+
+    std::fs::create_dir_all(paths.level2_path(&root))
+        .map_err(|e| Error(ErrorKind::CreateLevel2Path(paths.level2_path(&root), e)))?;
 
     // Move the temporary file into a snapshot in the document data directory
     // with a name based on the hash of the heads of the document
