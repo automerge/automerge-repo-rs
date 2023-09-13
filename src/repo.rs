@@ -737,7 +737,6 @@ impl DocumentInfo {
             };
             (storage.append(document_id.clone(), to_save), new_heads)
         };
-
         match self.state {
             DocState::Sync(ref mut futs) => {
                 futs.push(storage_fut);

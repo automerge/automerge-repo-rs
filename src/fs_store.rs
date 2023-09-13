@@ -425,7 +425,6 @@ impl Chunks {
                 }
             }
         }
-        tracing::debug!("Returning chunks and snapshots");
         Ok(Some(Chunks {
             snapshots,
             incrementals,
@@ -440,7 +439,6 @@ impl Chunks {
         for chunk in self.incrementals.values() {
             bytes.extend(chunk);
         }
-        tracing::debug!("Going to load doc");
         automerge::Automerge::load(&bytes)
     }
 }
