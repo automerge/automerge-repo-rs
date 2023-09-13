@@ -560,7 +560,6 @@ pub(crate) struct DocumentInfo {
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
     /// Counter of patches since last save,
     /// used to make decisions about full or incemental saves.
-    #[deprecated]
     patches_since_last_save: usize,
     /// Time since last save
     /// used to make decisions about full or incremental saves.
@@ -715,7 +714,7 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let since_last_compact = std::time::Instant::now() - self.time_since_last_full_save;
+        let _since_last_compact = std::time::Instant::now() - self.time_since_last_full_save;
         // TODO -- don't `true` this...
         let should_compact = true;
         let storage_fut = if should_compact {

@@ -184,7 +184,7 @@ impl FsStore {
                     chunk_type: ChunkType::Snapshot,
                 };
                 // Write the snapshot
-                write_chunk(&self.root, &paths, &full_doc, output_chunk_name)?;
+                write_chunk(&self.root, &paths, full_doc, output_chunk_name)?;
             }
             Err(e) => {
                 tracing::error!(e=%e, "Error loading chunks");
@@ -213,8 +213,8 @@ fn write_chunk(
         .sync_all()
         .map_err(|e| Error(ErrorKind::WriteTempFile(temp_save_path.clone(), e)))?;
 
-    std::fs::create_dir_all(paths.level2_path(&root))
-        .map_err(|e| Error(ErrorKind::CreateLevel2Path(paths.level2_path(&root), e)))?;
+    std::fs::create_dir_all(paths.level2_path(root))
+        .map_err(|e| Error(ErrorKind::CreateLevel2Path(paths.level2_path(root), e)))?;
 
     // Move the temporary file into a snapshot in the document data directory
     // with a name based on the hash of the heads of the document
