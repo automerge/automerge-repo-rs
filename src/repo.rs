@@ -555,9 +555,9 @@ pub(crate) struct DocumentInfo {
     sync_states: HashMap<RepoId, SyncState>,
     /// Used to resolve futures for DocHandle::changed.
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
-    /// Counter of patches since last save,
+    /// Counter of patches since last compact,
     /// used to make decisions about full or incemental saves.
-    patches_since_last_save: usize,
+    patches_since_last_compact: usize,
     /// Last heads obtained from the automerge doc.
     last_heads: Vec<ChangeHash>,
 }
@@ -578,7 +578,7 @@ impl DocumentInfo {
             handle_count,
             sync_states: Default::default(),
             change_observers: Default::default(),
-            patches_since_last_save: 0,
+            patches_since_last_compact: 0,
             last_heads,
         }
     }
@@ -597,7 +597,7 @@ impl DocumentInfo {
             | DocState::Error
             | DocState::LoadPending { .. }
             | DocState::Bootstrap { .. } => {
-                assert_eq!(self.patches_since_last_save, 0);
+                assert_eq!(self.patches_since_last_compact, 0);
                 DocState::PendingRemoval(vec![])
             }
             DocState::Sync(ref mut storage_fut) => DocState::PendingRemoval(mem::take(storage_fut)),
@@ -701,7 +701,10 @@ impl DocumentInfo {
             changes.len()
         };
         let has_patches = count > 0;
-        self.patches_since_last_save = self.patches_since_last_save.checked_add(count).unwrap_or(0);
+        self.patches_since_last_compact = self
+            .patches_since_last_compact
+            .checked_add(count)
+            .unwrap_or(0);
         has_patches
     }
 
@@ -720,12 +723,13 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let should_compact = self.patches_since_last_save > 10;
+        let should_compact = self.patches_since_last_compact > 10;
         let (storage_fut, new_heads) = if should_compact {
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
+            self.patches_since_last_compact = 0;
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
             let (to_save, new_heads) = {
@@ -748,7 +752,6 @@ impl DocumentInfo {
         }
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
-        self.patches_since_last_save = 0;
         self.last_heads = new_heads;
     }
 
