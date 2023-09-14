@@ -570,9 +570,11 @@ pub(crate) struct DocumentInfo {
     peer_connections: HashMap<RepoId, PeerConnection>,
     /// Used to resolve futures for DocHandle::changed.
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
-    /// Counter of patches since last save,
+    /// Counter of changes since last compact,
     /// used to make decisions about full or incemental saves.
-    patches_since_last_save: usize,
+    changes_since_last_compact: usize,
+    /// The number of changes after which a compaction will be performed.
+    allowable_changes_until_compaction: usize,
     /// Last heads obtained from the automerge doc.
     last_heads: Vec<ChangeHash>,
 }
@@ -637,7 +639,8 @@ impl DocumentInfo {
             handle_count,
             peer_connections: Default::default(),
             change_observers: Default::default(),
-            patches_since_last_save: 0,
+            changes_since_last_compact: 0,
+            allowable_changes_until_compaction: 10,
             last_heads,
         }
     }
@@ -656,7 +659,7 @@ impl DocumentInfo {
             | DocState::Error
             | DocState::LoadPending { .. }
             | DocState::Bootstrap { .. } => {
-                assert_eq!(self.patches_since_last_save, 0);
+                assert_eq!(self.changes_since_last_compact, 0);
                 DocState::PendingRemoval(vec![])
             }
             DocState::Sync(ref mut storage_fut) => DocState::PendingRemoval(mem::take(storage_fut)),
@@ -754,13 +757,16 @@ impl DocumentInfo {
     /// Count patches since last save,
     /// returns whether there were any.
     fn note_changes(&mut self) -> bool {
+        // TODO, Can we do this without a read lock?
+        // I think that if the changes update last_heads and
+        // we store `last_heads_since_note` we can get a bool out of this.
         let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
             changes.len()
         };
         let has_patches = count > 0;
-        self.patches_since_last_save = self.patches_since_last_save.checked_add(count).unwrap_or(0);
+        self.changes_since_last_compact = self.changes_since_last_compact.saturating_add(count);
         has_patches
     }
 
@@ -779,12 +785,14 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let should_compact = self.patches_since_last_save > 10;
+        let should_compact =
+            self.changes_since_last_compact > self.allowable_changes_until_compaction;
         let (storage_fut, new_heads) = if should_compact {
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
+            self.changes_since_last_compact = 0;
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
             let (to_save, new_heads) = {
@@ -807,7 +815,6 @@ impl DocumentInfo {
         }
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id));
         self.state.poll_pending_save(waker);
-        self.patches_since_last_save = 0;
         self.last_heads = new_heads;
     }
 
@@ -1361,6 +1368,7 @@ impl Repo {
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     if !info.note_changes() {
+                        println!("Doc didn't change");
                         // Stop here if the document wasn't actually changed.
                         return;
                     }
