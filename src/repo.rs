@@ -704,6 +704,8 @@ impl DocumentInfo {
         let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
+            println!("last: {:?}, current: {:?}", self.last_heads, doc.automerge.get_heads());
+            //self.last_heads = doc.automerge.get_heads();
             changes.len()
         };
         let has_patches = count > 0;
@@ -1231,16 +1233,13 @@ impl Repo {
                 // Handle doc changes: sync the document.
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
-                    if !info.note_changes() {
-                        println!("Doc didn't change");
-                        // Stop here if the document wasn't actually changed.
-                        return;
+                    if info.note_changes() {
+                        self.documents_with_changes.push(doc_id.clone());
                     }
                     let is_first_edit = matches!(info.state, DocState::LocallyCreatedNotEdited);
                     if is_first_edit {
                         info.state = DocState::Sync(vec![]);
                     }
-                    self.documents_with_changes.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -1255,6 +1254,7 @@ impl Repo {
                         self.sinks_to_poll.insert(to_repo_id);
                     }
                     if is_first_edit {
+                        println!("First edit");
                         // Send a sync message to all other repos we are connected with.
                         for repo_id in self.remote_repos.keys() {
                             if let Some(message) = info.generate_first_sync_message(repo_id.clone())
@@ -1348,6 +1348,7 @@ impl Repo {
                         let state = info.document.read();
                         state.automerge.get_heads()
                     };
+                    println!("Change observer: {:?} {:?}", current_heads, change_hash);
                     if current_heads == change_hash {
                         info.change_observers.push(observer);
                     } else {
@@ -1473,8 +1474,9 @@ impl Repo {
                 .expect("Doc should have an info by now.");
 
             if info.receive_sync_message(per_remote) {
-                info.note_changes();
-                self.documents_with_changes.push(document_id.clone());
+                if info.note_changes() {
+                    self.documents_with_changes.push(document_id.clone());
+                }
             }
 
             // Note: since receiving and generating sync messages is done
