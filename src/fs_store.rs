@@ -157,6 +157,7 @@ impl FsStore {
         // Load all the data we have into a doc
         match Chunks::load(&self.root, id) {
             Ok(Some(chunks)) => {
+                println!("hmm...");
                 let doc = chunks
                     .to_doc()
                     .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
@@ -164,21 +165,32 @@ impl FsStore {
                 // Write the snapshot
                 let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
                 let chunk = doc.save();
-                write_chunk(&self.root, &paths, &chunk, output_chunk_name)?;
+                println!("Going to write: {:#?}", output_chunk_name);
+                write_chunk(&self.root, &paths, &chunk, output_chunk_name.clone())?;
 
                 // Remove all the old data
                 for incremental in chunks.incrementals.keys() {
                     let path = paths.chunk_path(&self.root, incremental);
+                    println!("Removing {:?}", path);
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
                 }
+                let just_wrote = paths.chunk_path(&self.root, &output_chunk_name);
                 for snapshot in chunks.snapshots.keys() {
                     let path = paths.chunk_path(&self.root, snapshot);
+                    println!("Removing Snap {:?}", path);
+
+                    if path == just_wrote {
+                        tracing::error!("Somehow trying to delete the same path we just wrote to. Not today Satan");
+                        continue;
+                    }
+
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
                 }
             }
             Ok(None) => {
+                println!("No existing files,and compaction requested first");
                 let output_chunk_name = SavedChunkName {
                     hash: uuid::Uuid::new_v4().as_bytes().to_vec(),
                     chunk_type: ChunkType::Snapshot,
@@ -187,6 +199,7 @@ impl FsStore {
                 write_chunk(&self.root, &paths, full_doc, output_chunk_name)?;
             }
             Err(e) => {
+                println!("Error loading chunks for {:?} {}", self.root, id);
                 tracing::error!(e=%e, "Error loading chunks");
             }
         }
@@ -219,6 +232,10 @@ fn write_chunk(
     // Move the temporary file into a snapshot in the document data directory
     // with a name based on the hash of the heads of the document
     let output_path = paths.chunk_path(root, &name);
+
+    tracing::warn!("Renaming: {:?}", temp_save);
+    tracing::warn!("To: {:?}", output_path);
+
     std::fs::rename(&temp_save_path, &output_path)
         .map_err(|e| Error(ErrorKind::RenameTempFile(temp_save_path, output_path, e)))?;
 
@@ -286,13 +303,13 @@ impl DocIdPaths {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum ChunkType {
     Snapshot,
     Incremental,
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 struct SavedChunkName {
     hash: Vec<u8>,
     chunk_type: ChunkType,
@@ -355,7 +372,7 @@ impl Chunks {
     fn load(root: &Path, doc_id: &DocumentId) -> Result<Option<Self>, Error> {
         let doc_id_hash = DocIdPaths::from(doc_id);
         let level2_path = doc_id_hash.level2_path(root);
-        tracing::debug!(
+        tracing::warn!(
             root=%root.display(),
             doc_id=?doc_id,
             doc_path=%level2_path.display(),
@@ -439,7 +456,11 @@ impl Chunks {
         for chunk in self.incrementals.values() {
             bytes.extend(chunk);
         }
-        automerge::Automerge::load(&bytes)
+
+        automerge::Automerge::load_with_options(
+            &bytes,
+            automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore),
+        )
     }
 }
 

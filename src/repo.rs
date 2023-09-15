@@ -557,7 +557,7 @@ pub(crate) struct DocumentInfo {
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
     /// Counter of local saves since last compact,
     /// used to make decisions about full or incemental saves.
-    saves_since_last_compact: usize,
+    patches_since_last_compact: usize,
     ///
     allowable_changes_until_compaction: usize,
     /// Last heads obtained from the automerge doc.
@@ -580,7 +580,7 @@ impl DocumentInfo {
             handle_count,
             sync_states: Default::default(),
             change_observers: Default::default(),
-            saves_since_last_compact: 0,
+            patches_since_last_compact: 0,
             allowable_changes_until_compaction: 10,
             last_heads,
         }
@@ -600,7 +600,7 @@ impl DocumentInfo {
             | DocState::Error
             | DocState::LoadPending { .. }
             | DocState::Bootstrap { .. } => {
-                assert_eq!(self.saves_since_last_compact, 0);
+                assert_eq!(self.patches_since_last_compact, 0);
                 DocState::PendingRemoval(vec![])
             }
             DocState::Sync(ref mut storage_fut) => DocState::PendingRemoval(mem::take(storage_fut)),
@@ -704,14 +704,18 @@ impl DocumentInfo {
         let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
-            println!("last: {:?}, current: {:?}", self.last_heads, doc.automerge.get_heads());
+            println!(
+                "last: {:?}, current: {:?}",
+                self.last_heads,
+                doc.automerge.get_heads()
+            );
             //self.last_heads = doc.automerge.get_heads();
             changes.len()
         };
         let has_patches = count > 0;
         println!("Has patches: {:?}", has_patches);
-        self.saves_since_last_compact = self
-            .saves_since_last_compact
+        self.patches_since_last_compact = self
+            .patches_since_last_compact
             .checked_add(count)
             .unwrap_or(0);
         has_patches
@@ -735,14 +739,14 @@ impl DocumentInfo {
             return;
         }
         let should_compact =
-            self.saves_since_last_compact > self.allowable_changes_until_compaction;
+            self.patches_since_last_compact > self.allowable_changes_until_compaction;
         let (storage_fut, new_heads) = if should_compact {
             println!("We decided to Compact the document");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
-            self.saves_since_last_compact = 0;
+            self.patches_since_last_compact = 0;
             println!("Since compact is zero");
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
@@ -754,8 +758,11 @@ impl DocumentInfo {
                     doc.automerge.get_heads(),
                 )
             };
-            self.saves_since_last_compact.checked_add(1).unwrap_or(0);
-            println!("Saves since last compact {}", self.saves_since_last_compact);
+            self.patches_since_last_compact.checked_add(1).unwrap_or(0);
+            println!(
+                "Saves since last compact {}",
+                self.patches_since_last_compact
+            );
             (storage.append(document_id.clone(), to_save), new_heads)
         };
         match self.state {
