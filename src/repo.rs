@@ -727,19 +727,24 @@ impl DocumentInfo {
         storage: &dyn Storage,
         wake_sender: &Sender<WakeSignal>,
     ) {
+        println!("We decided to save the document");
         if !self.state.should_save() {
+            println!("No");
             return;
         }
         let should_compact =
             self.saves_since_last_compact > self.allowable_changes_until_compaction;
         let (storage_fut, new_heads) = if should_compact {
+            println!("We decided to Compact the document");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
             self.saves_since_last_compact = 0;
+            println!("Since compact is zero");
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
+            println!("We decided to incremental the document");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (
@@ -748,6 +753,7 @@ impl DocumentInfo {
                 )
             };
             self.saves_since_last_compact.checked_add(1).unwrap_or(0);
+            println!("Saves since last compact {}", self.saves_since_last_compact);
             (storage.append(document_id.clone(), to_save), new_heads)
         };
         match self.state {
