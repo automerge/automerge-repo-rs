@@ -701,18 +701,18 @@ impl DocumentInfo {
         // TODO, Can we do this without a read lock?
         // I think that if the changes update last_heads and
         // we store `last_heads_since_note` we can get a bool out of this.
-        true
-        /*let count = {
+        let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
             changes.len()
         };
         let has_patches = count > 0;
+        println!("Has patches: {:?}", has_patches);
         self.saves_since_last_compact = self
             .saves_since_last_compact
             .checked_add(count)
             .unwrap_or(0);
-        has_patches*/
+        has_patches
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
@@ -1232,6 +1232,7 @@ impl Repo {
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     if !info.note_changes() {
+                        println!("Doc didn't change");
                         // Stop here if the document wasn't actually changed.
                         return;
                     }
