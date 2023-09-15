@@ -763,6 +763,11 @@ impl DocumentInfo {
         let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
+            tracing::trace!(
+                last_heads=?self.last_heads,
+                current_heads=?doc.automerge.get_heads(),
+                "checking for changes since last save"
+            );
             changes.len()
         };
         let has_patches = count > 0;
@@ -1367,16 +1372,16 @@ impl Repo {
                 // Handle doc changes: sync the document.
                 let local_repo_id = self.get_repo_id().clone();
                 if let Some(info) = self.documents.get_mut(&doc_id) {
-                    if !info.note_changes() {
-                        println!("Doc didn't change");
-                        // Stop here if the document wasn't actually changed.
-                        return;
+                    // only run the documents_with_changes workflow if there
+                    // was a change, but always generate potential sync messages
+                    // (below)
+                    if info.note_changes() {
+                        self.documents_with_changes.push(doc_id.clone());
                     }
                     let is_first_edit = matches!(info.state, DocState::LocallyCreatedNotEdited);
                     if is_first_edit {
                         info.state = DocState::Sync(vec![]);
                     }
-                    self.documents_with_changes.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -1470,13 +1475,18 @@ impl Repo {
                     &self.repo_id,
                 );
             }
-            RepoEvent::AddChangeObserver(doc_id, change_hash, mut observer) => {
+            RepoEvent::AddChangeObserver(doc_id, last_heads, mut observer) => {
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     let current_heads = {
                         let state = info.document.read();
                         state.automerge.get_heads()
                     };
-                    if current_heads == change_hash {
+                    tracing::trace!(
+                        ?current_heads,
+                        ?last_heads,
+                        "handling AddChangeObserver event"
+                    );
+                    if current_heads == last_heads {
                         info.change_observers.push(observer);
                     } else {
                         // Resolve now if the document hash already changed.
@@ -1580,8 +1590,7 @@ impl Repo {
                 .expect("Doc should have an info by now.");
 
             let (has_changes, peer_conn_commands) = info.receive_sync_message(per_remote);
-            if has_changes {
-                info.note_changes();
+            if has_changes && info.note_changes() {
                 self.documents_with_changes.push(document_id.clone());
             }
 

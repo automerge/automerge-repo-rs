@@ -31,14 +31,22 @@ async fn test_document_changed_over_sync() {
         // Request the document.
         let doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
         doc_handle.with_doc_mut(|doc| {
-            let mut tx = doc.transaction();
-            tx.put(
-                automerge::ROOT,
-                "repo_id",
-                format!("{}", repo_handle_2.get_repo_id()),
-            )
-            .expect("Failed to change the document.");
-            tx.commit();
+            let val = doc
+                .get(automerge::ROOT, "repo_id")
+                .expect("Failed to read the document.")
+                .unwrap();
+            tracing::debug!(heads=?doc.get_heads(), ?val, "before repo_handle_2 makes edit");
+            {
+                let mut tx = doc.transaction();
+                tx.put(
+                    automerge::ROOT,
+                    "repo_id",
+                    format!("{}", repo_handle_2.get_repo_id()),
+                )
+                .expect("Failed to change the document.");
+                tx.commit();
+            }
+            tracing::debug!(heads=?doc.get_heads(), "after repo_handle_2 makes edit");
         });
     });
 
@@ -64,6 +72,7 @@ async fn test_document_changed_over_sync() {
             .get(automerge::ROOT, "repo_id")
             .expect("Failed to read the document.")
             .unwrap();
+        tracing::debug!(?val, "after repo_handle_1 received sync");
         assert_eq!(val.0.to_str().unwrap(), "repo1".to_string());
     });
 
