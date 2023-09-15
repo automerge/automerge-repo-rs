@@ -1,6 +1,7 @@
 use automerge::transaction::Transactable;
 use automerge_repo::fs_store;
 use itertools::Itertools;
+use uuid::Uuid;
 
 /// Asserts that the &[u8] in `data` is some permutation of the chunks of Vec<&[u8> in `expected`
 macro_rules! assert_permutation_of {

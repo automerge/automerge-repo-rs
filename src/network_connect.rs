@@ -35,7 +35,7 @@ impl RepoHandle {
                     Ok(repo_msg)
                 }
                 Ok(m) => {
-                    tracing::warn!(?m, repo_id=?repo_id, "Received non-repo message");
+                    tracing::trace!(?m, repo_id=?repo_id, "Received non-repo message");
                     Err(NetworkError::Error)
                 }
                 Err(e) => {

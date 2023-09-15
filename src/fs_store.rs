@@ -106,7 +106,7 @@ impl FsStore {
                 .map_err(|e| Error(ErrorKind::ErrReadingLevel1Path(entry.path(), e)))?
                 .is_file()
             {
-                tracing::warn!(
+                tracing::trace!(
                     non_dir_path=%entry.path().display(),
                     "unexpected non-directory at level1 of database"
                 );
@@ -123,14 +123,14 @@ impl FsStore {
                     .metadata()
                     .map_err(|e| Error(ErrorKind::ErrReadingLevel2Path(entry.path(), e)))?;
                 if !metadata.is_dir() {
-                    tracing::warn!(
+                    tracing::trace!(
                         non_file_path=%entry.path().display(),
                         "unexpected non-directory at level2 of database"
                     );
                     continue;
                 }
                 let Some(doc_paths) = DocIdPaths::parse(entry.path()) else {
-                    tracing::warn!(
+                    tracing::trace!(
                         non_doc_path=%entry.path().display(),
                         "unexpected non-document path at level2 of database"
                     );
@@ -157,7 +157,6 @@ impl FsStore {
         // Load all the data we have into a doc
         match Chunks::load(&self.root, id) {
             Ok(Some(chunks)) => {
-                println!("hmm...");
                 let doc = chunks
                     .to_doc()
                     .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
@@ -165,23 +164,20 @@ impl FsStore {
                 // Write the snapshot
                 let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
                 let chunk = doc.save();
-                println!("Going to write: {:#?}", output_chunk_name);
                 write_chunk(&self.root, &paths, &chunk, output_chunk_name.clone())?;
 
                 // Remove all the old data
                 for incremental in chunks.incrementals.keys() {
                     let path = paths.chunk_path(&self.root, incremental);
-                    println!("Removing {:?}", path);
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
                 }
                 let just_wrote = paths.chunk_path(&self.root, &output_chunk_name);
                 for snapshot in chunks.snapshots.keys() {
                     let path = paths.chunk_path(&self.root, snapshot);
-                    println!("Removing Snap {:?}", path);
 
                     if path == just_wrote {
-                        tracing::error!("Somehow trying to delete the same path we just wrote to. Not today Satan");
+                        tracing::trace!("Somehow trying to delete the same path we just wrote to. Not today Satan");
                         continue;
                     }
 
@@ -190,7 +186,6 @@ impl FsStore {
                 }
             }
             Ok(None) => {
-                println!("No existing files,and compaction requested first");
                 let output_chunk_name = SavedChunkName {
                     hash: uuid::Uuid::new_v4().as_bytes().to_vec(),
                     chunk_type: ChunkType::Snapshot,
@@ -199,7 +194,6 @@ impl FsStore {
                 write_chunk(&self.root, &paths, full_doc, output_chunk_name)?;
             }
             Err(e) => {
-                println!("Error loading chunks for {:?} {}", self.root, id);
                 tracing::error!(e=%e, "Error loading chunks");
             }
         }
@@ -233,8 +227,8 @@ fn write_chunk(
     // with a name based on the hash of the heads of the document
     let output_path = paths.chunk_path(root, &name);
 
-    tracing::warn!("Renaming: {:?}", temp_save);
-    tracing::warn!("To: {:?}", output_path);
+    tracing::trace!("Renaming: {:?}", temp_save);
+    tracing::trace!("To: {:?}", output_path);
 
     std::fs::rename(&temp_save_path, &output_path)
         .map_err(|e| Error(ErrorKind::RenameTempFile(temp_save_path, output_path, e)))?;
@@ -372,7 +366,7 @@ impl Chunks {
     fn load(root: &Path, doc_id: &DocumentId) -> Result<Option<Self>, Error> {
         let doc_id_hash = DocIdPaths::from(doc_id);
         let level2_path = doc_id_hash.level2_path(root);
-        tracing::warn!(
+        tracing::trace!(
             root=%root.display(),
             doc_id=?doc_id,
             doc_path=%level2_path.display(),
@@ -408,12 +402,12 @@ impl Chunks {
                 .map_err(|e| Error(ErrorKind::ErrReadingChunkFileMetadata(path.clone(), e)))?
                 .is_file()
             {
-                tracing::warn!(bad_file=%path.display(), "unexpected non-file in level2 path");
+                tracing::trace!(bad_file=%path.display(), "unexpected non-file in level2 path");
                 continue;
             }
             let Some(chunk_name) = entry.file_name().to_str().and_then(SavedChunkName::parse)
             else {
-                tracing::warn!(bad_file=%path.display(), "unexpected non-chunk file in level2 path");
+                tracing::trace!(bad_file=%path.display(), "unexpected non-chunk file in level2 path");
                 continue;
             };
             tracing::debug!(chunk_path=%path.display(), "reading chunk file");
@@ -423,7 +417,7 @@ impl Chunks {
                     match e.kind() {
                         std::io::ErrorKind::NotFound => {
                             // Could be a concurrent process compacting, not an error
-                            tracing::warn!(
+                            tracing::trace!(
                                 missing_chunk_path=%path.display(),
                                 "chunk file disappeared while reading chunks",
                             );

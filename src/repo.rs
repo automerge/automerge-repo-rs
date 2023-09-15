@@ -704,7 +704,7 @@ impl DocumentInfo {
         let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
-            println!(
+            tracing::trace!(
                 "last: {:?}, current: {:?}",
                 self.last_heads,
                 doc.automerge.get_heads()
@@ -713,7 +713,6 @@ impl DocumentInfo {
             changes.len()
         };
         let has_patches = count > 0;
-        println!("Has patches: {:?}", has_patches);
         self.patches_since_last_compact = self
             .patches_since_last_compact
             .checked_add(count)
@@ -733,24 +732,19 @@ impl DocumentInfo {
         storage: &dyn Storage,
         wake_sender: &Sender<WakeSignal>,
     ) {
-        println!("We decided to save the document");
         if !self.state.should_save() {
-            println!("No");
             return;
         }
         let should_compact =
             self.patches_since_last_compact > self.allowable_changes_until_compaction;
         let (storage_fut, new_heads) = if should_compact {
-            println!("We decided to Compact the document");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
             self.patches_since_last_compact = 0;
-            println!("Since compact is zero");
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
-            println!("We decided to incremental the document");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (
@@ -759,10 +753,6 @@ impl DocumentInfo {
                 )
             };
             self.patches_since_last_compact.checked_add(1).unwrap_or(0);
-            println!(
-                "Saves since last compact {}",
-                self.patches_since_last_compact
-            );
             (storage.append(document_id.clone(), to_save), new_heads)
         };
         match self.state {
@@ -1261,7 +1251,6 @@ impl Repo {
                         self.sinks_to_poll.insert(to_repo_id);
                     }
                     if is_first_edit {
-                        println!("First edit");
                         // Send a sync message to all other repos we are connected with.
                         for repo_id in self.remote_repos.keys() {
                             if let Some(message) = info.generate_first_sync_message(repo_id.clone())
@@ -1355,7 +1344,7 @@ impl Repo {
                         let state = info.document.read();
                         state.automerge.get_heads()
                     };
-                    println!("Change observer: {:?} {:?}", current_heads, change_hash);
+                    tracing::trace!("Change observer: {:?} {:?}", current_heads, change_hash);
                     if current_heads == change_hash {
                         info.change_observers.push(observer);
                     } else {
