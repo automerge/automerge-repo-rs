@@ -193,7 +193,13 @@ impl FsStore {
                 // Write the snapshot
                 let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
                 let chunk = doc.save();
-                write_chunk(&self.root, &paths, &chunk, output_chunk_name, &self.tmpdir)?;
+                write_chunk(
+                    &self.root,
+                    &paths,
+                    &chunk,
+                    output_chunk_name.clone(),
+                    &self.tmpdir,
+                )?;
 
                 // Remove all the old data
                 for incremental in chunks.incrementals.keys() {
@@ -201,8 +207,19 @@ impl FsStore {
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
                 }
+                let just_wrote = paths.chunk_path(&self.root, &output_chunk_name);
                 for snapshot in chunks.snapshots.keys() {
                     let path = paths.chunk_path(&self.root, snapshot);
+
+                    if path == just_wrote {
+                        tracing::error!(
+                            ?path,
+                            "Somehow trying to delete the same path we just wrote to. Not today \
+                            Satan"
+                        );
+                        continue;
+                    }
+
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
                 }
@@ -261,6 +278,7 @@ fn write_chunk(
     // Move the temporary file into a snapshot in the document data directory
     // with a name based on the hash of the heads of the document
     let output_path = paths.chunk_path(root, &name);
+    tracing::trace!(?temp_save_path, ?output_path, "renaming chunk file");
     std::fs::rename(&temp_save_path, &output_path)
         .map_err(|e| Error(ErrorKind::RenameTempFile(temp_save_path, output_path, e)))?;
 
@@ -327,13 +345,13 @@ impl DocIdPaths {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum ChunkType {
     Snapshot,
     Incremental,
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 struct SavedChunkName {
     hash: Vec<u8>,
     chunk_type: ChunkType,
@@ -449,7 +467,7 @@ impl Chunks {
                             // Could be a concurrent process compacting, not an error
                             tracing::warn!(
                                 missing_chunk_path=%path.display(),
-                                "chunk file disappeared while reading chunks",
+                                "chunk file disappeared while reading chunks; ignoring",
                             );
                             continue;
                         }
