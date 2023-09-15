@@ -555,9 +555,11 @@ pub(crate) struct DocumentInfo {
     sync_states: HashMap<RepoId, SyncState>,
     /// Used to resolve futures for DocHandle::changed.
     change_observers: Vec<RepoFutureResolver<Result<(), RepoError>>>,
-    /// Counter of patches since last compact,
+    /// Counter of local saves since last compact,
     /// used to make decisions about full or incemental saves.
-    patches_since_last_compact: usize,
+    saves_since_last_compact: usize,
+    ///
+    allowable_changes_until_compaction: usize,
     /// Last heads obtained from the automerge doc.
     last_heads: Vec<ChangeHash>,
 }
@@ -578,7 +580,8 @@ impl DocumentInfo {
             handle_count,
             sync_states: Default::default(),
             change_observers: Default::default(),
-            patches_since_last_compact: 0,
+            saves_since_last_compact: 0,
+            allowable_changes_until_compaction: 10,
             last_heads,
         }
     }
@@ -597,7 +600,7 @@ impl DocumentInfo {
             | DocState::Error
             | DocState::LoadPending { .. }
             | DocState::Bootstrap { .. } => {
-                assert_eq!(self.patches_since_last_compact, 0);
+                assert_eq!(self.saves_since_last_compact, 0);
                 DocState::PendingRemoval(vec![])
             }
             DocState::Sync(ref mut storage_fut) => DocState::PendingRemoval(mem::take(storage_fut)),
@@ -695,17 +698,21 @@ impl DocumentInfo {
     /// Count patches since last save,
     /// returns whether there were any.
     fn note_changes(&mut self) -> bool {
-        let count = {
+        // TODO, Can we do this without a read lock?
+        // I think that if the changes update last_heads and
+        // we store `last_heads_since_note` we can get a bool out of this.
+        true
+        /*let count = {
             let doc = self.document.read();
             let changes = doc.automerge.get_changes(&self.last_heads);
             changes.len()
         };
         let has_patches = count > 0;
-        self.patches_since_last_compact = self
-            .patches_since_last_compact
+        self.saves_since_last_compact = self
+            .saves_since_last_compact
             .checked_add(count)
             .unwrap_or(0);
-        has_patches
+        has_patches*/
     }
 
     fn resolve_change_observers(&mut self, result: Result<(), RepoError>) {
@@ -723,13 +730,14 @@ impl DocumentInfo {
         if !self.state.should_save() {
             return;
         }
-        let should_compact = self.patches_since_last_compact > 10;
+        let should_compact =
+            self.saves_since_last_compact > self.allowable_changes_until_compaction;
         let (storage_fut, new_heads) = if should_compact {
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
-            self.patches_since_last_compact = 0;
+            self.saves_since_last_compact = 0;
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
             let (to_save, new_heads) = {
@@ -739,6 +747,7 @@ impl DocumentInfo {
                     doc.automerge.get_heads(),
                 )
             };
+            self.saves_since_last_compact.checked_add(1).unwrap_or(0);
             (storage.append(document_id.clone(), to_save), new_heads)
         };
         match self.state {
