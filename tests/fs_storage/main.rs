@@ -44,7 +44,9 @@ fn fs_store_crud() {
     assert_permutation_of!(result, vec![change1.bytes(), change2.bytes()]);
 
     // now compact
-    store.compact(&doc_id, &[]).unwrap();
+    store
+        .compact(&doc_id, &doc.save(), doc.get_heads())
+        .unwrap();
     let result = store.get(&doc_id).unwrap().unwrap();
     let expected = doc.save();
     assert_eq!(result, expected);

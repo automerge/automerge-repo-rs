@@ -78,11 +78,17 @@ impl Storage for FsStorage {
         &self,
         id: crate::DocumentId,
         full_doc: Vec<u8>,
+        new_heads: Vec<automerge::ChangeHash>,
     ) -> BoxFuture<'static, Result<(), StorageError>> {
         let inner = Arc::clone(&self.inner);
         let inner_id = id.clone();
         self.handle
-            .spawn_blocking(move || inner.lock().unwrap().compact(&inner_id, &full_doc))
+            .spawn_blocking(move || {
+                inner
+                    .lock()
+                    .unwrap()
+                    .compact(&inner_id, &full_doc, new_heads)
+            })
             .map(handle_joinerror)
             .map_err(move |e| {
                 tracing::error!(err=?e, doc=?id, "error compacting chunk to filesystem");

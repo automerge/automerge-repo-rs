@@ -41,6 +41,18 @@ fn test_document_changed_over_sync() {
     peers.insert(repo_handle_2.get_repo_id().clone(), network_1);
     peers.insert(repo_handle_1.get_repo_id().clone(), network_2);
 
+    // Edit the document.
+    document_handle_1.with_doc_mut(|doc| {
+        let mut tx = doc.transaction();
+        tx.put(
+            automerge::ROOT,
+            "repo_id",
+            format!("{}", repo_handle_1.get_repo_id().clone()),
+        )
+        .expect("Failed to change the document.");
+        tx.commit();
+    });
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -53,42 +65,44 @@ fn test_document_changed_over_sync() {
         // Request the document.
         let doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
         doc_handle.with_doc_mut(|doc| {
-            let mut tx = doc.transaction();
-            tx.put(
-                automerge::ROOT,
-                "repo_id",
-                format!("{}", repo_handle_2.get_repo_id()),
-            )
-            .expect("Failed to change the document.");
-            tx.commit();
+            println!("Heads when 2 makes edit: {:?}", doc.get_heads());
+            let id = doc
+                .get(automerge::ROOT, "repo_id")
+                .expect("Failed to read the document.")
+                .unwrap();
+            println!("Id when two makes edit: {:?}", id);
+            {
+                let mut tx = doc.transaction();
+                tx.put(
+                    automerge::ROOT,
+                    "repo_id",
+                    format!("{}", repo_handle_2.get_repo_id()),
+                )
+                .expect("Failed to change the document.");
+                tx.commit();
+            }
+            println!("Heads after 2 makes edit: {:?}", doc.get_heads());
         });
     });
 
     // Spawn a task that awaits the document change.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    let repo_id = repo_handle_1.get_repo_id().clone();
     rt.spawn(async move {
-        // Edit the document.
-        document_handle_1.with_doc_mut(|doc| {
-            let mut tx = doc.transaction();
-            tx.put(automerge::ROOT, "repo_id", format!("{}", repo_id))
-                .expect("Failed to change the document.");
-            tx.commit();
-        });
         loop {
             // Await changes until the edit comes through over sync.
-            document_handle_1.changed().await.unwrap();
             let equals = document_handle_1.with_doc(|doc| {
                 let val = doc
                     .get(automerge::ROOT, "repo_id")
                     .expect("Failed to read the document.")
                     .unwrap();
+                println!("Val: {:?}", val);
                 val.0.to_str().unwrap() == format!("{}", expected_repo_id)
             });
             if equals {
                 done_sync_sender.send(()).await.unwrap();
                 break;
             }
+            document_handle_1.changed().await.unwrap();
         }
     });
 

@@ -1,3 +1,4 @@
+use automerge::ChangeHash;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -113,5 +114,6 @@ pub trait Storage: Send {
         &self,
         _id: DocumentId,
         _full_doc: Vec<u8>,
+        _new_heads: Vec<ChangeHash>,
     ) -> BoxFuture<'static, Result<(), StorageError>>;
 }
