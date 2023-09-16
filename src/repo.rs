@@ -743,7 +743,10 @@ impl DocumentInfo {
                 (doc.automerge.save(), doc.automerge.get_heads())
             };
             self.patches_since_last_compact = 0;
-            (storage.compact(document_id.clone(), to_save), new_heads)
+            (
+                storage.compact(document_id.clone(), to_save, new_heads.clone()),
+                new_heads,
+            )
         } else {
             let (to_save, new_heads) = {
                 let doc = self.document.read();

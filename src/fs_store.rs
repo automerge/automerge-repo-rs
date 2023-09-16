@@ -151,20 +151,20 @@ impl FsStore {
         Ok(())
     }
 
-    pub fn compact(&self, id: &DocumentId, full_doc: &[u8]) -> Result<(), Error> {
+    pub fn compact(
+        &self,
+        id: &DocumentId,
+        full_doc: &[u8],
+        new_heads: Vec<ChangeHash>,
+    ) -> Result<(), Error> {
         let paths = DocIdPaths::from(id);
 
         // Load all the data we have into a doc
         match Chunks::load(&self.root, id) {
             Ok(Some(chunks)) => {
-                let doc = chunks
-                    .to_doc()
-                    .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
-
                 // Write the snapshot
-                let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
-                let chunk = doc.save();
-                write_chunk(&self.root, &paths, &chunk, output_chunk_name.clone())?;
+                let output_chunk_name = SavedChunkName::new_snapshot(new_heads);
+                write_chunk(&self.root, &paths, full_doc, output_chunk_name.clone())?;
 
                 // Remove all the old data
                 for incremental in chunks.incrementals.keys() {
@@ -172,14 +172,8 @@ impl FsStore {
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
                 }
-                let just_wrote = paths.chunk_path(&self.root, &output_chunk_name);
                 for snapshot in chunks.snapshots.keys() {
                     let path = paths.chunk_path(&self.root, snapshot);
-
-                    if path == just_wrote {
-                        tracing::trace!("Somehow trying to delete the same path we just wrote to. Not today Satan");
-                        continue;
-                    }
 
                     std::fs::remove_file(&path)
                         .map_err(|e| Error(ErrorKind::DeleteChunk(path, e)))?;
@@ -441,21 +435,6 @@ impl Chunks {
             incrementals,
         }))
     }
-
-    fn to_doc(&self) -> Result<automerge::Automerge, automerge::AutomergeError> {
-        let mut bytes = Vec::new();
-        for chunk in self.snapshots.values() {
-            bytes.extend(chunk);
-        }
-        for chunk in self.incrementals.values() {
-            bytes.extend(chunk);
-        }
-
-        automerge::Automerge::load_with_options(
-            &bytes,
-            automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore),
-        )
-    }
 }
 
 mod error {
@@ -499,8 +478,6 @@ mod error {
         ErrReadingChunkFile(PathBuf, std::io::Error),
         #[error("error creating level 2 path {0}: {1}")]
         CreateLevel2Path(PathBuf, std::io::Error),
-        #[error("error loading doc to compact: {0}")]
-        LoadDocToCompact(automerge::AutomergeError),
         #[error("error creating temp file: {0}")]
         CreateTempFile(std::io::Error),
         #[error("error writing temp file {0}: {1}")]

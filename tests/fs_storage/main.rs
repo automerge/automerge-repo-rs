@@ -1,7 +1,6 @@
 use automerge::transaction::Transactable;
 use automerge_repo::fs_store;
 use itertools::Itertools;
-use uuid::Uuid;
 
 /// Asserts that the &[u8] in `data` is some permutation of the chunks of Vec<&[u8> in `expected`
 macro_rules! assert_permutation_of {
@@ -45,7 +44,9 @@ fn fs_store_crud() {
     assert_permutation_of!(result, vec![change1.bytes(), change2.bytes()]);
 
     // now compact
-    store.compact(&doc_id, &[]).unwrap();
+    store
+        .compact(&doc_id, &doc.save(), doc.get_heads())
+        .unwrap();
     let result = store.get(&doc_id).unwrap().unwrap();
     let expected = doc.save();
     assert_eq!(result, expected);

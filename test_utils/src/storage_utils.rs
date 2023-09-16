@@ -1,3 +1,4 @@
+use automerge::ChangeHash;
 use automerge_repo::{DocumentId, Storage, StorageError};
 use futures::future::{BoxFuture, TryFutureExt};
 use futures::FutureExt;
@@ -30,6 +31,7 @@ impl Storage for SimpleStorage {
         &self,
         _id: DocumentId,
         _chunk: Vec<u8>,
+        _new_heads: Vec<ChangeHash>,
     ) -> BoxFuture<'static, Result<(), StorageError>> {
         futures::future::ready(Ok(())).boxed()
     }
@@ -76,6 +78,7 @@ impl Storage for InMemoryStorage {
         &self,
         id: DocumentId,
         full_doc: Vec<u8>,
+        _new_heads: Vec<ChangeHash>,
     ) -> BoxFuture<'static, Result<(), StorageError>> {
         let mut documents = self.documents.lock();
         documents.insert(id, full_doc);
@@ -202,6 +205,7 @@ impl Storage for AsyncInMemoryStorage {
         &self,
         id: DocumentId,
         full_doc: Vec<u8>,
+        _new_heads: Vec<ChangeHash>,
     ) -> BoxFuture<'static, Result<(), StorageError>> {
         let (tx, rx) = oneshot();
         self.chan

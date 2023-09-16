@@ -87,7 +87,6 @@ fn test_document_changed_over_sync() {
 
     // Spawn a task that awaits the document change.
     let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    let repo_id = repo_handle_1.get_repo_id().clone();
     rt.spawn(async move {
         loop {
             // Await changes until the edit comes through over sync.
