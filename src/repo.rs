@@ -1515,8 +1515,8 @@ impl Repo {
             loop {
                 self.collect_network_events();
                 self.sync_documents();
-                self.process_outgoing_network_messages();
                 self.process_changed_document();
+                self.process_outgoing_network_messages();
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
                 self.gc_docs();
