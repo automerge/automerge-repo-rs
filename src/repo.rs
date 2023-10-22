@@ -742,10 +742,7 @@ impl DocumentInfo {
             let mut document = self.document.write();
             let start_heads = document.automerge.get_heads();
             for (repo_id, messages) in per_remote {
-                let sync_state = self
-                    .sync_states
-                    .entry(repo_id)
-                    .or_insert_with(SyncState::new);
+                let sync_state = self.sync_states.entry(repo_id).or_default();
 
                 // TODO: remove remote if there is an error.
                 for message in messages {
@@ -763,10 +760,7 @@ impl DocumentInfo {
 
     /// Potentially generate an outgoing sync message.
     fn generate_first_sync_message(&mut self, repo_id: RepoId) -> Option<SyncMessage> {
-        let sync_state = self
-            .sync_states
-            .entry(repo_id)
-            .or_insert_with(SyncState::new);
+        let sync_state = self.sync_states.entry(repo_id).or_default();
         let document = self.document.read();
         document.automerge.generate_sync_message(sync_state)
     }
@@ -1062,10 +1056,8 @@ impl Repo {
                 let mut needs_flush = false;
                 let mut discard = false;
                 loop {
-                    let pending_messages = self
-                        .pending_messages
-                        .entry(repo_id.clone())
-                        .or_insert_with(Default::default);
+                    let pending_messages =
+                        self.pending_messages.entry(repo_id.clone()).or_default();
                     if pending_messages.is_empty() {
                         break;
                     }
@@ -1182,7 +1174,7 @@ impl Repo {
                                     };
                                     self.pending_messages
                                         .entry(to_repo_id.clone())
-                                        .or_insert_with(Default::default)
+                                        .or_default()
                                         .push_back(outgoing);
                                     self.sinks_to_poll.insert(to_repo_id);
                                 }
@@ -1214,7 +1206,7 @@ impl Repo {
                         };
                         self.pending_messages
                             .entry(to_repo_id.clone())
-                            .or_insert_with(Default::default)
+                            .or_default()
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
                     }
@@ -1231,7 +1223,7 @@ impl Repo {
                                 };
                                 self.pending_messages
                                     .entry(repo_id.clone())
-                                    .or_insert_with(Default::default)
+                                    .or_default()
                                     .push_back(outgoing);
                                 self.sinks_to_poll.insert(repo_id.clone());
                             }
@@ -1337,10 +1329,8 @@ impl Repo {
                         sink,
                     };
                     assert!(self.remote_repos.insert(repo_id.clone(), remote).is_none());
-                    let pending_sinks = self
-                        .pending_close_sinks
-                        .entry(repo_id.clone())
-                        .or_insert_with(Default::default);
+                    let pending_sinks =
+                        self.pending_close_sinks.entry(repo_id.clone()).or_default();
                     pending_sinks.push(existing_sink);
                     self.poll_close_sinks(repo_id.clone());
                 } else {
@@ -1364,7 +1354,7 @@ impl Repo {
                         };
                         self.pending_messages
                             .entry(repo_id.clone())
-                            .or_insert_with(Default::default)
+                            .or_default()
                             .push_back(outgoing);
                     }
                 }
@@ -1421,10 +1411,8 @@ impl Repo {
                         continue;
                     }
 
-                    let per_doc = per_doc_messages
-                        .entry(document_id)
-                        .or_insert_with(Default::default);
-                    let per_remote = per_doc.entry(from_repo_id).or_insert_with(Default::default);
+                    let per_doc = per_doc_messages.entry(document_id).or_default();
+                    let per_remote = per_doc.entry(from_repo_id).or_default();
                     per_remote.push_back(message.clone());
                 }
             }
@@ -1458,7 +1446,7 @@ impl Repo {
                 };
                 self.pending_messages
                     .entry(to_repo_id.clone())
-                    .or_insert_with(Default::default)
+                    .or_default()
                     .push_back(outgoing);
                 self.sinks_to_poll.insert(to_repo_id);
             }
@@ -1564,7 +1552,7 @@ impl Repo {
                                                 };
                                                 self.pending_messages
                                                     .entry(to_repo_id.clone())
-                                                    .or_insert_with(Default::default)
+                                                    .or_default()
                                                     .push_back(outgoing);
                                                 self.sinks_to_poll.insert(to_repo_id);
                                             }
@@ -1602,10 +1590,7 @@ impl Repo {
                 .remote_repos
                 .drain()
                 .map(|(repo_id, remote_repo)| {
-                    let pending = self
-                        .pending_close_sinks
-                        .entry(repo_id.clone())
-                        .or_insert_with(Default::default);
+                    let pending = self.pending_close_sinks.entry(repo_id.clone()).or_default();
                     pending.push(remote_repo.sink);
                     repo_id
                 })

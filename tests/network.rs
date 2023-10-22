@@ -224,7 +224,8 @@ fn test_sinks_closed_on_replacement() {
 
     done_sync_receiver.blocking_recv().unwrap();
 
-    let old_peers: HashMap<_, _> = peers_clone.drain().collect();
+    let old_peers = peers_clone.clone();
+    peers_clone.clear();
 
     // Replace the peers.
     let (sender, mut network_receiver) = channel(1);
@@ -406,7 +407,8 @@ fn test_streams_chained_on_replacement() {
         }
     });
 
-    let old_peers: HashMap<_, _> = peers_clone.drain().collect();
+    let old_peers = peers_clone.clone();
+    peers_clone.clear();
 
     // Replace the peers.
     // TODO: replace the peers with different networks to check chaining.

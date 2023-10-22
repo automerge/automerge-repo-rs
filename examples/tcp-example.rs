@@ -95,7 +95,7 @@ impl AsyncInMemoryStorage {
                             let _ = sender.send(result);
                         }
                         StorageRequest::Append(doc_id, mut data, sender) => {
-                            let entry = documents.entry(doc_id).or_insert_with(Default::default);
+                            let entry = documents.entry(doc_id).or_default();
                             entry.append(&mut data);
                             let _ = sender.send(());
                         }
@@ -103,7 +103,7 @@ impl AsyncInMemoryStorage {
                             let _entry = documents
                                 .entry(doc_id)
                                 .and_modify(|entry| *entry = data)
-                                .or_insert_with(Default::default);
+                                .or_default();
                             let _ = sender.send(());
                         }
                     }

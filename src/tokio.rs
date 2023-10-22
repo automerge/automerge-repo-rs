@@ -7,7 +7,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::{repo::RepoHandle, ConnDirection};
 use crate::{Message, NetworkError};
 
-#[cfg(feature = "tokio-tungstenite")]
+#[cfg(feature = "tungstenite")]
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
 mod fs_storage;
@@ -33,7 +33,7 @@ impl RepoHandle {
         Ok(())
     }
 
-    #[cfg(feature = "tokio-tungstenite")]
+    #[cfg(feature = "tungstenite")]
     pub async fn connect_tungstenite<S>(
         &self,
         stream: S,
