@@ -40,6 +40,11 @@ fn fs_store_crud() {
 
     store.append(&doc_id, change2.bytes().as_ref()).unwrap();
 
+    // check that list is working
+    let result = store.list().unwrap();
+    let expected = &[doc_id.clone()];
+    assert_eq!(&result, expected);
+
     let result = store.get(&doc_id).unwrap().unwrap();
     assert_permutation_of!(result, vec![change1.bytes(), change2.bytes()]);
 

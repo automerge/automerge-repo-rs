@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     io::Write,
     path::{Path, PathBuf},
+    str,
 };
 
 use crate::DocumentId;
@@ -20,10 +21,10 @@ use error::ErrorKind;
 /// ## Storage layout
 ///
 /// In order to reduce the number of files in a single directory we follow git
-/// in splaying the files over 256 subdirectries using the first two bytes of
+/// in splaying the files over 256 subdirectories using the first two bytes of
 /// the SHA256 hash of the document ID. Then within each subdirectory we use
-/// the full SHA256 hash of the document ID as a directory within which we
-/// store the incremental and snapshots saves of a document. I.e.
+/// the hex encoding of the document ID as a directory within which we store the
+/// incremental and snapshots saves of a document. I.e.
 ///
 /// ```sh
 /// <root>/
@@ -39,9 +40,6 @@ use error::ErrorKind;
 /// on other peers and for the splaying to be useful we need to guarantee a
 /// uniform distribution of documents across the subdirectories.
 ///
-/// Likewise we use the hex encoding of the document ID as the filename to avoid
-/// any issues with non-UTF8 characters in the document ID.
-///
 /// ## Compaction
 ///
 /// In order to support compaction we do the following:
@@ -51,7 +49,7 @@ use error::ErrorKind;
 /// 2. Load the data into an automerge document
 /// 3. `automerge::Automerge::save` the document to a temporary file
 /// 4. Rename the temporary file to a file in the data directory named
-///    `SHA356(automerge::Automerge::get_heads)`.snapshot`
+///    `<sha256(heads)>.snapshot`
 /// 5. Delete all the files we loaded in step 1.
 ///
 /// The fact that we name the file after the heads of the document means that
@@ -122,14 +120,14 @@ impl FsStore {
                 let metadata = entry
                     .metadata()
                     .map_err(|e| Error(ErrorKind::ErrReadingLevel2Path(entry.path(), e)))?;
-                if metadata.is_dir() {
+                if !metadata.is_dir() {
                     tracing::warn!(
-                        non_file_path=%entry.path().display(),
-                        "unexpected directory at level2 of database"
+                        non_dir_path=%entry.path().display(),
+                        "unexpected non-directory at level2 of database"
                     );
                     continue;
                 }
-                let Some(doc_paths) = DocIdPaths::parse(&level1, entry.path()) else {
+                let Some(doc_paths) = DocIdPaths::parse(entry.path()) else {
                     tracing::warn!(
                         non_doc_path=%entry.path().display(),
                         "unexpected non-document path at level2 of database"
@@ -236,15 +234,16 @@ impl<'a> From<&'a DocumentId> for DocIdPaths {
 }
 
 impl DocIdPaths {
-    fn parse<P1: AsRef<Path>, P2: AsRef<Path>>(level1: P1, level2: P2) -> Option<Self> {
-        let level1 = level1.as_ref().to_str()?;
+    fn parse<P: AsRef<Path>>(level2: P) -> Option<Self> {
+        let level2 = level2.as_ref();
+        let level1 = level2.parent()?.file_name()?.to_str()?;
         let prefix = hex::decode(level1).ok()?;
         let prefix = <[u8; 2]>::try_from(prefix).ok()?;
 
-        let level2 = level2.as_ref().to_str()?;
+        let level2 = level2.file_name()?.to_str()?;
         let doc_id_bytes = hex::decode(level2).ok()?;
-        let doc_id_str = String::from_utf8(doc_id_bytes).ok()?;
-        let doc_id = DocumentId::from(doc_id_str.as_str());
+        let doc_id_str = str::from_utf8(&doc_id_bytes).ok()?;
+        let doc_id = DocumentId::from(doc_id_str);
         let result = Self::from(&doc_id);
         if result.prefix != prefix {
             None
