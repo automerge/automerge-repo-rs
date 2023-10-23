@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
     io::Write,
     path::{Path, PathBuf},
     str,
@@ -192,15 +193,15 @@ fn write_chunk(
     name: SavedChunkName,
 ) -> Result<(), Error> {
     // Write to a temp file and then rename to avoid partial writes
-    let mut temp_save =
-        tempfile::NamedTempFile::new().map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
-    let temp_save_path = temp_save.path().to_owned();
-    temp_save
-        .as_file_mut()
+    let temp_dir =
+        tempfile::TempDir::new_in(root).map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
+    let temp_save_path = temp_dir.path().join(name.filename());
+    let mut temp_save_file =
+        File::create(&temp_save_path).map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
+    temp_save_file
         .write_all(chunk)
         .map_err(|e| Error(ErrorKind::WriteTempFile(temp_save_path.clone(), e)))?;
-    temp_save
-        .as_file_mut()
+    temp_save_file
         .sync_all()
         .map_err(|e| Error(ErrorKind::WriteTempFile(temp_save_path.clone(), e)))?;
 
