@@ -126,7 +126,7 @@ async fn test_loading_document_immediately_not_found() {
     let repo_handle = repo.run();
 
     // Spawn a task that awaits the requested doc handle.
-    let doc_id = DocumentId::from("doc1");
+    let doc_id = DocumentId::random();
     assert!(repo_handle.load(doc_id).await.unwrap().is_none());
     // Shut down the repo.
     repo_handle.stop().unwrap();
@@ -142,7 +142,7 @@ async fn test_loading_document_not_found_async() {
     let repo_handle = repo.run();
 
     // Spawn a task that awaits the requested doc handle.
-    let doc_id = DocumentId::from("doc1");
+    let doc_id = DocumentId::random();
     assert!(repo_handle.load(doc_id).await.unwrap().is_none());
     // Shut down the repo.
     tokio::task::spawn_blocking(|| {

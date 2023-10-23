@@ -135,7 +135,7 @@ impl RepoHandle {
 
     /// Create a new document.
     pub fn new_document(&self) -> DocHandle {
-        let document_id = DocumentId(Uuid::new_v4().to_string());
+        let document_id = DocumentId::random();
         let document = new_document();
         let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
         let handle = DocHandle::new(
@@ -1150,9 +1150,15 @@ impl Repo {
                                     tracing::error!(error = ?e, "Error decoding sync message.");
                                     break true;
                                 }
-                            },
-                            Ok(RepoMessage::Ephemeral { .. }) => {
-                                tracing::warn!("received ephemeral message, ignoring.");
+                            }
+                            Ok(RepoMessage::Request { sender_id, target_id, document_id, sync_message }) => {
+                                todo!()
+                            }
+                            Ok(RepoMessage::Unavailable { document_id, sender_id, target_id }) => {
+                                todo!()
+                            }
+                            Ok(RepoMessage::Ephemeral { from_repo_id, to_repo_id, document_id, message, session_id, count }) => {
+                                todo!()
                             }
                             Err(e) => {
                                 tracing::error!(error = ?e, "Error on network stream.");

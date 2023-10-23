@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::Write,
     path::{Path, PathBuf},
-    str,
+    str::FromStr,
 };
 
 use crate::DocumentId;
@@ -268,8 +268,14 @@ impl DocIdPaths {
 
         let level2 = level2.file_name()?.to_str()?;
         let doc_id_bytes = hex::decode(level2).ok()?;
-        let doc_id_str = str::from_utf8(&doc_id_bytes).ok()?;
-        let doc_id = DocumentId::from(doc_id_str);
+        let doc_id_str = String::from_utf8(doc_id_bytes).ok()?;
+        let doc_id = match DocumentId::from_str(doc_id_str.as_str()) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(doc_id=%doc_id_str, err=?e, "invalid document id");
+                return None;
+            }
+        };
         let result = Self::from(&doc_id);
         if result.prefix != prefix {
             None
