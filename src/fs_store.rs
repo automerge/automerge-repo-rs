@@ -66,19 +66,43 @@ use error::ErrorKind;
 /// half finished snapshot file. Deleting the inputs after the rename means that
 /// the worst case is that we have some leftover incremental files which will
 /// be deleted on the next compaction.
+#[derive(Debug)]
 pub struct FsStore {
     root: std::path::PathBuf,
+    tmpdir: std::path::PathBuf,
 }
 
 impl FsStore {
-    /// Create an [`FsStore`] from a [`std::path::PathBuf`]
+    /// Creates a new [`FsStore`] from a [`Path`].
     ///
     /// This will attempt to create the root directory and throw an error if
     /// it does not exist.
     pub fn open<P: AsRef<Path>>(root: P) -> Result<Self, std::io::Error> {
-        std::fs::create_dir_all(root.as_ref())?;
+        let root = root.as_ref();
+        std::fs::create_dir_all(root)?;
         Ok(Self {
-            root: root.as_ref().into(),
+            root: root.into(),
+            tmpdir: root.into(),
+        })
+    }
+
+    /// Overrides the tmpdir directory used for temporary files.
+    ///
+    /// The default is to use the root directory passed to [`FsStore::open`].
+    ///
+    /// The tmpdir used must be on the same mount point as the root directory,
+    /// otherwise the store will throw an error on writing data.
+    ///
+    /// # Errors
+    ///
+    /// This will attempt to create the tmpdir directory and throw an error if
+    /// it does not exist.
+    pub fn with_tmpdir<P: AsRef<Path>>(self, tmpdir: P) -> Result<Self, std::io::Error> {
+        let tmpdir = tmpdir.as_ref();
+        std::fs::create_dir_all(tmpdir)?;
+        Ok(Self {
+            tmpdir: tmpdir.into(),
+            ..self
         })
     }
 
@@ -151,7 +175,7 @@ impl FsStore {
         })?;
 
         let chunk_name = SavedChunkName::new_incremental(changes);
-        write_chunk(&self.root, &paths, changes, chunk_name)?;
+        write_chunk(&self.root, &paths, changes, chunk_name, &self.tmpdir)?;
 
         Ok(())
     }
@@ -171,7 +195,7 @@ impl FsStore {
         // Write the snapshot
         let output_chunk_name = SavedChunkName::new_snapshot(doc.get_heads());
         let chunk = doc.save();
-        write_chunk(&self.root, &paths, &chunk, output_chunk_name)?;
+        write_chunk(&self.root, &paths, &chunk, output_chunk_name, &self.tmpdir)?;
 
         // Remove all the old data
         for incremental in chunks.incrementals.keys() {
@@ -191,10 +215,11 @@ fn write_chunk(
     paths: &DocIdPaths,
     chunk: &[u8],
     name: SavedChunkName,
+    tmpdir: &Path,
 ) -> Result<(), Error> {
     // Write to a temp file and then rename to avoid partial writes
     let temp_dir =
-        tempfile::TempDir::new_in(root).map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
+        tempfile::TempDir::new_in(tmpdir).map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
     let temp_save_path = temp_dir.path().join(name.filename());
     let mut temp_save_file =
         File::create(&temp_save_path).map_err(|e| Error(ErrorKind::CreateTempFile(e)))?;
