@@ -41,7 +41,7 @@ impl<'a> From<&'a str> for DocumentId {
 /// Network errors used by the sink.
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum NetworkError {
-    Error,
+    Error(String),
 }
 
 impl Display for NetworkError {

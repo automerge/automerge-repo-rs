@@ -95,7 +95,7 @@ impl Sink<RepoMessage> for Network<RepoMessage> {
             .blocking_send((from_repo_id, to_repo_id))
             .is_err()
         {
-            return Err(NetworkError::Error);
+            return Err(NetworkError::Error("unexpected failure to send on blocking channel".to_string()));
         }
         Ok(())
     }
