@@ -1,4 +1,4 @@
-use crate::interfaces::{Message, NetworkError, RepoId, RepoMessage};
+use crate::interfaces::{Message, NetworkError, ProtocolVersion, RepoId, RepoMessage};
 use crate::repo::RepoHandle;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
@@ -78,7 +78,9 @@ impl RepoHandle {
             ConnDirection::Incoming => {
                 if let Some(msg) = stream.next().await {
                     let other_id = match msg {
-                        Ok(Message::Join(other_id)) => other_id,
+                        Ok(Message::Join {
+                            sender: other_id, ..
+                        }) => other_id,
                         Ok(other) => {
                             return Err(NetworkError::Error(format!(
                                 "unexpected message (expecting join): {:?}",
@@ -89,7 +91,10 @@ impl RepoHandle {
                             return Err(NetworkError::Error(format!("error reciving: {}", e)))
                         }
                     };
-                    let msg = Message::Peer(self.get_repo_id().clone());
+                    let msg = Message::Peer {
+                        sender: self.get_repo_id().clone(),
+                        selected_protocol_version: ProtocolVersion::V1,
+                    };
                     sink.send(msg)
                         .await
                         .map_err(|e| NetworkError::Error(format!("error sending: {}", e)))?;
@@ -101,13 +106,16 @@ impl RepoHandle {
                 }
             }
             ConnDirection::Outgoing => {
-                let msg = Message::Join(self.get_repo_id().clone());
+                let msg = Message::Join {
+                    sender: self.get_repo_id().clone(),
+                    supported_protocol_versions: vec![ProtocolVersion::V1],
+                };
                 sink.send(msg)
                     .await
                     .map_err(|e| NetworkError::Error(format!("send error: {}", e)))?;
                 let msg = stream.next().await;
                 match msg {
-                    Some(Ok(Message::Peer(sender))) => Ok(sender),
+                    Some(Ok(Message::Peer { sender, .. })) => Ok(sender),
                     Some(Ok(other)) => Err(NetworkError::Error(format!(
                         "unexpected message (expecting peer): {:?}",
                         other

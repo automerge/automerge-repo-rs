@@ -1,13 +1,12 @@
 import express from "express"
 import { WebSocketServer } from "ws"
-import { DocumentId, Repo, StorageAdapter } from "@automerge/automerge-repo"
+import { Repo } from "@automerge/automerge-repo"
 import { NodeWSServerAdapter } from "@automerge/automerge-repo-network-websocket"
 
 class Server {
   #socket: WebSocketServer
 
   #server: ReturnType<import("express").Express["listen"]> 
-  #storage: InMemoryStorageAdapter
 
   #repo: Repo
 
@@ -17,11 +16,9 @@ class Server {
     const PORT = port
     const app = express()
     app.use(express.static("public"))
-    this.#storage = new InMemoryStorageAdapter() 
 
     const config = {
       network: [new NodeWSServerAdapter(this.#socket)],
-      storage: this.#storage,
       /** @ts-ignore @type {(import("automerge-repo").PeerId)}  */
       peerId: `storage-server` as PeerId,
       // Since this is a server, we don't share generously — meaning we only sync documents they already
@@ -48,36 +45,8 @@ class Server {
   }
 
   close() {
-    this.#storage.log()
     this.#socket.close()
     this.#server.close()
-  }
-}
-
-class InMemoryStorageAdapter implements StorageAdapter {
-  #data: Record<DocumentId, Uint8Array> = {}
-
-  load(docId: DocumentId) {
-    return new Promise<Uint8Array | null>(resolve =>
-      resolve(this.#data[docId] || null)
-    )
-  }
-
-  save(docId: DocumentId, binary: Uint8Array) {
-    console.log(`saving ${docId}`)
-    this.#data[docId] = binary
-  }
-
-  remove(docId: DocumentId) {
-    delete this.#data[docId]
-  }
-
-  keys() {
-    return Object.keys(this.#data)
-  }
-
-  log() {
-      console.log(JSON.stringify(this.#data))
   }
 }
 

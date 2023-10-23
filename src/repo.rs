@@ -1179,9 +1179,25 @@ impl Repo {
                                     break true;
                                 }
                             },
-                            Ok(RepoMessage::Ephemeral { .. }) => {
-                                tracing::warn!("received ephemeral message, ignoring.");
-                            }
+                            Ok(RepoMessage::Request {
+                                sender_id: _,
+                                target_id: _,
+                                document_id: _,
+                                sync_message: _,
+                            }) => {}
+                            Ok(RepoMessage::Unavailable {
+                                document_id: _,
+                                sender_id: _,
+                                target_id: _,
+                            }) => {}
+                            Ok(RepoMessage::Ephemeral {
+                                from_repo_id: _,
+                                to_repo_id: _,
+                                document_id: _,
+                                message: _,
+                                session_id: _,
+                                count: _,
+                            }) => {}
                             Err(e) => {
                                 tracing::error!(error = ?e, "Error on network stream.");
                                 break true;

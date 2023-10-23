@@ -10,8 +10,8 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@automerge/automerge-repo": "^0.1.2",
-    "@automerge/automerge-repo-network-websocket": "^0.1.2",
+    "@automerge/automerge-repo": "^1.0.19",
+    "@automerge/automerge-repo-network-websocket": "^1.0.19",
     "@types/ws": "^8.5.5",
     "express": "^4.18.2",
     "ws": "^8.13.0"
