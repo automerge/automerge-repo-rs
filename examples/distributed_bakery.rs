@@ -1,5 +1,6 @@
 use automerge_repo::{ConnDirection, DocHandle, DocumentId, Repo, Storage, StorageError};
 use autosurgeon::{hydrate, reconcile, Hydrate, Reconcile};
+use axum::debug_handler;
 use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -12,13 +13,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneShotSender};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{sleep, Duration};
 
+#[debug_handler]
 async fn get_doc_id(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
-    Json(state.doc_handle.document_id())
+    Json(state.doc_handle.lock().await.document_id())
 }
 
+#[debug_handler]
 async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> {
     let permit = state.handler_sem.acquire().await;
     if permit.is_err() {
@@ -43,8 +46,8 @@ async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> 
     Err(())
 }
 
-async fn increment_output(doc_handle: &DocHandle) -> Result<u32, ()> {
-    let (latest, closing) = doc_handle.with_doc_mut(|doc| {
+async fn increment_output(doc_handle: &Mutex<DocHandle>) -> Result<u32, ()> {
+    let (latest, closing) = doc_handle.lock().await.with_doc_mut(|doc| {
         let mut bakery: Bakery = hydrate(doc).unwrap();
         bakery.output += 1;
         let mut tx = doc.transaction();
@@ -60,8 +63,8 @@ async fn increment_output(doc_handle: &DocHandle) -> Result<u32, ()> {
     Ok(latest)
 }
 
-async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
-    let (our_number, closing) = doc_handle.with_doc_mut(|doc| {
+async fn run_bakery_algorithm(doc_handle: &Mutex<DocHandle>, customer_id: &String) {
+    let (our_number, closing) = doc_handle.lock().await.with_doc_mut(|doc| {
         // At the start of the algorithm,
         // pick a number that is higher than all others.
         let mut bakery: Bakery = hydrate(doc).unwrap();
@@ -86,11 +89,15 @@ async fn run_bakery_algorithm(doc_handle: &DocHandle, customer_id: &String) {
         return;
     }
     loop {
-        doc_handle.changed().await.unwrap();
+        let doc_handle_changed = doc_handle.lock().await.changed();
+        doc_handle_changed.await.unwrap();
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
-        let bakery: Bakery = doc_handle.with_doc(|doc| hydrate(doc).unwrap());
+        let bakery: Bakery = doc_handle
+            .lock()
+            .await
+            .with_doc(|doc| hydrate(doc).unwrap());
 
         if bakery.closing {
             return;
@@ -174,7 +181,8 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
     }
 
     loop {
-        doc_handle.changed().await.unwrap();
+        let doc_handle_changed = doc_handle.changed();
+        doc_handle_changed.await.unwrap();
 
         // Perform reads outside of closure,
         // to avoid holding read lock.
@@ -215,8 +223,8 @@ async fn acknowlegde_changes(doc_handle: DocHandle, customer_id: String) {
     }
 }
 
-async fn start_outside_the_bakery(doc_handle: &DocHandle, customer_id: &String) {
-    doc_handle.with_doc_mut(|doc| {
+async fn start_outside_the_bakery(doc_handle: &Mutex<DocHandle>, customer_id: &String) {
+    doc_handle.lock().await.with_doc_mut(|doc| {
         let mut bakery: Bakery = hydrate(doc).unwrap();
         let our_info = bakery.customers.get_mut(customer_id).unwrap();
         our_info.number = 0;
@@ -268,7 +276,7 @@ struct Args {
 }
 
 struct AppState {
-    doc_handle: DocHandle,
+    doc_handle: Mutex<DocHandle>,
     customer_id: String,
     handler_sem: Semaphore,
 }
@@ -433,15 +441,17 @@ async fn main() {
     let (increment_stop_tx, increment_stop_rx) = mpsc::channel(1);
 
     let app_state = Arc::new(AppState {
-        doc_handle: doc_handle.clone(),
+        doc_handle: Mutex::new(doc_handle.clone()),
         customer_id: customer_id.clone(),
         handler_sem: Semaphore::new(1),
     });
 
-    let doc_handle_clone = doc_handle.clone();
-    handle.spawn(async move {
-        // Continuously request new increments.
-        request_increment(doc_handle_clone, http_addrs, increment_stop_rx).await;
+    handle.spawn({
+        let doc_handle = doc_handle.clone();
+        async move {
+            // Continuously request new increments.
+            request_increment(doc_handle, http_addrs, increment_stop_rx).await;
+        }
     });
 
     handle.spawn(async move {
@@ -469,7 +479,7 @@ async fn main() {
             //    which acts as a shutdown signal
             //    to tasks reading the doc.
             // Note: this prevents peers from re-joining after shutdown.
-            app_state.doc_handle.with_doc_mut(|doc| {
+            app_state.doc_handle.lock().await.with_doc_mut(|doc| {
                 let mut bakery: Bakery = hydrate(doc).unwrap();
                 bakery.closing = true;
                 let mut tx = doc.transaction();

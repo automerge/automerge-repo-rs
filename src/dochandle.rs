@@ -3,6 +3,8 @@ use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFutur
 use automerge::{Automerge, ChangeHash};
 use crossbeam_channel::Sender;
 use parking_lot::{Mutex, RwLock};
+use std::cell::Cell;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -30,6 +32,7 @@ pub struct DocHandle {
     /// that doesn't require a mutabale reference to the handle.
     /// Note: the mutex is not shared between clones of the same handle.
     last_heads: Mutex<Vec<ChangeHash>>,
+    _not_sync: PhantomData<Cell<&'static ()>>,
 }
 
 impl Clone for DocHandle {
@@ -79,6 +82,7 @@ impl DocHandle {
             handle_count,
             local_repo_id,
             last_heads: Mutex::new(last_heads),
+            _not_sync: PhantomData,
         }
     }
 

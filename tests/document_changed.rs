@@ -21,7 +21,7 @@ fn test_document_changed_over_sync() {
     let expected_repo_id = repo_handle_2.get_repo_id().clone();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let doc_handle_1 = repo_handle_1.new_document();
 
     // Add network adapters
     let mut peers = HashMap::new();
@@ -48,7 +48,7 @@ fn test_document_changed_over_sync() {
 
     // Spawn a task that awaits the requested doc handle,
     // and then edits the document.
-    let doc_id = document_handle_1.document_id();
+    let doc_id = doc_handle_1.document_id();
     rt.spawn(async move {
         // Request the document.
         let doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
@@ -69,7 +69,7 @@ fn test_document_changed_over_sync() {
     let repo_id = repo_handle_1.get_repo_id().clone();
     rt.spawn(async move {
         // Edit the document.
-        document_handle_1.with_doc_mut(|doc| {
+        doc_handle_1.with_doc_mut(|doc| {
             let mut tx = doc.transaction();
             tx.put(automerge::ROOT, "repo_id", format!("{}", repo_id))
                 .expect("Failed to change the document.");
@@ -77,8 +77,9 @@ fn test_document_changed_over_sync() {
         });
         loop {
             // Await changes until the edit comes through over sync.
-            document_handle_1.changed().await.unwrap();
-            let equals = document_handle_1.with_doc(|doc| {
+            let doc_handle_1_changed = doc_handle_1.changed();
+            doc_handle_1_changed.await.unwrap();
+            let equals = doc_handle_1.with_doc(|doc| {
                 let val = doc
                     .get(automerge::ROOT, "repo_id")
                     .expect("Failed to read the document.")
@@ -156,7 +157,8 @@ fn test_document_changed_locally() {
     rt.spawn(async move {
         start_wait_sender.send(()).await.unwrap();
         // Await the local change.
-        doc_handle.changed().await.unwrap();
+        let doc_handle_changed = doc_handle.changed();
+        doc_handle_changed.await.unwrap();
         doc_handle.with_doc(|doc| {
             let val = doc
                 .get(automerge::ROOT, "repo_id")

@@ -111,11 +111,9 @@ fn test_simple_sync() {
     rt.spawn(async move {
         let mut synced = 0;
         for doc_handle in documents {
+            let doc_id = doc_handle.document_id();
             for repo_handle in repo_handles_clone.iter() {
-                repo_handle
-                    .request_document(doc_handle.document_id())
-                    .await
-                    .unwrap();
+                repo_handle.request_document(doc_id.clone()).await.unwrap();
                 synced += 1;
             }
         }
