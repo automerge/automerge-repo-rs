@@ -9,22 +9,27 @@ pub enum ConnDirection {
 }
 
 impl RepoHandle {
-    pub async fn connect_stream<S, SendErr, RecvErr>(
+    pub async fn connect_stream<Str, Snk, SendErr, RecvErr>(
         &self,
-        stream: S,
+        mut stream: Str,
+        mut sink: Snk,
         direction: ConnDirection,
     ) -> Result<(), NetworkError>
     where
         SendErr: std::error::Error + Send + Sync + 'static,
         RecvErr: std::error::Error + Send + Sync + 'static,
-        S: Sink<Message, Error = SendErr>
-            + Stream<Item = Result<Message, RecvErr>>
-            + Send
-            + 'static,
+        Snk: Sink<Message, Error = SendErr> + Send + 'static + Unpin,
+        Str: Stream<Item = Result<Message, RecvErr>> + Send + 'static + Unpin,
     {
-        let (mut sink, mut stream) = stream.split();
-
-        let other_id = self.handshake(&mut stream, &mut sink, direction).await?;
+        let other_id = {
+            self
+                .handshake(
+                    &mut stream,
+                    &mut sink,
+                    direction,
+                )
+                .await?
+        };
         tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "Handshake complete");
 
         let stream = stream.map({

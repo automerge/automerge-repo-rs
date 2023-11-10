@@ -28,7 +28,9 @@ impl RepoHandle {
         let codec = Codec::new();
         let framed = tokio_util::codec::Framed::new(io, codec);
 
-        self.connect_stream(framed, direction).await?;
+        let (sink, stream) = framed.split();
+
+        self.connect_stream(stream, sink, direction).await?;
 
         Ok(())
     }
@@ -45,6 +47,8 @@ impl RepoHandle {
             + Send
             + 'static,
     {
+        let (sink, stream) = stream.split();
+
         let msg_stream = stream
             .map::<Result<Message, NetworkError>, _>(|msg| {
                 let msg = msg
@@ -58,7 +62,9 @@ impl RepoHandle {
                         "unexpected non-binary message".to_string(),
                     )),
                 }
-            })
+            });
+
+        let sink = sink
             .sink_map_err(|e| NetworkError::Error(format!("websocket send error: {}", e)))
             .with(|msg: Message| {
                 futures::future::ready(Ok::<_, NetworkError>(tungstenite::Message::Binary(
@@ -66,7 +72,7 @@ impl RepoHandle {
                 )))
             });
 
-        self.connect_stream(msg_stream, direction).await?;
+        self.connect_stream(msg_stream, sink, direction).await?;
 
         Ok(())
     }
