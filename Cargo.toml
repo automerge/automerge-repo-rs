@@ -17,6 +17,9 @@ required-features = ["tokio"]
 name = "interop"
 required-features = ["tokio", "tungstenite"]
 
+[[test]]
+name = "network"
+
 [features]
 tokio = ["dep:tokio", "dep:tokio-util"]
 tungstenite = ["dep:tungstenite"]

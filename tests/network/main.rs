@@ -8,6 +8,11 @@ use test_utils::network_utils::Network;
 use test_utils::storage_utils::SimpleStorage;
 use tokio::sync::mpsc::channel;
 
+mod document_save;
+mod document_load;
+mod document_list;
+mod document_request;
+
 #[test]
 fn test_sinks_closed_on_shutdown() {
     // Create two repos.
