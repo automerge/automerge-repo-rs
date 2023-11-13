@@ -50,7 +50,7 @@ impl Display for NetworkError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, PartialEq)]
 pub enum RepoMessage {
     /// A sync message for a particular document
     Sync {
@@ -66,6 +66,33 @@ pub enum RepoMessage {
         document_id: DocumentId,
         message: Vec<u8>,
     },
+}
+
+impl std::fmt::Debug for RepoMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RepoMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message: _,
+            } => write!(
+                f,
+                "Sync {{ from_repo_id: {:?}, to_repo_id: {:?}, document_id: {:?} }}",
+                from_repo_id, to_repo_id, document_id
+            ),
+            RepoMessage::Ephemeral {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message: _,
+            } => write!(
+                f,
+                "Ephemeral {{ from_repo_id: {:?}, to_repo_id: {:?}, document_id: {:?} }}",
+                from_repo_id, to_repo_id, document_id
+            ),
+        }
+    }
 }
 
 /// The messages of the multi-document sync protocol

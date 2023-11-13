@@ -21,15 +21,7 @@ impl RepoHandle {
         Snk: Sink<Message, Error = SendErr> + Send + 'static + Unpin,
         Str: Stream<Item = Result<Message, RecvErr>> + Send + 'static + Unpin,
     {
-        let other_id = {
-            self
-                .handshake(
-                    &mut stream,
-                    &mut sink,
-                    direction,
-                )
-                .await?
-        };
+        let other_id = self.handshake(&mut stream, &mut sink, direction).await?;
         tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "Handshake complete");
 
         let stream = stream.map({

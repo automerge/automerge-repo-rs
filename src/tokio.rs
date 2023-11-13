@@ -49,20 +49,19 @@ impl RepoHandle {
     {
         let (sink, stream) = stream.split();
 
-        let msg_stream = stream
-            .map::<Result<Message, NetworkError>, _>(|msg| {
-                let msg = msg
-                    .map_err(|e| NetworkError::Error(format!("websocket receive error: {}", e)))?;
-                match msg {
-                    tungstenite::Message::Binary(data) => Message::decode(&data).map_err(|e| {
-                        tracing::error!(err=?e, msg=%hex::encode(data), "error decoding message");
-                        NetworkError::Error(format!("error decoding message: {}", e))
-                    }),
-                    _ => Err(NetworkError::Error(
-                        "unexpected non-binary message".to_string(),
-                    )),
-                }
-            });
+        let msg_stream = stream.map::<Result<Message, NetworkError>, _>(|msg| {
+            let msg =
+                msg.map_err(|e| NetworkError::Error(format!("websocket receive error: {}", e)))?;
+            match msg {
+                tungstenite::Message::Binary(data) => Message::decode(&data).map_err(|e| {
+                    tracing::error!(err=?e, msg=%hex::encode(data), "error decoding message");
+                    NetworkError::Error(format!("error decoding message: {}", e))
+                }),
+                _ => Err(NetworkError::Error(
+                    "unexpected non-binary message".to_string(),
+                )),
+            }
+        });
 
         let sink = sink
             .sink_map_err(|e| NetworkError::Error(format!("websocket send error: {}", e)))

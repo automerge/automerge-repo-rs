@@ -4,21 +4,20 @@ use automerge::transaction::Transactable;
 use automerge::ReadDoc;
 use automerge_repo::{DocumentId, Repo};
 use std::collections::HashMap;
+use test_log::test;
 use test_utils::storage_utils::{AsyncInMemoryStorage, InMemoryStorage};
-use tokio::sync::mpsc::channel;
 
-#[test]
-fn test_loading_document_found_immediately() {
+#[test(tokio::test)]
+async fn test_loading_document_found_immediately() {
     let storage = InMemoryStorage::default();
     // Create one repo.
-    let repo = Repo::new(None, Box::new(storage.clone()));
+    let repo = Repo::new(Some("repo1".to_string()), Box::new(storage.clone()));
     let repo_handle = repo.run();
 
     // Create a document for one repo.
     let document_handle = repo_handle.new_document();
 
     // Edit the document.
-    let expected_repo_id = repo_handle.get_repo_id().clone();
     let doc_data = document_handle.with_doc_mut(|doc| {
         let mut tx = doc.transaction();
         tx.put(
@@ -37,50 +36,39 @@ fn test_loading_document_found_immediately() {
     drop(document_handle);
 
     // Shut down the repo.
-    repo_handle.stop().unwrap();
+    tokio::task::spawn_blocking(|| repo_handle.stop().unwrap())
+        .await
+        .unwrap();
 
     // Create another repo.
     let repo = Repo::new(None, Box::new(storage));
     let repo_handle = repo.run();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    // Spawn a task that awaits the requested doc handle.
-    let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    let load_fut = repo_handle.load(doc_id);
-    rt.spawn(async move {
-        let equals = load_fut.await.unwrap().unwrap().with_doc(|doc| {
-            let val = doc
-                .get(automerge::ROOT, "repo_id")
-                .expect("Failed to read the document.")
-                .unwrap();
-            val.0.to_str().unwrap() == format!("{}", expected_repo_id)
-        });
-        if equals {
-            done_sync_sender.send(()).await.unwrap();
-        }
+    let doc = repo_handle.load(doc_id).await.unwrap().unwrap();
+    doc.with_doc(|doc| {
+        let val = doc
+            .get(automerge::ROOT, "repo_id")
+            .expect("Failed to read the document.")
+            .unwrap();
+        assert_eq!(val.0.to_str().unwrap(), "repo1".to_string());
     });
-
-    done_sync_receiver.blocking_recv().unwrap();
     // Shut down the repo.
-    repo_handle.stop().unwrap();
+    tokio::task::spawn_blocking(|| repo_handle.stop().unwrap())
+        .await
+        .unwrap();
 }
 
-#[test]
-fn test_loading_document_found_async() {
+#[test(tokio::test)]
+async fn test_loading_document_found_async() {
     let storage = InMemoryStorage::default();
     // Create one repo.
-    let repo = Repo::new(None, Box::new(storage));
+    let repo = Repo::new(Some("repo1".to_string()), Box::new(storage));
     let repo_handle = repo.run();
 
     // Create a document for one repo.
     let document_handle = repo_handle.new_document();
 
     // Edit the document.
-    let expected_repo_id = repo_handle.get_repo_id().clone();
     let doc_data = document_handle.with_doc_mut(|doc| {
         let mut tx = doc.transaction();
         tx.put(
@@ -102,50 +90,34 @@ fn test_loading_document_found_async() {
     drop(document_handle);
     repo_handle.stop().unwrap();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
     // Create another repo, using the async storage.
-    let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    rt.spawn(async move {
-        let async_storage = AsyncInMemoryStorage::new(docs, false);
-        let repo = Repo::new(None, Box::new(async_storage));
-        let repo_handle = repo.run();
+    let async_storage = AsyncInMemoryStorage::new(docs, false);
+    let repo = Repo::new(None, Box::new(async_storage));
+    let repo_handle = repo.run();
 
-        // Spawn a task that awaits the requested doc handle.
-        tokio::spawn(async move {
-            let equals = repo_handle
-                .load(doc_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .with_doc(|doc| {
-                    let val = doc
-                        .get(automerge::ROOT, "repo_id")
-                        .expect("Failed to read the document.")
-                        .unwrap();
-                    val.0.to_str().unwrap() == format!("{}", expected_repo_id)
-                });
-            if equals {
-                // Shut down the repo.
-                let _ = tokio::task::spawn_blocking(|| {
-                    repo_handle.stop().unwrap();
-                })
-                .await;
-                done_sync_sender.send(()).await.unwrap();
-            }
-        })
+    // Spawn a task that awaits the requested doc handle.
+    repo_handle
+        .load(doc_id)
         .await
-        .unwrap();
-    });
+        .unwrap()
+        .unwrap()
+        .with_doc(|doc| {
+            let val = doc
+                .get(automerge::ROOT, "repo_id")
+                .expect("Failed to read the document.")
+                .unwrap();
+            assert_eq!(val.0.to_str().unwrap(), "repo1".to_string());
+        });
 
-    done_sync_receiver.blocking_recv().unwrap();
+    tokio::task::spawn_blocking(|| {
+        repo_handle.stop().unwrap();
+    })
+    .await
+    .unwrap();
 }
 
-#[test]
-fn test_loading_document_immediately_not_found() {
+#[test(tokio::test)]
+async fn test_loading_document_immediately_not_found() {
     // Empty storage.
     let storage = InMemoryStorage::default();
 
@@ -153,60 +125,29 @@ fn test_loading_document_immediately_not_found() {
     let repo = Repo::new(None, Box::new(storage));
     let repo_handle = repo.run();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
     // Spawn a task that awaits the requested doc handle.
-    let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    let doc_id = DocumentId(String::from("Test"));
-    let load_fut = repo_handle.load(doc_id);
-    rt.spawn(async move {
-        let not_found = load_fut.await.unwrap().is_none();
-        if not_found {
-            done_sync_sender.send(()).await.unwrap();
-        }
-    });
-
-    done_sync_receiver.blocking_recv().unwrap();
+    let doc_id = DocumentId::from("doc1");
+    assert!(repo_handle.load(doc_id).await.unwrap().is_none());
     // Shut down the repo.
     repo_handle.stop().unwrap();
 }
 
-#[test]
-fn test_loading_document_not_found_async() {
+#[test(tokio::test)]
+async fn test_loading_document_not_found_async() {
     // Empty docs.
     let docs = HashMap::new();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let async_storage = AsyncInMemoryStorage::new(docs, false);
+    let repo = Repo::new(None, Box::new(async_storage));
+    let repo_handle = repo.run();
 
-    // Create a repo, using the async storage.
-    let (done_sync_sender, mut done_sync_receiver) = channel(1);
-    rt.spawn(async move {
-        let async_storage = AsyncInMemoryStorage::new(docs, false);
-        let repo = Repo::new(None, Box::new(async_storage));
-        let repo_handle = repo.run();
-
-        // Spawn a task that awaits the requested doc handle.
-        tokio::spawn(async move {
-            let doc_id = DocumentId(String::from("Test"));
-            let not_found = repo_handle.load(doc_id).await.unwrap().is_none();
-            if not_found {
-                // Shut down the repo.
-                let _ = tokio::task::spawn_blocking(|| {
-                    repo_handle.stop().unwrap();
-                })
-                .await;
-                done_sync_sender.send(()).await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
-    });
-
-    done_sync_receiver.blocking_recv().unwrap();
+    // Spawn a task that awaits the requested doc handle.
+    let doc_id = DocumentId::from("doc1");
+    assert!(repo_handle.load(doc_id).await.unwrap().is_none());
+    // Shut down the repo.
+    tokio::task::spawn_blocking(|| {
+        repo_handle.stop().unwrap();
+    })
+    .await
+    .unwrap();
 }

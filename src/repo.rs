@@ -10,7 +10,6 @@ use futures::stream::Stream;
 use futures::task::ArcWake;
 use futures::task::{waker_ref, Context, Poll, Waker};
 use futures::Sink;
-use futures::StreamExt;
 use parking_lot::{Mutex, RwLock};
 use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
@@ -48,7 +47,7 @@ fn new_document() -> Automerge {
 }
 
 /// Incoming event from the network.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum NetworkEvent {
     /// A repo sent us a sync message,
     // to be applied to a given document.
@@ -58,6 +57,24 @@ enum NetworkEvent {
         document_id: DocumentId,
         message: SyncMessage,
     },
+}
+
+impl std::fmt::Debug for NetworkEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetworkEvent::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message: _,
+            } => f
+                .debug_struct("NetworkEvent::Sync")
+                .field("from_repo_id", from_repo_id)
+                .field("to_repo_id", to_repo_id)
+                .field("document_id", document_id)
+                .finish(),
+        }
+    }
 }
 
 /// Outgoing network message.
@@ -971,6 +988,7 @@ impl Repo {
         // discarding streams that error.
         let to_poll = mem::take(&mut self.streams_to_poll);
         for repo_id in to_poll {
+            let mut new_messages = Vec::new();
             let should_be_removed = if let Some(remote_repo) = self.remote_repos.get_mut(&repo_id) {
                 // Collect as many events as possible.
                 loop {
@@ -989,32 +1007,42 @@ impl Repo {
                                 to_repo_id,
                                 document_id,
                                 message,
-                            }) => {
-                                if let Ok(message) = SyncMessage::decode(&message) {
+                            }) => match SyncMessage::decode(&message) {
+                                Ok(message) => {
                                     let event = NetworkEvent::Sync {
                                         from_repo_id,
                                         to_repo_id,
                                         document_id,
                                         message,
                                     };
-                                    self.pending_events.push_back(event);
-                                } else {
+                                    new_messages.push(event);
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = ?e, "Error decoding sync message.");
                                     break true;
                                 }
-                            }
+                            },
                             Ok(RepoMessage::Ephemeral { .. }) => {
-                                todo!()
+                                tracing::warn!("received ephemeral message, ignoring.");
                             }
-                            Err(_) => break true,
+                            Err(e) => {
+                                tracing::error!(error = ?e, "Error on network stream.");
+                                break true;
+                            }
                         },
-                        Poll::Ready(None) => break true,
+                        Poll::Ready(None) => {
+                            tracing::info!(remote_repo_id=?repo_id, "remote stream closed, removing");
+                            break true;
+                        }
                     }
                 }
             } else {
                 continue;
             };
             if should_be_removed {
-                self.remote_repos.remove(&repo_id);
+                self.remove_sink(&repo_id);
+            } else {
+                self.pending_events.extend(new_messages.into_iter());
             }
         }
     }
@@ -1085,7 +1113,8 @@ impl Repo {
                                 message: message.encode(),
                             };
                             let result = pinned_sink.start_send(outgoing);
-                            if result.is_err() {
+                            if let Err(e) = result {
+                                tracing::error!(error = ?e, "Error on network sink.");
                                 discard = true;
                                 needs_flush = false;
                                 break;
@@ -1117,14 +1146,14 @@ impl Repo {
                 continue;
             };
             if should_be_removed {
-                self.remote_repos.remove(&repo_id);
+                self.remove_sink(&repo_id);
             }
         }
     }
 
     /// Handle incoming repo events(sent by repo or document handles).
     fn handle_repo_event(&mut self, event: RepoEvent) {
-        tracing::trace!(event = ?event, repo_id=?self.repo_id, "Handling repo event");
+        tracing::trace!(event = ?event, "Handling repo event");
         match event {
             // TODO: simplify handling of `RepoEvent::NewDoc`.
             // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
@@ -1317,34 +1346,24 @@ impl Repo {
                 stream,
                 sink,
             } => {
-                if let Some(RemoteRepo {
-                    stream: existing_stream,
-                    sink: existing_sink,
-                }) = self.remote_repos.remove(&repo_id)
-                {
+                if self.remove_sink(&repo_id) {
+                    tracing::debug!(remote_repo=?repo_id, "replacing existing remote repo with new connection");
                     // Reset the sync state.
                     self.remove_unused_sync_states();
-                    let remote = RemoteRepo {
-                        stream: Box::new(existing_stream.chain(stream)),
-                        sink,
-                    };
-                    assert!(self.remote_repos.insert(repo_id.clone(), remote).is_none());
-                    let pending_sinks =
-                        self.pending_close_sinks.entry(repo_id.clone()).or_default();
-                    pending_sinks.push(existing_sink);
-                    self.poll_close_sinks(repo_id.clone());
                 } else {
-                    assert!(self
-                        .remote_repos
-                        .insert(repo_id.clone(), RemoteRepo { stream, sink })
-                        .is_none());
+                    tracing::debug!(remote_repo=?repo_id, "new connection for remote repo");
                 }
+                assert!(self
+                    .remote_repos
+                    .insert(repo_id.clone(), RemoteRepo { stream, sink })
+                    .is_none());
                 // Try to sync all docs we know about.
                 let our_id = self.get_repo_id().clone();
                 for (document_id, info) in self.documents.iter_mut() {
                     if !info.state.should_announce() {
                         continue;
                     }
+                    tracing::trace!(?document_id, remote=%repo_id, "sending sync message to new remote");
                     if let Some(message) = info.generate_first_sync_message(repo_id.clone()) {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: our_id.clone(),
@@ -1374,7 +1393,7 @@ impl Repo {
         let mut per_doc_messages: HashMap<DocumentId, HashMap<RepoId, VecDeque<SyncMessage>>> =
             Default::default();
         for event in mem::take(&mut self.pending_events) {
-            tracing::trace!(repo_id = ?self.repo_id, message = ?event, "processing sync message");
+            tracing::trace!(message = ?event, "processing sync message");
             match event {
                 NetworkEvent::Sync {
                     from_repo_id,
@@ -1468,6 +1487,7 @@ impl Repo {
     fn poll_close_sinks(&mut self, repo_id: RepoId) {
         if let Entry::Occupied(mut entry) = self.pending_close_sinks.entry(repo_id.clone()) {
             let sinks = mem::take(entry.get_mut());
+            tracing::trace!(remote_repo=?repo_id, num_to_close=sinks.len(), "polling close sinks");
             for mut sink in sinks.into_iter() {
                 let result = {
                     let sink_waker = Arc::new(RepoWaker::PendingCloseSink(
@@ -1479,7 +1499,10 @@ impl Repo {
                     pinned_sink.poll_close(&mut Context::from_waker(&waker))
                 };
                 if matches!(result, Poll::Pending) {
+                    tracing::trace!(remote_repo=?repo_id, "sink not ready to close");
                     entry.get_mut().push(sink);
+                } else {
+                    tracing::trace!(remote_repo=?repo_id, "sink closed");
                 }
             }
             if entry.get().is_empty() {
@@ -1491,15 +1514,18 @@ impl Repo {
     /// The event-loop of the repo.
     /// Handles events from handles and adapters.
     /// Returns a handle for optional clean shutdown.
+    #[tracing::instrument(skip(self), fields(self_id=%self.repo_id), level=tracing::Level::INFO)]
     pub fn run(mut self) -> RepoHandle {
         tracing::info!("starting repo event loop");
         let repo_sender = self.repo_sender.clone();
         let repo_id = self.repo_id.clone();
 
+        let span = tracing::Span::current();
         // Run the repo's event-loop in a thread.
         // The repo shuts down
         // when the RepoEvent::Stop is received.
         let handle = thread::spawn(move || {
+            let _entered = span.entered();
             loop {
                 self.collect_network_events();
                 self.sync_documents();
@@ -1512,7 +1538,10 @@ impl Repo {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
                             match event {
-                                RepoEvent::Stop => break,
+                                RepoEvent::Stop => {
+                                    tracing::info!("repo event loop stopping.");
+                                    break
+                                }
                                 event => self.handle_repo_event(event),
                             }
                         } else {
@@ -1568,7 +1597,6 @@ impl Repo {
             }
 
             // Start of shutdown.
-
             self.error_pending_storage_list_for_shutdown();
 
             // Error all futures for all docs,
@@ -1585,7 +1613,7 @@ impl Repo {
                 info.start_pending_removal();
             }
 
-            // Poll close sinks, and remove those that are ready or errored.
+            // close all open sinks
             let sinks_to_close: Vec<RepoId> = self
                 .remote_repos
                 .drain()
@@ -1609,6 +1637,11 @@ impl Repo {
                     // Shutdown is done.
                     break;
                 }
+                tracing::trace!(
+                num_docs_to_gc=?self.documents.len(),
+                num_sinks_to_close=?self.pending_close_sinks.len(),
+                "waiting for docs to be saved and sinks to close"
+                );
 
                 // Repo keeps sender around, should never drop.
                 match self.wake_receiver.recv().expect("Wake senders dropped") {
@@ -1635,6 +1668,21 @@ impl Repo {
             handle: Arc::new(Mutex::new(Some(handle))),
             repo_id,
             repo_sender,
+        }
+    }
+
+    /// Remove the sink corresponding to `repo_id` and poll_close it.
+    ///
+    /// ## Returns
+    /// `true` if there was a sink to remove, `false` otherwise
+    fn remove_sink(&mut self, repo_id: &RepoId) -> bool {
+        if let Some(RemoteRepo { sink, .. }) = self.remote_repos.remove(repo_id) {
+            let pending_sinks = self.pending_close_sinks.entry(repo_id.clone()).or_default();
+            pending_sinks.push(sink);
+            self.poll_close_sinks(repo_id.clone());
+            true
+        } else {
+            false
         }
     }
 }
