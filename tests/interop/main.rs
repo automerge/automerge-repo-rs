@@ -32,10 +32,18 @@ fn sync_two_repos(port: u16) {
         let (conn, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
             .await
             .unwrap();
-        repo1_handle
+
+        let conn1_driver = repo1_handle
             .connect_tungstenite(conn, ConnDirection::Outgoing)
             .await
-            .unwrap();
+            .expect("error connecting connection 1");
+        tracing::trace!("connecting conn1");
+        tokio::spawn(async {
+            if let Err(e) = conn1_driver.await {
+                tracing::error!("Error running repo 1 connection: {}", e);
+            }
+        });
+        tracing::trace!("connected conn1");
 
         let doc_handle_repo1 = repo1_handle.new_document();
         doc_handle_repo1
@@ -54,16 +62,21 @@ fn sync_two_repos(port: u16) {
         let (conn2, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
             .await
             .unwrap();
-
-        repo2_handle
+        let conn2_driver = repo2_handle
             .connect_tungstenite(conn2, ConnDirection::Outgoing)
             .await
-            .unwrap();
+            .expect("error connecting connection 2");
 
-        //tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::spawn(async {
+            if let Err(e) = conn2_driver.await {
+                tracing::error!("Error running repo 2 connection: {}", e);
+            }
+        });
 
-        println!("Requesting");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        tracing::info!("Requesting");
+        //tokio::time::sleep(Duration::from_secs(1)).await;
         let doc_handle_repo2 = repo2_handle
             .request_document(doc_handle_repo1.document_id())
             .await
