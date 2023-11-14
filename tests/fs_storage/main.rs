@@ -29,7 +29,7 @@ fn fs_store_crud() {
     doc.put(automerge::ObjId::Root, "key", "value").unwrap();
     let mut change1 = doc.get_last_local_change().unwrap().clone();
 
-    let doc_id = automerge_repo::DocumentId::from("somedoc");
+    let doc_id = automerge_repo::DocumentId::random();
     store.append(&doc_id, change1.bytes().as_ref()).unwrap();
     let result = store.get(&doc_id).unwrap().unwrap();
     assert_eq!(&result, change1.bytes().as_ref());
@@ -55,7 +55,7 @@ fn fs_store_crud() {
     assert_eq!(result, expected);
 
     // check nonexistent docs don't upset anyone
-    let nonexistent_doc_id = automerge_repo::DocumentId::from("nonexistent");
+    let nonexistent_doc_id = automerge_repo::DocumentId::random();
     let result = store.get(&nonexistent_doc_id).unwrap();
     assert!(result.is_none());
 }

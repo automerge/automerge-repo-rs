@@ -135,7 +135,7 @@ impl RepoHandle {
 
     /// Create a new document.
     pub fn new_document(&self) -> DocHandle {
-        let document_id = DocumentId(Uuid::new_v4().to_string());
+        let document_id = DocumentId::random();
         let document = new_document();
         let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
         let handle = DocHandle::new(

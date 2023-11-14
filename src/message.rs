@@ -17,7 +17,17 @@ impl Message {
                 "targetId" => target_id = Some(decoder.str()?.into()),
                 "channelId" => {
                     if decoder.probe().str().is_ok() {
-                        document_id = Some(decoder.str()?.into());
+                        let doc_str = decoder.str()?;
+                        if doc_str == "sync" {
+                            // automerge-repo-network-websocket encodes the channel id as "sync"
+                            // for join messages, we just ignore this
+                            continue;
+                        }
+                        document_id = Some(
+                            doc_str
+                                .parse()
+                                .map_err(|_| DecodeError::InvalidDocumentId)?,
+                        );
                     }
                 }
                 "type" => type_name = Some(decoder.str()?),
@@ -77,7 +87,7 @@ impl Message {
                 encoder.str("targetId").unwrap();
                 encoder.str(to_repo_id.0.as_str()).unwrap();
                 encoder.str("channelId").unwrap();
-                encoder.str(document_id.0.as_str()).unwrap();
+                encoder.str(document_id.as_uuid_str().as_str()).unwrap();
                 encoder.str("message").unwrap();
                 encoder.tag(minicbor::data::Tag::Unassigned(64)).unwrap();
                 encoder.bytes(message.as_slice()).unwrap();
@@ -117,6 +127,8 @@ pub enum DecodeError {
     MissingBroadcast,
     #[error("unknown type {0}")]
     UnknownType(String),
+    #[error("invalid document id")]
+    InvalidDocumentId,
 }
 
 impl From<minicbor::decode::Error> for DecodeError {

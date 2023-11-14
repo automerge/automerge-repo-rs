@@ -44,6 +44,7 @@ tracing = "0.1.37"
 ring = "0.16.20"
 hex = "0.4.3"
 tempfile = "3.6.0"
+bs58 = { version = "0.5.0", features = ["check"] }
 
 [dev-dependencies]
 clap = { version = "4.2.5", features = ["derive"] }
