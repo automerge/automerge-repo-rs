@@ -59,7 +59,12 @@ async fn get_doc(
     State(state): State<Arc<AppState>>,
     Path(doc_id): Path<DocumentId>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let doc_handle = state.repo_handle.request_document(doc_id).await.unwrap();
+    let doc_handle = state
+        .repo_handle
+        .request_document(doc_id)
+        .await
+        .unwrap()
+        .expect("document not found");
     let value = doc_handle.with_doc(|doc| serde_json::to_value(AutoSerde::from(doc)).unwrap());
     (StatusCode::OK, Json(value))
 }
@@ -224,7 +229,8 @@ async fn main() {
                 let doc = repo_handle_clone
                     .request_document(doc_id.clone())
                     .await
-                    .unwrap();
+                    .unwrap()
+                    .expect("document not found");
                 doc.with_doc(|doc| {
                     let val = doc
                         .get(automerge::ROOT, "repo_id")

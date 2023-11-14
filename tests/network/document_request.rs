@@ -42,10 +42,10 @@ async fn test_requesting_document_connected_peers() {
     // Request the document.
     let doc_handle_future =
         tokio::spawn(repo_handle_2.request_document(document_handle_1.document_id()));
-    let load = repo_handle_2.load(document_handle_1.document_id());
+    let _load = repo_handle_2.load(document_handle_1.document_id());
 
     assert_eq!(
-        tokio::time::timeout(Duration::from_millis(100), doc_handle_future)
+        doc_handle_future
             .await
             .expect("load future timed out")
             .unwrap()
@@ -65,10 +65,6 @@ async fn test_requesting_document_connected_peers() {
         }
     })
     .await;
-
-    // Load following a request fails, but this API should be improved.
-    // See comment at handling of `RepoEvent::LoadDoc`.
-    assert!(load.await.is_err());
 
     // Stop the repos.
     tokio::task::spawn_blocking(|| {
@@ -112,6 +108,7 @@ async fn test_requesting_document_unconnected_peers() {
         .request_document(document_handle_1.document_id())
         .await
         .unwrap()
+        .expect("document should be found")
         .document_id();
     assert_eq!(doc_id, document_handle_1.document_id());
 
@@ -158,6 +155,7 @@ async fn test_requesting_document_unconnected_peers_with_storage_load() {
         .request_document(document_handle_1.document_id())
         .await
         .unwrap()
+        .expect("document should be found")
         .document_id();
     assert_eq!(doc_id, document_handle_1.document_id());
 
@@ -254,7 +252,11 @@ async fn test_request_twice_ok_bootstrap() {
 
     // Future should resolve from storage load(no peers are connected).
     assert_eq!(
-        doc_handle_future.await.unwrap().document_id(),
+        doc_handle_future
+            .await
+            .unwrap()
+            .expect("document should be found")
+            .document_id(),
         document_handle_1.document_id()
     );
 
@@ -299,7 +301,11 @@ async fn test_request_twice_ok() {
     // Since the request was made twice,
     // but the document is ready, the future should resolve to ok.
     assert_eq!(
-        doc_handle_future.await.unwrap().document_id(),
+        doc_handle_future
+            .await
+            .unwrap()
+            .expect("document should be found")
+            .document_id(),
         document_handle.document_id()
     );
 

@@ -426,7 +426,11 @@ async fn main() {
         }
         assert!(doc_id.is_some());
         // Get the document.
-        repo_handle.request_document(doc_id.unwrap()).await.unwrap()
+        repo_handle
+            .request_document(doc_id.unwrap())
+            .await
+            .unwrap()
+            .expect("document not found")
     };
 
     // Shutdown signals for background tasks.
