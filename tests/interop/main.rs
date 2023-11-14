@@ -80,6 +80,7 @@ fn sync_two_repos(port: u16) {
         let doc_handle_repo2 = repo2_handle
             .request_document(doc_handle_repo1.document_id())
             .await
+            .unwrap()
             .unwrap();
         doc_handle_repo2.with_doc(|doc| {
             assert_eq!(

@@ -156,7 +156,7 @@ impl RepoHandle {
     pub fn request_document(
         &self,
         document_id: DocumentId,
-    ) -> RepoFuture<Result<DocHandle, RepoError>> {
+    ) -> RepoFuture<Result<Option<DocHandle>, RepoError>> {
         let document = new_document();
         let (fut, resolver) = new_repo_future_with_resolver();
         let doc_info = self.new_document_info(
@@ -308,12 +308,12 @@ pub(crate) enum DocState {
     /// Bootstrapping will resolve into a future doc handle,
     /// the optional storage fut represents first checking storage before the network.
     Bootstrap {
-        resolvers: Vec<RepoFutureResolver<Result<DocHandle, RepoError>>>,
+        resolvers: Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>>,
         storage_fut: BootstrapStorageFut,
     },
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending {
-        resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
+        resolvers: Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>>,
         storage_fut: BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>,
     },
     /// A document that has been locally created,
@@ -354,10 +354,6 @@ impl DocState {
         matches!(self, DocState::Bootstrap { .. })
     }
 
-    fn is_pending_load(&self) -> bool {
-        matches!(self, DocState::LoadPending { .. })
-    }
-
     fn should_sync(&self) -> bool {
         matches!(self, DocState::Sync(_))
             || matches!(
@@ -377,7 +373,9 @@ impl DocState {
         }
     }
 
-    fn get_bootstrap_resolvers(&mut self) -> Vec<RepoFutureResolver<Result<DocHandle, RepoError>>> {
+    fn get_bootstrap_resolvers(
+        &mut self,
+    ) -> Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>> {
         match self {
             DocState::Bootstrap { resolvers, .. } => mem::take(resolvers),
             _ => unreachable!(
@@ -390,7 +388,7 @@ impl DocState {
         match self {
             DocState::Bootstrap { resolvers, .. } => {
                 for mut resolver in resolvers.drain(..) {
-                    resolver.resolve_fut(doc_handle.clone());
+                    resolver.resolve_fut(doc_handle.clone().map(Some));
                 }
             }
             _ => unreachable!(
@@ -402,9 +400,13 @@ impl DocState {
     fn resolve_load_fut(&mut self, doc_handle: Result<Option<DocHandle>, RepoError>) {
         match self {
             DocState::LoadPending {
-                resolver,
+                resolvers,
                 storage_fut: _,
-            } => resolver.resolve_fut(doc_handle),
+            } => {
+                for mut resolver in resolvers.drain(..) {
+                    resolver.resolve_fut(doc_handle.clone());
+                }
+            }
             _ => unreachable!(
                 "Trying to resolve a load future for a document that does not have one."
             ),
@@ -414,9 +416,13 @@ impl DocState {
     fn resolve_any_fut_for_shutdown(&mut self) {
         match self {
             DocState::LoadPending {
-                resolver,
+                resolvers,
                 storage_fut: _,
-            } => resolver.resolve_fut(Err(RepoError::Shutdown)),
+            } => {
+                for mut resolver in resolvers.drain(..) {
+                    resolver.resolve_fut(Err(RepoError::Shutdown))
+                }
+            }
             DocState::Bootstrap { resolvers, .. } => {
                 for mut resolver in resolvers.drain(..) {
                     resolver.resolve_fut(Err(RepoError::Shutdown));
@@ -433,7 +439,7 @@ impl DocState {
         assert!(matches!(*waker, RepoWaker::Storage { .. }));
         match self {
             DocState::LoadPending {
-                resolver: _,
+                resolvers: _,
                 storage_fut,
             } => {
                 let waker = waker_ref(&waker);
@@ -488,7 +494,7 @@ impl DocState {
 
     fn add_boostrap_resolvers(
         &mut self,
-        incoming: &mut Vec<RepoFutureResolver<Result<DocHandle, RepoError>>>,
+        incoming: &mut Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>>,
     ) {
         match self {
             DocState::Bootstrap {
@@ -637,10 +643,6 @@ impl DocumentInfo {
 
     fn is_boostrapping(&self) -> bool {
         self.state.is_bootstrapping()
-    }
-
-    fn is_pending_load(&self) -> bool {
-        self.state.is_pending_load()
     }
 
     fn start_pending_removal(&mut self) {
@@ -1426,39 +1428,61 @@ impl Repo {
             },
             RepoEvent::LoadDoc(doc_id, resolver) => {
                 let mut resolver_clone = resolver.clone();
-                let info = self.documents.entry(doc_id.clone()).or_insert_with(|| {
-                    let storage_fut = self.storage.get(doc_id.clone());
-                    let shared_document = SharedDocument {
-                        automerge: new_document(),
-                    };
-                    let state = DocState::LoadPending {
-                        storage_fut,
-                        resolver,
-                    };
-                    let document = Arc::new(RwLock::new(shared_document));
-                    let handle_count = Arc::new(AtomicUsize::new(0));
-                    DocumentInfo::new(state, document, handle_count)
-                });
+                let entry = self.documents.entry(doc_id.clone());
+                let info = match entry {
+                    Entry::Occupied(mut entry) => {
+                        let info = entry.get_mut();
+                        match &mut info.state {
+                            DocState::Error => {
+                                resolver_clone.resolve_fut(Err(RepoError::Incorrect(
+                                    "load event called for document which is in error state"
+                                        .to_string(),
+                                )));
+                            }
+                            DocState::LoadPending { resolvers, .. } => {
+                                resolvers.push(resolver_clone);
+                            }
+                            DocState::Bootstrap { resolvers, .. } => {
+                                resolvers.push(resolver_clone);
+                            }
+                            DocState::LocallyCreatedNotEdited | DocState::Sync(_) => {
+                                info.handle_count.fetch_add(1, Ordering::SeqCst);
+                                let handle = DocHandle::new(
+                                    self.repo_sender.clone(),
+                                    doc_id.clone(),
+                                    info.document.clone(),
+                                    info.handle_count.clone(),
+                                    self.repo_id.clone(),
+                                );
+                                resolver_clone.resolve_fut(Ok(Some(handle)));
+                            }
+                            DocState::PendingRemoval(_) => resolver_clone.resolve_fut(Ok(None)),
+                        }
+                        entry.into_mut()
+                    }
+                    Entry::Vacant(entry) => {
+                        let storage_fut = self.storage.get(doc_id.clone());
+                        let shared_document = SharedDocument {
+                            automerge: new_document(),
+                        };
+                        let state = DocState::LoadPending {
+                            storage_fut,
+                            resolvers: vec![resolver_clone],
+                        };
+                        let document = Arc::new(RwLock::new(shared_document));
+                        let handle_count = Arc::new(AtomicUsize::new(0));
+                        entry.insert(DocumentInfo::new(state, document, handle_count))
+                    }
+                };
 
-                // Note: unfriendly API.
-                //
-                // API currently assumes client makes a single `load` call,
-                // for a document that has not been created or requested before.
-                //
-                // If the doc is in memory, we could simply create a new handle for it.
-                //
-                // If the doc is bootstrapping,
-                // the resolver could be added to the list of resolvers.
-                if !info.is_pending_load() {
-                    resolver_clone.resolve_fut(Err(RepoError::Incorrect));
-                    return;
+                if matches!(info.state, DocState::LoadPending { .. }) {
+                    info.poll_storage_operation(
+                        doc_id,
+                        &self.wake_sender,
+                        &self.repo_sender,
+                        &self.repo_id,
+                    );
                 }
-                info.poll_storage_operation(
-                    doc_id,
-                    &self.wake_sender,
-                    &self.repo_sender,
-                    &self.repo_id,
-                );
             }
             RepoEvent::AddChangeObserver(doc_id, change_hash, mut observer) => {
                 if let Some(info) = self.documents.get_mut(&doc_id) {

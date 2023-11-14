@@ -29,7 +29,11 @@ async fn test_document_changed_over_sync() {
     let doc_id = document_handle_1.document_id();
     tokio::spawn(async move {
         // Request the document.
-        let doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
+        let doc_handle = repo_handle_2
+            .request_document(doc_id)
+            .await
+            .unwrap()
+            .expect("document should be found");
         doc_handle.with_doc_mut(|doc| {
             let mut tx = doc.transaction();
             tx.put(
