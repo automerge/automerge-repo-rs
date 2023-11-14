@@ -1,6 +1,9 @@
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
+use std::{
+    fmt::{Display, Formatter},
+    str::FromStr,
+};
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
 pub struct RepoId(pub String);
@@ -17,8 +20,20 @@ impl<'a> From<&'a str> for RepoId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
-pub struct DocumentId(pub String);
+#[derive(Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+pub struct DocumentId([u8; 16]);
+
+impl DocumentId {
+    pub fn random() -> Self {
+        Self(uuid::Uuid::new_v4().into_bytes())
+    }
+
+    // This is necessary to make the interop tests work, we'll remove it once
+    // we upgrade to the latest version of automerge-repo for the interop tests
+    pub fn as_uuid_str(&self) -> String {
+        uuid::Uuid::from_slice(self.0.as_ref()).unwrap().to_string()
+    }
+}
 
 impl AsRef<[u8]> for DocumentId {
     fn as_ref(&self) -> &[u8] {
@@ -26,15 +41,51 @@ impl AsRef<[u8]> for DocumentId {
     }
 }
 
-impl Display for DocumentId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid document ID: {0}")]
+pub struct BadDocumentId(String);
+
+impl TryFrom<Vec<u8>> for DocumentId {
+    type Error = BadDocumentId;
+
+    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
+        match uuid::Uuid::from_slice(v.as_slice()) {
+            Ok(id) => Ok(Self(id.into_bytes())),
+            Err(e) => Err(BadDocumentId(format!("invalid uuid: {}", e))),
+        }
     }
 }
 
-impl<'a> From<&'a str> for DocumentId {
-    fn from(s: &'a str) -> Self {
-        Self(s.to_string())
+impl FromStr for DocumentId {
+    type Err = BadDocumentId;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match bs58::decode(s).with_check(None).into_vec() {
+            Ok(bytes) => Self::try_from(bytes),
+            Err(_) => {
+                // attempt to parse legacy UUID format
+                let uuid = uuid::Uuid::parse_str(s).map_err(|_| {
+                    BadDocumentId(
+                        "expected either a bs58-encoded document ID or a UUID".to_string(),
+                    )
+                })?;
+                Ok(Self(uuid.into_bytes()))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for DocumentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let as_string = bs58::encode(&self.0).with_check().into_string();
+        write!(f, "{}", as_string)
+    }
+}
+
+impl Display for DocumentId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let as_string = bs58::encode(&self.0).with_check().into_string();
+        write!(f, "{}", as_string)
     }
 }
 
