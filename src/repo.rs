@@ -38,7 +38,7 @@ pub enum RepoError {
     /// The repo is shutting down.
     Shutdown,
     /// Incorrect use of API. TODO: specify.
-    Incorrect,
+    Incorrect(String),
     /// Error coming from storage.
     StorageError(StorageError),
 }
@@ -683,8 +683,12 @@ impl DocumentInfo {
                             let mut doc = self.document.write();
                             doc.automerge.load_incremental(&val)
                         };
-                        if res.is_err() {
-                            self.state.resolve_load_fut(Err(RepoError::Incorrect));
+                        if let Err(e) = res {
+                            self.state
+                                .resolve_load_fut(Err(RepoError::Incorrect(format!(
+                                    "error loading document: {:?}",
+                                    e
+                                ))));
                             self.state = DocState::Error;
                             return;
                         }
@@ -720,8 +724,12 @@ impl DocumentInfo {
                             let mut doc = self.document.write();
                             doc.automerge.load_incremental(&val)
                         };
-                        if res.is_err() {
-                            self.state.resolve_bootstrap_fut(Err(RepoError::Incorrect));
+                        if let Err(e) = res {
+                            self.state
+                                .resolve_bootstrap_fut(Err(RepoError::Incorrect(format!(
+                                    "error loading document: {:?}",
+                                    e
+                                ))));
                             self.state = DocState::Error;
                             return;
                         }
@@ -1334,7 +1342,8 @@ impl Repo {
                             );
                             info.state.resolve_bootstrap_fut(Ok(handle));
                         } else {
-                            info.state.resolve_bootstrap_fut(Err(RepoError::Incorrect));
+                            tracing::warn!(state=?info.state, "newdoc event received for existing document with incorrect state");
+                            info.state.resolve_bootstrap_fut(Err(RepoError::Incorrect(format!("newdoc event received for existing document with incorrect state: {:?}", info.state))));
                         }
                         return;
                     } else {
@@ -1465,7 +1474,9 @@ impl Repo {
                 // If the doc is bootstrapping,
                 // the resolver could be added to the list of resolvers.
                 if !info.is_pending_load() {
-                    resolver_clone.resolve_fut(Err(RepoError::Incorrect));
+                    resolver_clone.resolve_fut(Err(RepoError::Incorrect(
+                        "attempted to load a document which is already loading".to_string(),
+                    )));
                     return;
                 }
                 info.poll_storage_operation(
