@@ -25,7 +25,7 @@ impl<'a> From<&'a str> for RepoId {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct DocumentId(Vec<u8>);
 
@@ -59,6 +59,13 @@ impl FromStr for DocumentId {
             Ok(bytes) => Ok(Self(bytes)),
             Err(_) => Err(BadDocumentId(s.to_string())),
         }
+    }
+}
+
+impl std::fmt::Debug for DocumentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let as_string = bs58::encode(&self.0).with_check().into_string();
+        write!(f, "{}", as_string)
     }
 }
 

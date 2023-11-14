@@ -47,10 +47,14 @@ impl RepoHandle {
             }
         });
 
+        let sink_repo_id = self.get_repo_id().clone();
         let sink = sink
-            .with_flat_map::<RepoMessage, _, _>(|msg| match msg {
-                RepoMessage::Sync { .. } => futures::stream::iter(vec![Ok(Message::Repo(msg))]),
-                _ => futures::stream::iter(vec![]),
+            .with_flat_map::<RepoMessage, _, _>(move |msg| {
+                tracing::trace!(?msg, repo_id=?sink_repo_id, "Sending repo message");
+                match msg {
+                    RepoMessage::Sync { .. } => futures::stream::iter(vec![Ok(Message::Repo(msg))]),
+                    _ => futures::stream::iter(vec![]),
+                }
             })
             .sink_map_err(|e| {
                 tracing::error!(?e, "Error sending repo message");
