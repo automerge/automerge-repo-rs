@@ -15,7 +15,7 @@ async fn test_simple_save() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
     let document_id = document_handle.document_id();
 
     // Edit the document.
@@ -70,7 +70,7 @@ async fn test_save_on_shutdown() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
 
     // Edit the document.
     let expected_value = format!("{}", repo_handle.get_repo_id());
@@ -111,7 +111,7 @@ async fn test_multiple_save() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
     let document_id = document_handle.document_id();
 
     // Edit the document, once.
@@ -177,7 +177,7 @@ async fn test_compact_save() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
     let document_id = document_handle.document_id();
 
     // Edit the document, once.

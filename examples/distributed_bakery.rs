@@ -399,7 +399,7 @@ async fn main() {
         }
 
         // The initial document.
-        let doc_handle = repo_handle.new_document();
+        let doc_handle = repo_handle.new_document().await;
         doc_handle.with_doc_mut(|doc| {
             let mut tx = doc.transaction();
             reconcile(&mut tx, &bakery).unwrap();
