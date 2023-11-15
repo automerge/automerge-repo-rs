@@ -42,7 +42,7 @@ async fn test_simple_sync() {
         let repo_handle = repo.run();
 
         // Create a document.
-        let doc_handle = repo_handle.new_document();
+        let doc_handle = repo_handle.new_document().await;
         doc_handle.with_doc_mut(|doc| {
             let mut tx = doc.transaction();
             tx.put(
@@ -104,7 +104,7 @@ async fn test_sinks_closed_on_shutdown() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -180,7 +180,7 @@ async fn test_sinks_closed_on_replacement() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -271,7 +271,7 @@ async fn test_streams_chained_on_replacement() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -368,7 +368,7 @@ async fn sync_with_unauthorized_peer_never_occurs() {
     connect_repos(&repo_handle_1, &repo_handle_2);
     connect_repos(&repo_handle_1, &repo_handle_3);
 
-    let doc_handle_1 = repo_handle_1.new_document();
+    let doc_handle_1 = repo_handle_1.new_document().await;
     doc_handle_1.with_doc_mut(|doc| {
         let mut tx = doc.transaction();
         tx.put(

@@ -134,40 +134,30 @@ impl RepoHandle {
     }
 
     /// Create a new document.
-    pub fn new_document(&self) -> DocHandle {
+    pub fn new_document(&self) -> impl Future<Output = DocHandle> {
         let document_id = DocumentId::random();
         let document = new_document();
-        let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
-        let handle = DocHandle::new(
-            self.repo_sender.clone(),
-            document_id.clone(),
-            doc_info.document.clone(),
-            doc_info.handle_count.clone(),
-            self.repo_id.clone(),
-        );
+        let (future, resolver) = new_repo_future_with_resolver();
         self.repo_sender
-            .send(RepoEvent::NewDoc(document_id, doc_info))
+            .send(RepoEvent::NewDoc(
+                document_id,
+                SharedDocument {
+                    automerge: document,
+                },
+                resolver,
+            ))
             .expect("Failed to send repo event.");
-        // TODO: return a future to make-up for the unboundedness of the channel.
-        handle
+        future
     }
 
     /// Boostrap a document, first from storage, and if not found over the network.
     pub fn request_document(
         &self,
         document_id: DocumentId,
-    ) -> RepoFuture<Result<Option<DocHandle>, RepoError>> {
-        let document = new_document();
+    ) -> impl Future<Output = Result<Option<DocHandle>, RepoError>> {
         let (fut, resolver) = new_repo_future_with_resolver();
-        let doc_info = self.new_document_info(
-            document,
-            DocState::Bootstrap {
-                resolvers: vec![resolver],
-                storage_fut: None,
-            },
-        );
         self.repo_sender
-            .send(RepoEvent::NewDoc(document_id, doc_info))
+            .send(RepoEvent::RequestDoc(document_id, resolver))
             .expect("Failed to send repo event.");
         fut
     }
@@ -184,15 +174,6 @@ impl RepoHandle {
             .send(RepoEvent::LoadDoc(id, resolver))
             .expect("Failed to send repo event.");
         fut
-    }
-
-    fn new_document_info(&self, document: Automerge, state: DocState) -> DocumentInfo {
-        let document = SharedDocument {
-            automerge: document,
-        };
-        let document = Arc::new(RwLock::new(document));
-        let handle_count = Arc::new(AtomicUsize::new(1));
-        DocumentInfo::new(state, document, handle_count)
     }
 
     /// Add a network adapter, representing a connection with a remote repo.
@@ -215,7 +196,12 @@ impl RepoHandle {
 /// Events sent by repo or doc handles to the repo.
 pub(crate) enum RepoEvent {
     /// Start processing a new document.
-    NewDoc(DocumentId, DocumentInfo),
+    NewDoc(DocumentId, SharedDocument, RepoFutureResolver<DocHandle>),
+    /// Request a document we don't have
+    RequestDoc(
+        DocumentId,
+        RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
+    ),
     /// A document changed.
     DocChange(DocumentId),
     /// A document was closed(all doc handles dropped).
@@ -246,7 +232,8 @@ pub(crate) enum RepoEvent {
 impl fmt::Debug for RepoEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RepoEvent::NewDoc(_, _) => f.write_str("RepoEvent::NewDoc"),
+            RepoEvent::NewDoc(_, _, _) => f.write_str("RepoEvent::NewDoc"),
+            RepoEvent::RequestDoc(_, _) => f.write_str("RepoEvent::RequestDoc"),
             RepoEvent::DocChange(_) => f.write_str("RepoEvent::DocChange"),
             RepoEvent::DocClosed(_) => f.write_str("RepoEvent::DocClosed"),
             RepoEvent::AddChangeObserver(_, _, _) => f.write_str("RepoEvent::AddChangeObserver"),
@@ -373,17 +360,6 @@ impl DocState {
         }
     }
 
-    fn get_bootstrap_resolvers(
-        &mut self,
-    ) -> Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>> {
-        match self {
-            DocState::Bootstrap { resolvers, .. } => mem::take(resolvers),
-            _ => unreachable!(
-                "Trying to get boostrap resolvers from a document that cannot have any."
-            ),
-        }
-    }
-
     fn resolve_bootstrap_fut(&mut self, doc_handle: Result<DocHandle, RepoError>) {
         match self {
             DocState::Bootstrap { resolvers, .. } => {
@@ -471,38 +447,6 @@ impl DocState {
             _ => unreachable!(
                 "Trying to remove a boostrap load future for a document that does not have one."
             ),
-        }
-    }
-
-    fn add_boostrap_storage_fut(
-        &mut self,
-        fut: BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>,
-    ) {
-        match self {
-            DocState::Bootstrap {
-                resolvers: _,
-                ref mut storage_fut,
-            } => {
-                assert!(storage_fut.is_none());
-                *storage_fut = Some(fut);
-            }
-            _ => unreachable!(
-                "Trying to add a boostrap load future for a document that does not need one."
-            ),
-        }
-    }
-
-    fn add_boostrap_resolvers(
-        &mut self,
-        incoming: &mut Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>>,
-    ) {
-        match self {
-            DocState::Bootstrap {
-                ref mut resolvers, ..
-            } => {
-                resolvers.append(incoming);
-            }
-            _ => unreachable!("Unexpected adding of boostrap resolvers."),
         }
     }
 
@@ -639,10 +583,6 @@ impl DocumentInfo {
             change_observers: Default::default(),
             patches_since_last_save: 0,
         }
-    }
-
-    fn is_boostrapping(&self) -> bool {
-        self.state.is_bootstrapping()
     }
 
     fn start_pending_removal(&mut self) {
@@ -1160,14 +1100,30 @@ impl Repo {
                                     tracing::error!(error = ?e, "Error decoding sync message.");
                                     break true;
                                 }
-                            }
-                            Ok(RepoMessage::Request { sender_id, target_id, document_id, sync_message }) => {
+                            },
+                            Ok(RepoMessage::Request {
+                                sender_id,
+                                target_id,
+                                document_id,
+                                sync_message,
+                            }) => {
                                 todo!()
                             }
-                            Ok(RepoMessage::Unavailable { document_id, sender_id, target_id }) => {
+                            Ok(RepoMessage::Unavailable {
+                                document_id,
+                                sender_id,
+                                target_id,
+                            }) => {
                                 todo!()
                             }
-                            Ok(RepoMessage::Ephemeral { from_repo_id, to_repo_id, document_id, message, session_id, count }) => {
+                            Ok(RepoMessage::Ephemeral {
+                                from_repo_id,
+                                to_repo_id,
+                                document_id,
+                                message,
+                                session_id,
+                                count,
+                            }) => {
                                 todo!()
                             }
                             Err(e) => {
@@ -1300,34 +1256,52 @@ impl Repo {
     fn handle_repo_event(&mut self, event: RepoEvent) {
         tracing::trace!(event = ?event, "Handling repo event");
         match event {
-            // TODO: simplify handling of `RepoEvent::NewDoc`.
-            // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
-            // the doc info could be created here.
-            RepoEvent::NewDoc(document_id, mut info) => {
-                if info.is_boostrapping() {
-                    tracing::trace!("adding bootstrapping document");
-                    if let Some(existing_info) = self.documents.get_mut(&document_id) {
-                        if matches!(existing_info.state, DocState::Bootstrap { .. }) {
-                            let mut resolvers = info.state.get_bootstrap_resolvers();
-                            existing_info.state.add_boostrap_resolvers(&mut resolvers);
-                        } else if matches!(existing_info.state, DocState::Sync(_)) {
-                            existing_info.handle_count.fetch_add(1, Ordering::SeqCst);
-                            let handle = DocHandle::new(
-                                self.repo_sender.clone(),
-                                document_id.clone(),
-                                existing_info.document.clone(),
-                                existing_info.handle_count.clone(),
-                                self.repo_id.clone(),
-                            );
-                            info.state.resolve_bootstrap_fut(Ok(handle));
-                        } else {
-                            tracing::warn!(state=?info.state, "newdoc event received for existing document with incorrect state");
-                            info.state.resolve_bootstrap_fut(Err(RepoError::Incorrect(format!("newdoc event received for existing document with incorrect state: {:?}", info.state))));
-                        }
-                        return;
-                    } else {
+            RepoEvent::NewDoc(document_id, document, mut resolver) => {
+                assert!(
+                    self.documents.get(&document_id).is_none(),
+                    "NewDoc event should be sent with a fresh document ID and only be sent once"
+                );
+                let shared = Arc::new(RwLock::new(document));
+                let handle_count = Arc::new(AtomicUsize::new(1));
+                let info = DocumentInfo::new(
+                    DocState::LocallyCreatedNotEdited,
+                    shared.clone(),
+                    handle_count.clone(),
+                );
+                self.documents.insert(document_id.clone(), info);
+                resolver.resolve_fut(DocHandle::new(
+                    self.repo_sender.clone(),
+                    document_id.clone(),
+                    shared.clone(),
+                    handle_count.clone(),
+                    self.repo_id.clone(),
+                ));
+                Self::enqueue_share_decisions(
+                    self.remote_repos.keys(),
+                    &mut self.pending_share_decisions,
+                    &mut self.share_decisions_to_poll,
+                    self.share_policy.as_ref(),
+                    document_id,
+                    ShareType::Announce,
+                );
+            }
+            RepoEvent::RequestDoc(document_id, mut resolver) => {
+                let info = self
+                    .documents
+                    .entry(document_id.clone())
+                    .or_insert_with(|| {
+                        let handle_count = Arc::new(AtomicUsize::new(1));
                         let storage_fut = self.storage.get(document_id.clone());
-                        info.state.add_boostrap_storage_fut(storage_fut);
+                        let mut info = DocumentInfo::new(
+                            DocState::Bootstrap {
+                                resolvers: vec![],
+                                storage_fut: Some(storage_fut),
+                            },
+                            Arc::new(RwLock::new(SharedDocument {
+                                automerge: new_document(),
+                            })),
+                            handle_count.clone(),
+                        );
                         info.poll_storage_operation(
                             document_id.clone(),
                             &self.wake_sender,
@@ -1335,26 +1309,44 @@ impl Repo {
                             &self.repo_id,
                         );
 
-                        let share_type = if info.is_boostrapping() {
-                            Some(ShareType::Request)
-                        } else if info.state.should_sync() {
-                            Some(ShareType::Announce)
-                        } else {
-                            None
-                        };
-                        if let Some(share_type) = share_type {
-                            Self::enqueue_share_decisions(
-                                self.remote_repos.keys(),
-                                &mut self.pending_share_decisions,
-                                &mut self.share_decisions_to_poll,
-                                self.share_policy.as_ref(),
-                                document_id.clone(),
-                                share_type,
-                            );
-                        }
+                        info
+                    });
+
+                match &mut info.state {
+                    DocState::Bootstrap { resolvers, .. } => resolvers.push(resolver),
+                    DocState::Sync(_) => {
+                        info.handle_count.fetch_add(1, Ordering::SeqCst);
+                        let handle = DocHandle::new(
+                            self.repo_sender.clone(),
+                            document_id.clone(),
+                            info.document.clone(),
+                            info.handle_count.clone(),
+                            self.repo_id.clone(),
+                        );
+                        resolver.resolve_fut(Ok(Some(handle)));
+                    }
+                    DocState::LoadPending { resolvers, .. } => resolvers.push(resolver),
+                    DocState::PendingRemoval(_) => resolver.resolve_fut(Ok(None)),
+                    DocState::Error => {
+                        resolver.resolve_fut(Err(RepoError::Incorrect(
+                            "request event called for document which is in error state".to_string(),
+                        )));
+                    }
+                    DocState::LocallyCreatedNotEdited => {
+                        unreachable!("request event called for document which is in locally created not edited state");
                     }
                 }
-                self.documents.insert(document_id, info);
+
+                if info.state.is_bootstrapping() {
+                    Self::enqueue_share_decisions(
+                        self.remote_repos.keys(),
+                        &mut self.pending_share_decisions,
+                        &mut self.share_decisions_to_poll,
+                        self.share_policy.as_ref(),
+                        document_id.clone(),
+                        ShareType::Request,
+                    );
+                }
             }
             RepoEvent::DocChange(doc_id) => {
                 // Handle doc changes: sync the document.

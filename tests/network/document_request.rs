@@ -2,7 +2,7 @@ extern crate test_utils;
 
 use std::time::Duration;
 
-use automerge::transaction::Transactable;
+use automerge::{transaction::Transactable, ReadDoc};
 use automerge_repo::{DocumentId, Repo, RepoHandle, RepoId};
 use test_log::test;
 use test_utils::storage_utils::{InMemoryStorage, SimpleStorage};
@@ -25,7 +25,7 @@ async fn test_requesting_document_connected_peers() {
     connect_repos(&repo_handle_1, &repo_handle_2);
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -87,7 +87,7 @@ async fn test_requesting_document_unconnected_peers() {
     connect_repos(&repo_handle_1, &repo_handle_2);
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -127,7 +127,7 @@ async fn test_requesting_document_unconnected_peers_with_storage_load() {
     let repo_handle_1 = repo_1.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -179,7 +179,7 @@ async fn test_request_with_repo_stop() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -219,7 +219,7 @@ async fn test_request_twice_ok_bootstrap() {
     let repo_handle_1 = repo_1.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -278,7 +278,7 @@ async fn test_request_twice_ok() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
 
     // Edit the document.
     document_handle.with_doc_mut(|doc| {
@@ -327,7 +327,7 @@ async fn test_request_unavailable_point_to_point() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -368,7 +368,7 @@ async fn request_doc_which_is_not_shared_does_not_announce() {
 
     connect_repos(&repo_handle_1, &repo_handle_2);
 
-    let document_id = create_doc_with_contents(&repo_handle_1, "peer", "repo1");
+    let document_id = create_doc_with_contents(&repo_handle_1, "peer", "repo1").await;
 
     // Wait for the announcement to have (maybe) taken place
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -378,8 +378,56 @@ async fn request_doc_which_is_not_shared_does_not_announce() {
     assert!(doc_handle.is_none());
 }
 
-fn create_doc_with_contents(handle: &RepoHandle, key: &str, value: &str) -> DocumentId {
-    let document_handle = handle.new_document();
+#[test(tokio::test)]
+async fn request_document_transitive() {
+    // Test that requesting a document from a peer who doesn't have that document but who is
+    // connected to another peer that does have the document eventually resolves
+
+    let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage));
+    let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage));
+    let repo_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage)).with_share_policy(
+        Box::new(|_peer: &RepoId, _doc: &DocumentId| {
+            automerge_repo::share_policy::ShareDecision::DontShare
+        }),
+    );
+
+    let repo_handle_1 = repo_1.run();
+    let repo_handle_2 = repo_2.run();
+    let repo_handle_3 = repo_3.run();
+
+    connect_repos(&repo_handle_1, &repo_handle_2);
+    connect_repos(&repo_handle_2, &repo_handle_3);
+
+    let document_id = create_doc_with_contents(&repo_handle_3, "peer", "repo3").await;
+
+    let doc_handle = match tokio::time::timeout(
+        Duration::from_millis(300),
+        repo_handle_1.request_document(document_id),
+    )
+    .await
+    {
+        Ok(d) => d.unwrap(),
+        Err(_e) => {
+            panic!("Request timed out");
+        }
+    };
+
+    doc_handle.expect("doc should exist").with_doc(|doc| {
+        let val = doc.get(&automerge::ROOT, "peer").unwrap();
+        assert_eq!(val.unwrap().0.into_string().unwrap(), "repo3");
+    });
+
+    tokio::task::spawn_blocking(|| {
+        repo_handle_1.stop().unwrap();
+        repo_handle_2.stop().unwrap();
+        repo_handle_3.stop().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+async fn create_doc_with_contents(handle: &RepoHandle, key: &str, value: &str) -> DocumentId {
+    let document_handle = handle.new_document().await;
     document_handle.with_doc_mut(|doc| {
         let mut tx = doc.transaction();
         tx.put(automerge::ROOT, key, value)

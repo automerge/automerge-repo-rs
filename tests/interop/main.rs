@@ -45,7 +45,7 @@ fn sync_two_repos(port: u16) {
         });
         tracing::trace!("connected conn1");
 
-        let doc_handle_repo1 = repo1_handle.new_document();
+        let doc_handle_repo1 = repo1_handle.new_document().await;
         doc_handle_repo1
             .with_doc_mut(|doc| {
                 doc.transact(|tx| {

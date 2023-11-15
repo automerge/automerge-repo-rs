@@ -15,7 +15,7 @@ async fn test_loading_document_found_immediately() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
 
     // Edit the document.
     let doc_data = document_handle.with_doc_mut(|doc| {
@@ -66,7 +66,7 @@ async fn test_loading_document_found_async() {
     let repo_handle = repo.run();
 
     // Create a document for one repo.
-    let document_handle = repo_handle.new_document();
+    let document_handle = repo_handle.new_document().await;
 
     // Edit the document.
     let doc_data = document_handle.with_doc_mut(|doc| {
