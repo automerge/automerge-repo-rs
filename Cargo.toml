@@ -17,6 +17,9 @@ required-features = ["tokio"]
 name = "interop"
 required-features = ["tokio", "tungstenite"]
 
+[[test]]
+name = "network"
+
 [features]
 tokio = ["dep:tokio", "dep:tokio-util"]
 tungstenite = ["dep:tungstenite"]
@@ -45,12 +48,13 @@ reqwest = { version = "0.11.17", features = ["json", "blocking"], default-featur
 axum = { version = "0.6.18" }
 axum-macros = "0.3.7"
 tokio = { version = "1.27", features = ["full"] }
+tokio-stream = { version = "0.1" }
 tokio-serde = {version = "0.8.0", features = ["json"]}
 tokio-tungstenite = { version = "0.20.1", features = ["connect"] }
 serde_json = "1.0.96"
 test_utils = { path = "test_utils" }
-test-log = "0.2.12"
+test-log = { version = "0.2.12", features = ["trace"] }
 env_logger = "0.10.0"
-tracing-subscriber = "0.3.17"
+tracing-subscriber = { version = "0.3.17", features = ["fmt", "env-filter"] }
 itertools = "0.11.0"
 autosurgeon = "0.7.1"

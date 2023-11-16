@@ -9,21 +9,18 @@ pub enum ConnDirection {
 }
 
 impl RepoHandle {
-    pub async fn connect_stream<S, SendErr, RecvErr>(
+    pub async fn connect_stream<Str, Snk, SendErr, RecvErr>(
         &self,
-        stream: S,
+        mut stream: Str,
+        mut sink: Snk,
         direction: ConnDirection,
     ) -> Result<(), NetworkError>
     where
         SendErr: std::error::Error + Send + Sync + 'static,
         RecvErr: std::error::Error + Send + Sync + 'static,
-        S: Sink<Message, Error = SendErr>
-            + Stream<Item = Result<Message, RecvErr>>
-            + Send
-            + 'static,
+        Snk: Sink<Message, Error = SendErr> + Send + 'static + Unpin,
+        Str: Stream<Item = Result<Message, RecvErr>> + Send + 'static + Unpin,
     {
-        let (mut sink, mut stream) = stream.split();
-
         let other_id = self.handshake(&mut stream, &mut sink, direction).await?;
         tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "Handshake complete");
 
@@ -36,11 +33,16 @@ impl RepoHandle {
                 }
                 Ok(m) => {
                     tracing::warn!(?m, repo_id=?repo_id, "Received non-repo message");
-                    Err(NetworkError::Error)
+                    Err(NetworkError::Error(
+                        "unexpected non-repo message".to_string(),
+                    ))
                 }
                 Err(e) => {
                     tracing::error!(?e, repo_id=?repo_id, "Error receiving repo message");
-                    Err(NetworkError::Error)
+                    Err(NetworkError::Error(format!(
+                        "error receiving repo message: {}",
+                        e
+                    )))
                 }
             }
         });
@@ -52,7 +54,7 @@ impl RepoHandle {
             })
             .sink_map_err(|e| {
                 tracing::error!(?e, "Error sending repo message");
-                NetworkError::Error
+                NetworkError::Error(format!("error sending repo message: {}", e))
             });
 
         self.new_remote_repo(other_id, Box::new(stream), Box::new(sink));
@@ -77,22 +79,43 @@ impl RepoHandle {
                 if let Some(msg) = stream.next().await {
                     let other_id = match msg {
                         Ok(Message::Join(other_id)) => other_id,
-                        _ => return Err(NetworkError::Error),
+                        Ok(other) => {
+                            return Err(NetworkError::Error(format!(
+                                "unexpected message (expecting join): {:?}",
+                                other
+                            )))
+                        }
+                        Err(e) => {
+                            return Err(NetworkError::Error(format!("error reciving: {}", e)))
+                        }
                     };
                     let msg = Message::Peer(self.get_repo_id().clone());
-                    sink.send(msg).await.map_err(|_| NetworkError::Error)?;
+                    sink.send(msg)
+                        .await
+                        .map_err(|e| NetworkError::Error(format!("error sending: {}", e)))?;
                     Ok(other_id)
                 } else {
-                    Err(NetworkError::Error)
+                    Err(NetworkError::Error(
+                        "unexpected end of receive stream".to_string(),
+                    ))
                 }
             }
             ConnDirection::Outgoing => {
                 let msg = Message::Join(self.get_repo_id().clone());
-                sink.send(msg).await.map_err(|_| NetworkError::Error)?;
-                if let Some(Ok(Message::Peer(other_id))) = stream.next().await {
-                    Ok(other_id)
-                } else {
-                    Err(NetworkError::Error)
+                sink.send(msg)
+                    .await
+                    .map_err(|e| NetworkError::Error(format!("send error: {}", e)))?;
+                let msg = stream.next().await;
+                match msg {
+                    Some(Ok(Message::Peer(sender))) => Ok(sender),
+                    Some(Ok(other)) => Err(NetworkError::Error(format!(
+                        "unexpected message (expecting peer): {:?}",
+                        other
+                    ))),
+                    Some(Err(e)) => Err(NetworkError::Error(format!("error sending: {}", e))),
+                    None => Err(NetworkError::Error(
+                        "unexpected end of receive stream".to_string(),
+                    )),
                 }
             }
         }

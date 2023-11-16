@@ -28,7 +28,9 @@ impl RepoHandle {
         let codec = Codec::new();
         let framed = tokio_util::codec::Framed::new(io, codec);
 
-        self.connect_stream(framed, direction).await?;
+        let (sink, stream) = framed.split();
+
+        self.connect_stream(stream, sink, direction).await?;
 
         Ok(())
     }
@@ -45,25 +47,31 @@ impl RepoHandle {
             + Send
             + 'static,
     {
-        let msg_stream = stream
-            .map::<Result<Message, NetworkError>, _>(|msg| {
-                let msg = msg.map_err(|_| NetworkError::Error)?;
-                match msg {
-                    tungstenite::Message::Binary(data) => Message::decode(&data).map_err(|e| {
-                        tracing::error!(err=?e, "error decoding message");
-                        NetworkError::Error
-                    }),
-                    _ => Err(NetworkError::Error),
-                }
-            })
-            .sink_map_err(|_| NetworkError::Error)
+        let (sink, stream) = stream.split();
+
+        let msg_stream = stream.map::<Result<Message, NetworkError>, _>(|msg| {
+            let msg =
+                msg.map_err(|e| NetworkError::Error(format!("websocket receive error: {}", e)))?;
+            match msg {
+                tungstenite::Message::Binary(data) => Message::decode(&data).map_err(|e| {
+                    tracing::error!(err=?e, msg=%hex::encode(data), "error decoding message");
+                    NetworkError::Error(format!("error decoding message: {}", e))
+                }),
+                _ => Err(NetworkError::Error(
+                    "unexpected non-binary message".to_string(),
+                )),
+            }
+        });
+
+        let sink = sink
+            .sink_map_err(|e| NetworkError::Error(format!("websocket send error: {}", e)))
             .with(|msg: Message| {
                 futures::future::ready(Ok::<_, NetworkError>(tungstenite::Message::Binary(
                     msg.encode(),
                 )))
             });
 
-        self.connect_stream(msg_stream, direction).await?;
+        self.connect_stream(msg_stream, sink, direction).await?;
 
         Ok(())
     }
@@ -89,8 +97,8 @@ pub enum CodecError {
 }
 
 impl From<CodecError> for NetworkError {
-    fn from(_err: CodecError) -> Self {
-        NetworkError::Error
+    fn from(err: CodecError) -> Self {
+        NetworkError::Error(err.to_string())
     }
 }
 
