@@ -3,6 +3,8 @@ mod interfaces;
 mod message;
 mod network_connect;
 mod repo;
+pub mod share_policy;
+pub use share_policy::{SharePolicy, SharePolicyError};
 
 pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{

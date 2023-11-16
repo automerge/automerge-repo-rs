@@ -1,7 +1,9 @@
 extern crate test_utils;
 
+use std::time::Duration;
+
 use automerge::transaction::Transactable;
-use automerge_repo::Repo;
+use automerge_repo::{DocumentId, Repo, RepoHandle, RepoId};
 use test_log::test;
 use test_utils::storage_utils::{InMemoryStorage, SimpleStorage};
 
@@ -10,12 +12,12 @@ use crate::tincans::connect_repos;
 #[test(tokio::test)]
 async fn test_requesting_document_connected_peers() {
     // Create two repos.
-    let repo_1 = Repo::new(None, Box::new(SimpleStorage));
+    let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage));
 
     // Keeping a handle to the storage of repo_2,
     // to later assert requested doc is saved.
     let storage = InMemoryStorage::default();
-    let repo_2 = Repo::new(None, Box::new(storage.clone()));
+    let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(storage.clone()));
 
     // Run the repos in the background.
     let repo_handle_1 = repo_1.run();
@@ -43,16 +45,23 @@ async fn test_requesting_document_connected_peers() {
     let load = repo_handle_2.load(document_handle_1.document_id());
 
     assert_eq!(
-        doc_handle_future.await.unwrap().unwrap().document_id(),
+        tokio::time::timeout(Duration::from_millis(100), doc_handle_future)
+            .await
+            .expect("load future timed out")
+            .unwrap()
+            .expect("document should be found")
+            .document_id(),
         document_handle_1.document_id()
     );
-    let _ = tokio::task::spawn_blocking(move || {
+
+    let _ = tokio::task::spawn(async move {
         // Check that the document has been saved in storage.
         // TODO: replace the loop with an async notification mechanism.
         loop {
             if storage.contains_document(document_handle_1.document_id()) {
                 break;
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await;
@@ -337,4 +346,39 @@ async fn test_request_unavailable_point_to_point() {
 
     // Since the repo is stopping, the future should error.
     assert!(doc_handle_future.await.is_err());
+}
+
+#[test(tokio::test)]
+async fn request_doc_which_is_not_shared_does_not_announce() {
+    let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage)).with_share_policy(
+        Box::new(|_peer: &RepoId, _doc_id: &DocumentId| {
+            automerge_repo::share_policy::ShareDecision::DontShare
+        }),
+    );
+    let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage));
+
+    let repo_handle_1 = repo_1.run();
+    let repo_handle_2 = repo_2.run();
+
+    connect_repos(&repo_handle_1, &repo_handle_2);
+
+    let document_id = create_doc_with_contents(&repo_handle_1, "peer", "repo1");
+
+    // Wait for the announcement to have (maybe) taken place
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // now try and resolve the document  from storage of repo 2
+    let doc_handle = repo_handle_2.load(document_id).await.unwrap();
+    assert!(doc_handle.is_none());
+}
+
+fn create_doc_with_contents(handle: &RepoHandle, key: &str, value: &str) -> DocumentId {
+    let document_handle = handle.new_document();
+    document_handle.with_doc_mut(|doc| {
+        let mut tx = doc.transaction();
+        tx.put(automerge::ROOT, key, value)
+            .expect("Failed to change the document.");
+        tx.commit();
+    });
+    document_handle.document_id()
 }
