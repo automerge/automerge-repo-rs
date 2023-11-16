@@ -1,7 +1,7 @@
 extern crate test_utils;
 
 use automerge::transaction::Transactable;
-use automerge_repo::Repo;
+use automerge_repo::{share_policy::ShareDecision, DocumentId, Repo, RepoId};
 use futures::{select, FutureExt};
 use std::time::Duration;
 use test_utils::storage_utils::SimpleStorage;
@@ -336,4 +336,45 @@ async fn test_streams_chained_on_replacement() {
     assert!(old_right_closed.load(std::sync::atomic::Ordering::Acquire));
     assert!(new_left_closed.load(std::sync::atomic::Ordering::Acquire));
     assert!(new_right_closed.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test(tokio::test)]
+async fn sync_with_unauthorized_peer_never_occurs() {
+    let repo_handle_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage))
+        .with_share_policy(Box::new(|repo: &RepoId, _: &DocumentId| {
+            if repo == &RepoId::from("repo2") {
+                ShareDecision::DontShare
+            } else {
+                ShareDecision::Share
+            }
+        }))
+        .run();
+    let repo_handle_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage)).run();
+    let repo_handle_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage)).run();
+
+    connect_repos(&repo_handle_1, &repo_handle_2);
+    connect_repos(&repo_handle_1, &repo_handle_3);
+
+    let doc_handle_1 = repo_handle_1.new_document();
+    doc_handle_1.with_doc_mut(|doc| {
+        let mut tx = doc.transaction();
+        tx.put(
+            automerge::ROOT,
+            "repo_id",
+            format!("{}", repo_handle_1.get_repo_id()),
+        )
+        .expect("Failed to change the document.");
+        tx.commit();
+    });
+
+    let doc_handle_2 = repo_handle_2.request_document(doc_handle_1.document_id());
+    tokio::time::timeout(Duration::from_secs(1), doc_handle_2)
+        .await
+        .expect_err("doc_handle_2 should never resolve");
+
+    let doc_handle_3 = repo_handle_3.request_document(doc_handle_1.document_id());
+    tokio::time::timeout(Duration::from_secs(1), doc_handle_3)
+        .await
+        .expect("doc_handle_3 should resolve")
+        .expect("doc_handle_3 should resolve to a document");
 }
