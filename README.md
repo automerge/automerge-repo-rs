@@ -1,6 +1,6 @@
-# Spanreed
+# Automerge-repo-rs
 
-Project goal: add an integration layer between automerge and client code, compatible with any async runtime.
+Project goal: add an integration layer between [Automerge](https://github.com/automerge/automerge) and client code, compatible with any Rust async runtime.
 
 ## Examples 
 
