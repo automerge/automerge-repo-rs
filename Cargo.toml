@@ -66,3 +66,4 @@ autosurgeon = "0.7.1"
 bolero = { version = "0.10.0", features = ["arbitrary"] }
 arbitrary = { version = "1.3.1", features = ["derive"] }
 bolero-generator = { version = "0.10.0", features = ["arbitrary"] }
+rand = "0.8.5"

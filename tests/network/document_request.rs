@@ -3,11 +3,15 @@ extern crate test_utils;
 use std::time::Duration;
 
 use automerge::{transaction::Transactable, ReadDoc};
-use automerge_repo::{DocumentId, Repo, RepoHandle, RepoId};
+use automerge_repo::{
+    share_policy::ShareDecision, DocumentId, Repo, RepoHandle, RepoId, SharePolicy,
+    SharePolicyError,
+};
+use futures::{future::BoxFuture, FutureExt};
 use test_log::test;
 use test_utils::storage_utils::{InMemoryStorage, SimpleStorage};
 
-use crate::tincans::connect_repos;
+use crate::tincans::{connect_repos, connect_to_nowhere};
 
 #[test(tokio::test)]
 async fn test_requesting_document_connected_peers() {
@@ -378,6 +382,34 @@ async fn request_doc_which_is_not_shared_does_not_announce() {
     assert!(doc_handle.is_none());
 }
 
+struct DontAnnounce;
+
+impl SharePolicy for DontAnnounce {
+    fn should_announce(
+        &self,
+        _doc_id: &DocumentId,
+        _with_peer: &RepoId,
+    ) -> BoxFuture<'static, Result<ShareDecision, SharePolicyError>> {
+        futures::future::ready(Ok(ShareDecision::DontShare)).boxed()
+    }
+
+    fn should_sync(
+        &self,
+        _document_id: &DocumentId,
+        _with_peer: &RepoId,
+    ) -> BoxFuture<'static, Result<ShareDecision, SharePolicyError>> {
+        futures::future::ready(Ok(ShareDecision::Share)).boxed()
+    }
+
+    fn should_request(
+        &self,
+        _document_id: &DocumentId,
+        _from_peer: &RepoId,
+    ) -> BoxFuture<'static, Result<ShareDecision, SharePolicyError>> {
+        futures::future::ready(Ok(ShareDecision::Share)).boxed()
+    }
+}
+
 #[test(tokio::test)]
 async fn request_document_transitive() {
     // Test that requesting a document from a peer who doesn't have that document but who is
@@ -385,11 +417,8 @@ async fn request_document_transitive() {
 
     let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage));
     let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage));
-    let repo_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage)).with_share_policy(
-        Box::new(|_peer: &RepoId, _doc: &DocumentId| {
-            automerge_repo::share_policy::ShareDecision::DontShare
-        }),
-    );
+    let repo_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage))
+        .with_share_policy(Box::new(DontAnnounce));
 
     let repo_handle_1 = repo_1.run();
     let repo_handle_2 = repo_2.run();
@@ -401,7 +430,7 @@ async fn request_document_transitive() {
     let document_id = create_doc_with_contents(&repo_handle_3, "peer", "repo3").await;
 
     let doc_handle = match tokio::time::timeout(
-        Duration::from_millis(300),
+        Duration::from_millis(100),
         repo_handle_1.request_document(document_id),
     )
     .await
@@ -413,6 +442,148 @@ async fn request_document_transitive() {
     };
 
     doc_handle.expect("doc should exist").with_doc(|doc| {
+        let val = doc.get(&automerge::ROOT, "peer").unwrap();
+        assert_eq!(val.unwrap().0.into_string().unwrap(), "repo3");
+    });
+
+    tokio::task::spawn_blocking(|| {
+        repo_handle_1.stop().unwrap();
+        repo_handle_2.stop().unwrap();
+        repo_handle_3.stop().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[test(tokio::test)]
+async fn request_document_which_no_peer_has_returns_unavailable() {
+    let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage));
+    let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage));
+    let repo_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage));
+
+    let repo_handle_1 = repo_1.run();
+    let repo_handle_2 = repo_2.run();
+    let repo_handle_3 = repo_3.run();
+
+    connect_repos(&repo_handle_1, &repo_handle_2);
+    connect_repos(&repo_handle_2, &repo_handle_3);
+
+    let document_id = DocumentId::random();
+
+    let doc_handle = match tokio::time::timeout(
+        Duration::from_millis(1000),
+        repo_handle_1.request_document(document_id),
+    )
+    .await
+    {
+        Ok(d) => d.unwrap(),
+        Err(_e) => {
+            panic!("Request timed out");
+        }
+    };
+
+    assert!(doc_handle.is_none());
+
+    tokio::task::spawn_blocking(|| {
+        repo_handle_1.stop().unwrap();
+        repo_handle_2.stop().unwrap();
+        repo_handle_3.stop().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[test(tokio::test)]
+async fn request_document_which_no_peer_has_but_peer_appears_after_request_starts_resolves_to_some()
+{
+    let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage));
+    let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage));
+    let repo_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage))
+        .with_share_policy(Box::new(DontAnnounce));
+
+    let repo_handle_1 = repo_1.run();
+    let repo_handle_2 = repo_2.run();
+    let repo_handle_3 = repo_3.run();
+
+    // note: repo 3 is not connected
+    connect_repos(&repo_handle_1, &repo_handle_2);
+    // This connection will never respond and so we will hang around waiting until someone has the
+    // document
+    connect_to_nowhere(&repo_handle_1);
+
+    let document_id = create_doc_with_contents(&repo_handle_3, "peer", "repo3").await;
+
+    let doc_handle_fut = repo_handle_1.request_document(document_id);
+
+    // wait a little bit
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    //connect repo3
+    connect_repos(&repo_handle_1, &repo_handle_3);
+
+    let handle = match tokio::time::timeout(Duration::from_millis(100), doc_handle_fut).await {
+        Ok(d) => d.unwrap(),
+        Err(_e) => {
+            panic!("Request timed out");
+        }
+    };
+
+    handle.expect("doc should exist").with_doc(|doc| {
+        let val = doc.get(&automerge::ROOT, "peer").unwrap();
+        assert_eq!(val.unwrap().0.into_string().unwrap(), "repo3");
+    });
+
+    tokio::task::spawn_blocking(|| {
+        repo_handle_1.stop().unwrap();
+        repo_handle_2.stop().unwrap();
+        repo_handle_3.stop().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[test(tokio::test)]
+async fn request_document_which_no_peer_has_but_transitive_peer_appears_after_request_starts_resolves_to_some(
+) {
+    let repo_1 = Repo::new(Some("repo1".to_string()), Box::new(SimpleStorage));
+    let repo_2 = Repo::new(Some("repo2".to_string()), Box::new(SimpleStorage));
+    let repo_3 = Repo::new(Some("repo3".to_string()), Box::new(SimpleStorage))
+        .with_share_policy(Box::new(DontAnnounce));
+
+    let repo_handle_1 = repo_1.run();
+    let repo_handle_2 = repo_2.run();
+    let repo_handle_3 = repo_3.run();
+
+    // note: repo 3 is not connected
+    connect_repos(&repo_handle_1, &repo_handle_2);
+    // This connection will never respond and so we will hang around waiting until someone has the
+    // document
+    connect_to_nowhere(&repo_handle_2);
+
+    let document_id = create_doc_with_contents(&repo_handle_3, "peer", "repo3").await;
+
+    let doc_handle_fut = repo_handle_1.request_document(document_id);
+
+    // wait a little bit
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    //connect repo3
+    connect_repos(&repo_handle_2, &repo_handle_3);
+
+    let handle = match tokio::time::timeout(Duration::from_millis(1000), doc_handle_fut).await {
+        Ok(d) => d.unwrap(),
+        Err(_e) => {
+            panic!("Request timed out");
+        }
+    };
+
+    let handle = handle.expect("doc should exist");
+
+    // wait for the doc to sync up
+    // TODO: add an API for saying "wait until we're in sync with <peer>"
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    handle.with_doc(|doc| {
         let val = doc.get(&automerge::ROOT, "peer").unwrap();
         assert_eq!(val.unwrap().0.into_string().unwrap(), "repo3");
     });

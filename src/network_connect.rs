@@ -22,17 +22,17 @@ impl RepoHandle {
         Str: Stream<Item = Result<Message, RecvErr>> + Send + 'static + Unpin,
     {
         let other_id = self.handshake(&mut stream, &mut sink, direction).await?;
-        tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "Handshake complete");
+        tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "handshake complete");
 
         let stream = stream.map({
             let repo_id = self.get_repo_id().clone();
             move |msg| match msg {
                 Ok(Message::Repo(repo_msg)) => {
-                    tracing::trace!(?repo_msg, repo_id=?repo_id, "Received repo message");
+                    tracing::trace!(?repo_msg, repo_id=?repo_id, "received repo message");
                     Ok(repo_msg)
                 }
                 Ok(m) => {
-                    tracing::warn!(?m, repo_id=?repo_id, "Received non-repo message");
+                    tracing::warn!(?m, repo_id=?repo_id, "received non-repo message");
                     Err(NetworkError::Error(
                         "unexpected non-repo message".to_string(),
                     ))
@@ -49,15 +49,12 @@ impl RepoHandle {
 
         let sink_repo_id = self.get_repo_id().clone();
         let sink = sink
-            .with_flat_map::<RepoMessage, _, _>(move |msg| {
-                tracing::trace!(?msg, repo_id=?sink_repo_id, "Sending repo message");
-                match msg {
-                    RepoMessage::Sync { .. } => futures::stream::iter(vec![Ok(Message::Repo(msg))]),
-                    _ => futures::stream::iter(vec![]),
-                }
+            .with::<_, _, _, SendErr>(move |msg| {
+                tracing::trace!(?msg, repo_id=?sink_repo_id, "sending repo message");
+                futures::future::ready(Ok(Message::Repo(msg)))
             })
             .sink_map_err(|e| {
-                tracing::error!(?e, "Error sending repo message");
+                tracing::error!(?e, "error sending repo message");
                 NetworkError::Error(format!("error sending repo message: {}", e))
             });
 

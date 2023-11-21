@@ -4,7 +4,7 @@ use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
 use crate::{share_policy, SharePolicy, SharePolicyError};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
-use automerge::{Automerge, ChangeHash};
+use automerge::{Automerge, ChangeHash, ReadDoc};
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::future::{BoxFuture, Future};
@@ -59,6 +59,18 @@ enum NetworkEvent {
         document_id: DocumentId,
         message: SyncMessage,
     },
+    /// A repo requested a document
+    Request {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: SyncMessage,
+    },
+    Unavailable {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+    },
 }
 
 impl std::fmt::Debug for NetworkEvent {
@@ -71,6 +83,27 @@ impl std::fmt::Debug for NetworkEvent {
                 message: _,
             } => f
                 .debug_struct("NetworkEvent::Sync")
+                .field("from_repo_id", from_repo_id)
+                .field("to_repo_id", to_repo_id)
+                .field("document_id", document_id)
+                .finish(),
+            NetworkEvent::Request {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message: _,
+            } => f
+                .debug_struct("NetworkEvent::Request")
+                .field("from_repo_id", from_repo_id)
+                .field("to_repo_id", to_repo_id)
+                .field("document_id", document_id)
+                .finish(),
+            NetworkEvent::Unavailable {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+            } => f
+                .debug_struct("NetworkEvent::Unavailable")
                 .field("from_repo_id", from_repo_id)
                 .field("to_repo_id", to_repo_id)
                 .field("document_id", document_id)
@@ -90,6 +123,55 @@ enum NetworkMessage {
         document_id: DocumentId,
         message: SyncMessage,
     },
+    Request {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: SyncMessage,
+    },
+    Unavailable {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+    },
+}
+
+impl From<NetworkMessage> for RepoMessage {
+    fn from(msg: NetworkMessage) -> Self {
+        match msg {
+            NetworkMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+            } => RepoMessage::Sync {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message: message.encode(),
+            },
+            NetworkMessage::Request {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+            } => RepoMessage::Request {
+                sender_id: from_repo_id,
+                target_id: to_repo_id,
+                document_id,
+                sync_message: message.encode(),
+            },
+            NetworkMessage::Unavailable {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+            } => RepoMessage::Unavailable {
+                document_id,
+                sender_id: from_repo_id,
+                target_id: to_repo_id,
+            },
+        }
+    }
 }
 
 /// Create a pair of repo future and resolver.
@@ -531,7 +613,10 @@ enum PeerConnection {
     /// we've accepted the peer and are syncing with them
     Accepted(SyncState),
     /// We're waiting for a response from the share policy
-    PendingAuth { received_messages: Vec<SyncMessage> },
+    PendingAuth { 
+        /// Messages received while we were waiting for a response from the share policy
+        received_messages: Vec<SyncMessage>,
+    },
 }
 
 impl PeerConnection {
@@ -541,24 +626,15 @@ impl PeerConnection {
         }
     }
 
-    fn receive_sync_message(
-        &mut self,
-        doc: &mut Automerge,
-        msg: SyncMessage,
-    ) -> Result<(), automerge::AutomergeError> {
-        match self {
-            PeerConnection::Accepted(sync_state) => doc.receive_sync_message(sync_state, msg),
-            PeerConnection::PendingAuth { received_messages } => {
-                received_messages.push(msg);
-                Ok(())
+    fn up_to_date(&self, doc: &Automerge) -> bool {
+        if let Self::Accepted(state) = self {
+            if let Some(their_heads) = &state.their_heads {
+                their_heads.into_iter().all(|h| doc.get_change_by_hash(h).is_some())
+            } else {
+                false
             }
-        }
-    }
-
-    fn generate_sync_message(&mut self, doc: &Automerge) -> Option<SyncMessage> {
-        match self {
-            Self::Accepted(sync_state) => doc.generate_sync_message(sync_state),
-            Self::PendingAuth { .. } => None,
+        } else {
+            false
         }
     }
 }
@@ -769,8 +845,20 @@ impl DocumentInfo {
                     Entry::Occupied(entry) => entry.into_mut(),
                 };
                 for message in messages {
-                    conn.receive_sync_message(&mut document.automerge, message)
-                        .expect("Failed to receive sync message.");
+                    match conn {
+                        PeerConnection::PendingAuth {
+                            ref mut received_messages,
+                            ..
+                        } => {
+                            received_messages.push(message);
+                        }
+                        PeerConnection::Accepted(ref mut sync_state) => {
+                            document
+                                .automerge
+                                .receive_sync_message(sync_state, message)
+                                .expect("Failed to receive sync message.");
+                        }
+                    }
                 }
             }
             let new_heads = document.automerge.get_heads();
@@ -779,65 +867,73 @@ impl DocumentInfo {
         (start_heads != new_heads, commands)
     }
 
-    /// Promote a peer awaiting authorization to a full peer
-    ///
-    /// Returns any messages which the peer sent while we were waiting for authorization
-    fn promote_pending_peer(&mut self, repo_id: &RepoId) -> Option<Vec<SyncMessage>> {
-        if let Some(PeerConnection::PendingAuth { received_messages }) =
-            self.peer_connections.remove(repo_id)
-        {
-            self.peer_connections
-                .insert(repo_id.clone(), PeerConnection::Accepted(SyncState::new()));
-            Some(received_messages)
-        } else {
-            tracing::warn!(remote=%repo_id, "Tried to promote a peer which was not pending authorization");
-            None
-        }
-    }
-
-    /// Potentially generate an outgoing sync message.
-    fn generate_first_sync_message(&mut self, repo_id: RepoId) -> Option<SyncMessage> {
-        match self.peer_connections.entry(repo_id) {
-            Entry::Vacant(entry) => {
-                let mut sync_state = SyncState::new();
-                let document = self.document.read();
-                let message = document.automerge.generate_sync_message(&mut sync_state);
-                entry.insert(PeerConnection::Accepted(sync_state));
-                message
-            }
-            Entry::Occupied(mut entry) => match entry.get_mut() {
-                PeerConnection::PendingAuth { received_messages } => {
-                    let mut document = self.document.write();
-                    let mut sync_state = SyncState::new();
-                    for msg in received_messages.drain(..) {
-                        document
-                            .automerge
-                            .receive_sync_message(&mut sync_state, msg)
-                            .expect("Failed to receive sync message.");
-                    }
-                    let message = document.automerge.generate_sync_message(&mut sync_state);
-                    entry.insert(PeerConnection::Accepted(sync_state));
-                    message
-                }
-                PeerConnection::Accepted(ref mut sync_state) => {
-                    let document = self.document.read();
-                    document.automerge.generate_sync_message(sync_state)
-                }
-            },
-        }
-    }
-
     /// Generate outgoing sync message for all repos we are syncing with.
     fn generate_sync_messages(&mut self) -> Vec<(RepoId, SyncMessage)> {
         let document = self.document.read();
         self.peer_connections
             .iter_mut()
             .filter_map(|(repo_id, conn)| {
-                let message = conn.generate_sync_message(&document.automerge);
-                message.map(|msg| (repo_id.clone(), msg))
+                if let PeerConnection::Accepted(ref mut sync_state) = conn {
+                    let message = document.automerge.generate_sync_message(sync_state);
+                    message.map(|msg| (repo_id.clone(), msg))
+                } else {
+                    None
+                }
             })
             .collect()
     }
+
+    fn begin_request(&mut self, remote: &RepoId) -> BeginRequest {
+        match self.peer_connections.entry(remote.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(PeerConnection::pending());
+                BeginRequest::RequiresAuth
+            }
+            Entry::Occupied(mut entry) => match entry.get_mut() {
+                PeerConnection::PendingAuth { .. } => BeginRequest::AwaitingAuth,
+                PeerConnection::Accepted(ref mut sync_state) => {
+                    let document = self.document.read();
+                    let message = document.automerge.generate_sync_message(sync_state);
+                    BeginRequest::Ready(message)
+                }
+            },
+        }
+    }
+
+    fn authorize_peer(&mut self, remote: &RepoId) -> Option<SyncMessage> {
+        if let Some(PeerConnection::PendingAuth { received_messages }) = self.peer_connections.remove(remote) {
+            let mut doc = self.document.write();
+            let mut sync_state = SyncState::new();
+            for msg in received_messages {
+                doc.automerge.receive_sync_message(&mut sync_state, msg).expect("Failed to receive sync message.");
+            }
+            let msg = doc.automerge.generate_sync_message(&mut sync_state);
+            self.peer_connections.insert(remote.clone(), PeerConnection::Accepted(sync_state));
+            msg
+        } else if !self.peer_connections.contains_key(remote) {
+            let mut sync_state = SyncState::new();
+            let doc = self.document.write();
+            let msg = doc.automerge.generate_sync_message(&mut sync_state);
+            self.peer_connections.insert(remote.clone(), PeerConnection::Accepted(sync_state));
+            msg
+        } else {
+            tracing::warn!(remote=%remote, "tried to authorize a peer which was not pending authorization");
+            None
+        }
+    }
+
+    fn has_up_to_date_peer(&self) -> bool {
+        let doc = self.document.read();
+        self.peer_connections
+            .iter()
+            .any(|(_, conn)| conn.up_to_date(&doc.automerge))
+    }
+}
+
+enum BeginRequest {
+    Ready(Option<SyncMessage>),
+    RequiresAuth,
+    AwaitingAuth,
 }
 
 /// Signal that the stream or sink on the network adapter is ready to be polled.
@@ -958,6 +1054,43 @@ pub struct Repo {
 
     /// Pending share policy futures
     pending_share_decisions: HashMap<RepoId, Vec<PendingShareDecision>>,
+
+    /// Outstanding requests
+    requests: HashMap<DocumentId, Request>,
+}
+
+#[derive(Debug)]
+struct Request {
+    document_id: DocumentId,
+    awaiting_response_from: HashSet<RepoId>,
+    awaiting_our_response: HashSet<RepoId>,
+}
+
+impl Request {
+    fn new(doc_id: DocumentId) -> Self {
+        Request {
+            document_id: doc_id,
+            awaiting_response_from: HashSet::new(),
+            awaiting_our_response: HashSet::new(),
+        }
+    }
+
+    fn mark_unavailable(&mut self, repo_id: &RepoId) {
+        self.awaiting_our_response.remove(&repo_id);
+        self.awaiting_response_from.remove(&repo_id);
+    }
+
+    fn add_requestor(&mut self, repo_id: RepoId) {
+        self.awaiting_our_response.insert(repo_id.clone());
+    }
+
+    fn is_complete(&self) -> bool {
+        self.awaiting_response_from.is_empty()
+    }
+
+    fn into_replies(self) -> HashSet<RepoId> {
+        self.awaiting_our_response
+    }
 }
 
 impl Repo {
@@ -986,6 +1119,7 @@ impl Repo {
             share_policy,
             pending_share_decisions: HashMap::new(),
             share_decisions_to_poll: HashSet::new(),
+            requests: HashMap::new(),
         }
     }
 
@@ -1106,15 +1240,32 @@ impl Repo {
                                 target_id,
                                 document_id,
                                 sync_message,
-                            }) => {
-                                todo!()
-                            }
+                            }) => match SyncMessage::decode(&sync_message) {
+                                Ok(message) => {
+                                    let event = NetworkEvent::Request {
+                                        from_repo_id: sender_id,
+                                        to_repo_id: target_id,
+                                        document_id,
+                                        message,
+                                    };
+                                    new_messages.push(event);
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = ?e, "error decoding sync message");
+                                    break true;
+                                }
+                            },
                             Ok(RepoMessage::Unavailable {
                                 document_id,
                                 sender_id,
                                 target_id,
                             }) => {
-                                todo!()
+                                let event = NetworkEvent::Unavailable {
+                                    document_id,
+                                    from_repo_id: sender_id,
+                                    to_repo_id: target_id,
+                                };
+                                new_messages.push(event);
                             }
                             Ok(RepoMessage::Ephemeral {
                                 from_repo_id,
@@ -1199,20 +1350,11 @@ impl Repo {
                         Poll::Pending => break,
                         Poll::Ready(Ok(())) => {
                             let pinned_sink = Pin::new(&mut remote_repo.sink);
-                            let NetworkMessage::Sync {
-                                from_repo_id,
-                                to_repo_id,
-                                document_id,
-                                message,
-                            } = pending_messages
+                            let msg = pending_messages
                                 .pop_front()
                                 .expect("Empty pending messages.");
-                            let outgoing = RepoMessage::Sync {
-                                from_repo_id,
-                                to_repo_id,
-                                document_id,
-                                message: message.encode(),
-                            };
+                            let outgoing = RepoMessage::from(msg);
+                            tracing::debug!(message = ?outgoing, remote=%repo_id, "sending message.");
                             let result = pinned_sink.start_send(outgoing);
                             if let Err(e) = result {
                                 tracing::error!(error = ?e, "Error on network sink.");
@@ -1337,9 +1479,48 @@ impl Repo {
                     }
                 }
 
+                let req =
+                    self.requests.entry(document_id.clone()).or_insert_with(|| {
+                        tracing::trace!(%document_id, "creating new local request");
+                        Request::new(document_id.clone())
+                    });
+
                 if info.state.is_bootstrapping() {
+                    let mut to_request = Vec::new();
+                    for remote in self.remote_repos.keys() {
+                        if req.awaiting_response_from.contains(remote) {
+                            continue;
+                        }
+                        match info.begin_request(remote) {
+                            BeginRequest::Ready(None) => {
+                                tracing::warn!(%remote, "no request to send (we shouldn't even be requesting)");
+                                continue;
+                            }
+                            BeginRequest::Ready(Some(message)) => {
+                                let outgoing = NetworkMessage::Request {
+                                    to_repo_id: self.repo_id.clone(),
+                                    from_repo_id: remote.clone(),
+                                    document_id: document_id.clone(),
+                                    message,
+                                };
+                                self.pending_messages
+                                    .entry(remote.clone())
+                                    .or_default()
+                                    .push_back(outgoing);
+                                self.sinks_to_poll.insert(remote.clone());
+                                req.awaiting_response_from.insert(remote.clone());
+                            }
+                            BeginRequest::RequiresAuth => {
+                                to_request.push(remote.clone());
+                                req.awaiting_response_from.insert(remote.clone());
+                            }
+                            BeginRequest::AwaitingAuth => {
+                                req.awaiting_response_from.insert(remote.clone());
+                            }
+                        }
+                    }
                     Self::enqueue_share_decisions(
-                        self.remote_repos.keys(),
+                        to_request.iter(),
                         &mut self.pending_share_decisions,
                         &mut self.share_decisions_to_poll,
                         self.share_policy.as_ref(),
@@ -1528,14 +1709,32 @@ impl Repo {
         }
     }
 
+    fn new_document_info() -> DocumentInfo {
+        // Note: since the handle count is zero,
+        // the document will not be removed from memory until shutdown.
+        // Perhaps remove this and rely on `request_document` calls.
+        let shared_document = SharedDocument {
+            automerge: new_document(),
+        };
+        let state = DocState::Bootstrap {
+            resolvers: vec![],
+            storage_fut: None,
+        };
+        let document = Arc::new(RwLock::new(shared_document));
+        let handle_count = Arc::new(AtomicUsize::new(0));
+        DocumentInfo::new(state, document, handle_count)
+    }
+
     /// Apply incoming sync messages, and generate outgoing ones.
     fn sync_documents(&mut self) {
         // Re-organize messages so as to acquire the write lock
         // on the document only once per document.
         let mut per_doc_messages: HashMap<DocumentId, HashMap<RepoId, VecDeque<SyncMessage>>> =
             Default::default();
+
         for event in mem::take(&mut self.pending_events) {
             tracing::trace!(message = ?event, "processing sync message");
+
             match event {
                 NetworkEvent::Sync {
                     from_repo_id,
@@ -1544,38 +1743,143 @@ impl Repo {
                     message,
                 } => {
                     assert_eq!(to_repo_id, self.repo_id);
-
-                    // If we don't know about the document,
-                    // create a new sync state and start syncing.
-                    // Note: this is the mirror of sending sync messages for
-                    // all known documents when a remote repo connects.
                     let info = self
                         .documents
                         .entry(document_id.clone())
-                        .or_insert_with(|| {
-                            // Note: since the handle count is zero,
-                            // the document will not be removed from memory until shutdown.
-                            // Perhaps remove this and rely on `request_document` calls.
-                            let shared_document = SharedDocument {
-                                automerge: new_document(),
-                            };
-                            let state = DocState::Bootstrap {
-                                resolvers: vec![],
-                                storage_fut: None,
-                            };
-                            let document = Arc::new(RwLock::new(shared_document));
-                            let handle_count = Arc::new(AtomicUsize::new(0));
-                            DocumentInfo::new(state, document, handle_count)
-                        });
+                        .or_insert_with(Self::new_document_info);
 
                     if !info.state.should_sync() {
                         continue;
                     }
 
-                    let per_doc = per_doc_messages.entry(document_id).or_default();
-                    let per_remote = per_doc.entry(from_repo_id).or_default();
+                    let per_doc = per_doc_messages.entry(document_id.clone()).or_default();
+                    let per_remote = per_doc.entry(from_repo_id.clone()).or_default();
                     per_remote.push_back(message.clone());
+
+                    if let Some(mut req) = self.requests.remove(&document_id) {
+                        req.awaiting_response_from.remove(&from_repo_id);
+                        tracing::trace!(request=?req, "received sync for outstanding request, checking if we can share with requestors");
+                        // We have this document now, start syncing it
+                        Self::enqueue_share_decisions(
+                            req.awaiting_our_response.iter().chain(self.remote_repos.keys()),
+                            //self.remote_repos.keys(),
+                            &mut self.pending_share_decisions,
+                            &mut self.share_decisions_to_poll,
+                            self.share_policy.as_ref(),
+                            document_id.clone(),
+                            ShareType::Synchronize,
+                        );
+                    }
                 }
+                NetworkEvent::Request {
+                    from_repo_id,
+                    to_repo_id,
+                    document_id,
+                    message,
+                } => {
+                    assert_eq!(to_repo_id, self.repo_id);
+                    let info = self
+                        .documents
+                        .entry(document_id.clone())
+                        .or_insert_with(Self::new_document_info);
+                    match info.state {
+                        DocState::Sync(_) => {
+                            tracing::trace!(
+                                ?from_repo_id,
+                                "responding to request with sync as we have the doc"
+                            );
+                            // if we have this document then just start syncing
+                            Self::enqueue_share_decisions(
+                                std::iter::once(&from_repo_id),
+                                &mut self.pending_share_decisions,
+                                &mut self.share_decisions_to_poll,
+                                self.share_policy.as_ref(),
+                                document_id.clone(),
+                                ShareType::Synchronize,
+                            );
+                        }
+                        _ => {
+                            let req =
+                                self.requests.entry(document_id.clone()).or_insert_with(|| {
+                                    tracing::trace!(?from_repo_id, "creating new remote request");
+                                    Request::new(document_id.clone())
+                                });
+
+                            req.add_requestor(from_repo_id);
+
+                            let mut request_from = Vec::new();
+                            for remote in self.remote_repos.keys() {
+                                if req.awaiting_response_from.contains(remote) || req.awaiting_our_response.contains(remote) {
+                                    continue;
+                                }
+                                match info.begin_request(remote) {
+                                    BeginRequest::Ready(None) => {
+                                        tracing::debug!(?remote, "no need to begin request as we are already syncing");
+                                    },
+                                    BeginRequest::Ready(Some(msg)) => {
+                                        let outgoing = NetworkMessage::Request {
+                                            from_repo_id: self.repo_id.clone(),
+                                            to_repo_id: remote.clone(),
+                                            document_id: document_id.clone(),
+                                            message: msg,
+                                        };
+                                        self.pending_messages
+                                            .entry(remote.clone())
+                                            .or_default()
+                                            .push_back(outgoing);
+                                        self.sinks_to_poll.insert(remote.clone());
+                                    },
+                                    BeginRequest::RequiresAuth | BeginRequest::AwaitingAuth => {
+                                        request_from.push(remote.clone());
+                                    },
+                                }
+                                req.awaiting_response_from.insert(remote.clone());
+                            }
+
+                            Self::enqueue_share_decisions(
+                                request_from.iter(),
+                                &mut self.pending_share_decisions,
+                                &mut self.share_decisions_to_poll,
+                                self.share_policy.as_ref(),
+                                document_id.clone(),
+                                ShareType::Request,
+                            );
+                            if req.is_complete() {
+                                let req = self.requests.remove(&document_id).unwrap();
+                                Self::complete_request(
+                                    req,
+                                    &mut self.documents,
+                                    &mut self.pending_messages,
+                                    &mut self.sinks_to_poll,
+                                    self.repo_id.clone(),
+                                );
+                            }
+                        }
+                    }
+                }
+                NetworkEvent::Unavailable {
+                    from_repo_id,
+                    to_repo_id: _,
+                    document_id,
+                } => match self.requests.entry(document_id.clone()) {
+                    Entry::Occupied(mut entry) => {
+                        let req = entry.get_mut();
+                        req.mark_unavailable(&from_repo_id);
+                        if req.is_complete() {
+                            let req = entry.remove();
+                            Self::complete_request(
+                                req,
+                                &mut self.documents,
+                                &mut self.pending_messages,
+                                &mut self.sinks_to_poll,
+                                self.repo_id.clone(),
+                            );
+                        }
+                    }
+                    Entry::Vacant(_) => {
+                        tracing::trace!(?from_repo_id, "received unavailable for request we didnt send or are no longer tracking");
+                    }
+                },
             }
         }
 
@@ -1608,11 +1912,7 @@ impl Repo {
             // in two separate critical sections,
             // local changes could be made in between those,
             // which is a good thing(generated messages will include those changes).
-            let mut ready = true;
             for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
-                if message.heads.is_empty() && !message.need.is_empty() {
-                    ready = false;
-                }
                 let outgoing = NetworkMessage::Sync {
                     from_repo_id: self.repo_id.clone(),
                     to_repo_id: to_repo_id.clone(),
@@ -1625,7 +1925,8 @@ impl Repo {
                     .push_back(outgoing);
                 self.sinks_to_poll.insert(to_repo_id);
             }
-            if ready && info.state.is_bootstrapping() {
+
+            if info.has_up_to_date_peer() && info.state.is_bootstrapping() {
                 info.handle_count.fetch_add(1, Ordering::SeqCst);
                 let handle = DocHandle::new(
                     self.repo_sender.clone(),
@@ -1667,15 +1968,15 @@ impl Repo {
         }
     }
 
-    fn collect_sharepolicy_responses(&mut self) {
+    fn poll_sharepolicy_responses(&mut self) {
         let mut decisions = Vec::new();
         for repo_id in mem::take(&mut self.share_decisions_to_poll) {
             if let Some(pending) = self.pending_share_decisions.remove(&repo_id) {
                 let mut still_pending = Vec::new();
                 for PendingShareDecision {
                     doc_id,
-                    mut future,
                     share_type,
+                    mut future,
                 } in pending
                 {
                     let waker = Arc::new(RepoWaker::ShareDecision(
@@ -1690,8 +1991,8 @@ impl Repo {
                         Poll::Pending => {
                             still_pending.push(PendingShareDecision {
                                 doc_id,
-                                future,
                                 share_type,
+                                future,
                             });
                         }
                         Poll::Ready(Ok(res)) => {
@@ -1716,52 +2017,87 @@ impl Repo {
             };
             if share_decision == ShareDecision::Share {
                 match share_type {
-                    ShareType::Announce | ShareType::Request => {
-                        tracing::debug!(%doc, remote=%peer, "sharing document with remote");
-                        if let Some(pending_messages) = info.promote_pending_peer(&peer) {
-                            tracing::trace!(remote=%peer, %doc, "we already had pending messages for this peer when announcing so we just wait to generate a sync message");
-                            for message in pending_messages {
-                                self.pending_events.push_back(NetworkEvent::Sync {
-                                    from_repo_id: peer.clone(),
-                                    to_repo_id: our_id.clone(),
-                                    document_id: doc.clone(),
-                                    message,
-                                });
-                            }
-                        } else if let Some(message) = info.generate_first_sync_message(peer.clone())
-                        {
-                            tracing::trace!(remote=%peer, %doc, "sending first sync message");
+                    ShareType::Announce => {
+                        tracing::trace!(remote=%peer, %doc, "announcing document to remote");
+                        let Some(message) = info.authorize_peer(&peer) else {
+                            tracing::debug!(document=?doc, peer=?peer, "no sync message to send yet");
+                            continue;
+                        };
+                        let outgoing = NetworkMessage::Sync {
+                            from_repo_id: our_id.clone(),
+                            to_repo_id: peer.clone(),
+                            document_id: doc.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(peer.clone())
+                            .or_default()
+                            .push_back(outgoing);
+                        self.sinks_to_poll.insert(peer);
+                    }
+                    ShareType::Request => {
+                        tracing::trace!(remote=%peer, %doc, "requesting document from remote");
+                        let Some(message) = info.authorize_peer(&peer) else {
+                            tracing::warn!(document=?doc, peer=?peer, "no sync message to send when requesting");
+                            continue;
+                        };
+                        let outgoing = NetworkMessage::Request {
+                            from_repo_id: our_id.clone(),
+                            to_repo_id: peer.clone(),
+                            document_id: doc.clone(),
+                            message,
+                        };
+                        self.pending_messages
+                            .entry(peer.clone())
+                            .or_default()
+                            .push_back(outgoing);
+                        self.sinks_to_poll.insert(peer);
+                    }
+                    ShareType::Synchronize => {
+                        tracing::debug!(%doc, remote=%peer, "synchronizing document with remote");
+                        if let Some(msg) = info.authorize_peer(&peer) {
                             let outgoing = NetworkMessage::Sync {
                                 from_repo_id: our_id.clone(),
                                 to_repo_id: peer.clone(),
                                 document_id: doc.clone(),
-                                message,
+                                message: msg,
                             };
                             self.pending_messages
                                 .entry(peer.clone())
                                 .or_default()
                                 .push_back(outgoing);
                             self.sinks_to_poll.insert(peer);
-                        }
-                    }
-                    ShareType::Synchronize => {
-                        tracing::debug!(%doc, remote=%peer, "synchronizing document with remote");
-                        if let Some(pending_messages) = info.promote_pending_peer(&peer) {
-                            let events =
-                                pending_messages
-                                    .into_iter()
-                                    .map(|message| NetworkEvent::Sync {
-                                        from_repo_id: peer.clone(),
-                                        to_repo_id: our_id.clone(),
-                                        document_id: doc.clone(),
-                                        message,
-                                    });
-                            self.pending_events.extend(events);
+                        } else {
+                            tracing::debug!(document=?doc, peer=?peer, "no sync message to send yet");
                         }
                     }
                 }
             } else {
-                tracing::debug!(?doc, ?peer, "refusing to share document with remote");
+                match share_type {
+                    ShareType::Request => {
+                        tracing::debug!(%doc, remote=%peer, "refusing to request document from remote");
+                    }
+                    ShareType::Announce => {
+                        tracing::debug!(%doc, remote=%peer, "refusing to announce document to remote");
+                    }
+                    ShareType::Synchronize => {
+                        tracing::debug!(%doc, remote=%peer, "refusing to synchronize document with remote");
+                    }
+                }
+                if let Some(req) = self.requests.get_mut(&doc) {
+                    tracing::trace!(request=?req, "marking request as unavailable due to rejected authorization");
+                    req.mark_unavailable(&peer);
+                    if req.is_complete() {
+                        let req = self.requests.remove(&doc).unwrap();
+                        Self::complete_request(
+                            req,
+                            &mut self.documents,
+                            &mut self.pending_messages,
+                            &mut self.sinks_to_poll,
+                            self.repo_id.clone(),
+                        );
+                    }
+                }
             }
         }
     }
@@ -1782,7 +2118,7 @@ impl Repo {
         let handle = thread::spawn(move || {
             let _entered = span.entered();
             loop {
-                self.collect_sharepolicy_responses();
+                self.poll_sharepolicy_responses();
                 self.collect_network_events();
                 self.sync_documents();
                 self.process_outgoing_network_messages();
@@ -1790,6 +2126,9 @@ impl Repo {
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
                 self.gc_docs();
+                if !self.share_decisions_to_poll.is_empty() {
+                    continue;
+                }
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
@@ -1971,10 +2310,51 @@ impl Repo {
                 .or_default()
                 .push(PendingShareDecision {
                     doc_id: document_id.clone(),
-                    future,
                     share_type,
+                    future,
                 });
             share_decisions_to_poll.insert(repo_id.clone());
+        }
+    }
+
+    fn complete_request(
+        request: Request,
+        documents: &mut HashMap<DocumentId, DocumentInfo>,
+        pending_messages: &mut HashMap<RepoId, VecDeque<NetworkMessage>>,
+        sinks_to_poll: &mut HashSet<RepoId>,
+        our_repo_id: RepoId,
+    ) {
+        tracing::debug!(?request, "request is complete");
+
+        match documents.entry(request.document_id.clone()) {
+            Entry::Occupied(entry) => {
+                if entry.get().state.is_bootstrapping() {
+                    let info = entry.remove();
+                    if let DocState::Bootstrap { mut resolvers, .. } = info.state {
+                        for mut resolver in resolvers.drain(..) {
+                            tracing::trace!("resolving local process waiting for request to None");
+                            resolver.resolve_fut(Ok(None));
+                        }
+                    }
+                }
+            }
+            Entry::Vacant(_) => {
+                tracing::trace!("no local proess is waiting for this request to complete");
+            }
+        }
+
+        let document_id = request.document_id.clone();
+        for repo_id in request.into_replies() {
+            let outgoing = NetworkMessage::Unavailable {
+                from_repo_id: our_repo_id.clone(),
+                to_repo_id: repo_id.clone(),
+                document_id: document_id.clone(),
+            };
+            pending_messages
+                .entry(repo_id.clone())
+                .or_default()
+                .push_back(outgoing);
+            sinks_to_poll.insert(repo_id.clone());
         }
     }
 }
