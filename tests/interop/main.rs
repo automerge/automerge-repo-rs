@@ -2,15 +2,14 @@ use std::{panic::catch_unwind, path::PathBuf, process::Child, thread::sleep, tim
 
 use automerge::{transaction::Transactable, ReadDoc};
 use automerge_repo::{ConnDirection, Repo};
+use test_log::test;
 use test_utils::storage_utils::InMemoryStorage;
-//use test_log::test;
 
 const INTEROP_SERVER_PATH: &str = "interop-test-server";
 const PORT: u16 = 8099;
 
 #[test]
 fn interop_test() {
-    env_logger::init();
     tracing::trace!("we're starting up");
     let mut server_process = start_js_server();
     let result = catch_unwind(|| sync_two_repos(PORT));
@@ -27,7 +26,7 @@ fn sync_two_repos(port: u16) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let storage1 = Box::<InMemoryStorage>::default();
-        let repo1 = Repo::new(None, storage1);
+        let repo1 = Repo::new(Some("repo1".to_string()), storage1);
         let repo1_handle = repo1.run();
         let (conn, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
             .await
@@ -37,13 +36,13 @@ fn sync_two_repos(port: u16) {
             .connect_tungstenite(conn, ConnDirection::Outgoing)
             .await
             .expect("error connecting connection 1");
-        tracing::trace!("connecting conn1");
+
         tokio::spawn(async {
             if let Err(e) = conn1_driver.await {
                 tracing::error!("Error running repo 1 connection: {}", e);
             }
+            tracing::trace!("conn1 finished");
         });
-        tracing::trace!("connected conn1");
 
         let doc_handle_repo1 = repo1_handle.new_document().await;
         doc_handle_repo1
@@ -55,8 +54,10 @@ fn sync_two_repos(port: u16) {
             })
             .unwrap();
 
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
         let storage2 = Box::<InMemoryStorage>::default();
-        let repo2 = Repo::new(None, storage2);
+        let repo2 = Repo::new(Some("repo2".to_string()), storage2);
         let repo2_handle = repo2.run();
 
         let (conn2, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
@@ -71,9 +72,8 @@ fn sync_two_repos(port: u16) {
             if let Err(e) = conn2_driver.await {
                 tracing::error!("Error running repo 2 connection: {}", e);
             }
+            tracing::trace!("conn2 finished");
         });
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         tracing::info!("Requesting");
         //tokio::time::sleep(Duration::from_secs(1)).await;
@@ -130,7 +130,7 @@ fn start_js_server() -> Child {
                 println!("Error connecting to server: {}", e);
             }
         }
-        sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(1000));
     }
     child
 }
