@@ -385,11 +385,6 @@ pub(crate) enum DocState {
         resolvers: Vec<RepoFutureResolver<Result<Option<DocHandle>, RepoError>>>,
         storage_fut: BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>,
     },
-    /// A document that has been locally created,
-    /// and not edited yet,
-    /// should not be synced
-    /// until it has been locally edited.
-    LocallyCreatedNotEdited,
     /// The doc is syncing(can be edited locally),
     /// and polling pending storage save operations.
     Sync(Vec<BoxFuture<'static, Result<(), StorageError>>>),
@@ -410,7 +405,6 @@ impl fmt::Debug for DocState {
                 f.write_str(&input)
             }
             DocState::LoadPending { .. } => f.write_str("DocState::LoadPending"),
-            DocState::LocallyCreatedNotEdited => f.write_str("DocState::LocallyCreatedNotEdited"),
             DocState::Sync(_) => f.write_str("DocState::Sync"),
             DocState::PendingRemoval(_) => f.write_str("DocState::PendingRemoval"),
             DocState::Error => f.write_str("DocState::Error"),
@@ -666,10 +660,7 @@ impl DocumentInfo {
 
     fn start_pending_removal(&mut self) {
         self.state = match &mut self.state {
-            DocState::LocallyCreatedNotEdited
-            | DocState::Error
-            | DocState::LoadPending { .. }
-            | DocState::Bootstrap { .. } => {
+            DocState::Error | DocState::LoadPending { .. } | DocState::Bootstrap { .. } => {
                 assert_eq!(self.patches_since_last_save, 0);
                 DocState::PendingRemoval(vec![])
             }
@@ -1415,11 +1406,8 @@ impl Repo {
                 );
                 let shared = Arc::new(RwLock::new(document));
                 let handle_count = Arc::new(AtomicUsize::new(1));
-                let info = DocumentInfo::new(
-                    DocState::LocallyCreatedNotEdited,
-                    shared.clone(),
-                    handle_count.clone(),
-                );
+                let info =
+                    DocumentInfo::new(DocState::Sync(vec![]), shared.clone(), handle_count.clone());
                 self.documents.insert(document_id.clone(), info);
                 resolver.resolve_fut(DocHandle::new(
                     self.repo_sender.clone(),
@@ -1484,9 +1472,6 @@ impl Repo {
                             "request event called for document which is in error state".to_string(),
                         )));
                     }
-                    DocState::LocallyCreatedNotEdited => {
-                        unreachable!("request event called for document which is in locally created not edited state");
-                    }
                 }
 
                 let req =
@@ -1547,10 +1532,6 @@ impl Repo {
                         // Stop here if the document wasn't actually changed.
                         return;
                     }
-                    let is_first_edit = matches!(info.state, DocState::LocallyCreatedNotEdited);
-                    if is_first_edit {
-                        info.state = DocState::Sync(vec![]);
-                    }
                     self.documents_with_changes.push(doc_id.clone());
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
@@ -1565,18 +1546,16 @@ impl Repo {
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
                     }
-                    if is_first_edit {
-                        // Send a sync message to all other repos we are connected with and with
-                        // whom we should share this document
-                        Self::enqueue_share_decisions(
-                            self.remote_repos.keys(),
-                            &mut self.pending_share_decisions,
-                            &mut self.share_decisions_to_poll,
-                            self.share_policy.as_ref(),
-                            doc_id.clone(),
-                            ShareType::Announce,
-                        );
-                    }
+                    // Send a sync message to all other repos we are connected with and with
+                    // whom we should share this document
+                    Self::enqueue_share_decisions(
+                        self.remote_repos.keys(),
+                        &mut self.pending_share_decisions,
+                        &mut self.share_decisions_to_poll,
+                        self.share_policy.as_ref(),
+                        doc_id.clone(),
+                        ShareType::Announce,
+                    );
                 }
             }
             RepoEvent::DocClosed(doc_id) => {
@@ -1628,7 +1607,7 @@ impl Repo {
                             DocState::Bootstrap { resolvers, .. } => {
                                 resolvers.push(resolver_clone);
                             }
-                            DocState::LocallyCreatedNotEdited | DocState::Sync(_) => {
+                            DocState::Sync(_) => {
                                 info.handle_count.fetch_add(1, Ordering::SeqCst);
                                 let handle = DocHandle::new(
                                     self.repo_sender.clone(),
