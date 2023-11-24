@@ -605,6 +605,8 @@ pub(crate) struct DocumentInfo {
     /// Counter of patches since last save,
     /// used to make decisions about full or incemental saves.
     patches_since_last_save: usize,
+    /// The heads the last time we saved
+    last_saved_heads: Option<Vec<ChangeHash>>,
 }
 
 /// A state machine representing a connection between a remote repo and a particular document
@@ -658,6 +660,7 @@ impl DocumentInfo {
             peer_connections: Default::default(),
             change_observers: Default::default(),
             patches_since_last_save: 0,
+            last_saved_heads: None,
         }
     }
 
@@ -802,7 +805,14 @@ impl DocumentInfo {
         } else {
             let to_save = {
                 let mut doc = self.document.write();
-                doc.automerge.save_incremental()
+                let to_save = doc.automerge.save_after(
+                    self.last_saved_heads
+                        .as_ref()
+                        .map(|h| h.as_ref())
+                        .unwrap_or(&[]),
+                );
+                self.last_saved_heads = Some(doc.automerge.get_heads());
+                to_save
             };
             storage.append(document_id.clone(), to_save)
         };
