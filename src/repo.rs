@@ -1,8 +1,8 @@
 use crate::dochandle::{DocHandle, SharedDocument};
-use crate::interfaces::{DocumentId, RepoId};
+use crate::interfaces::{DocumentId, EphemeralSessionId, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
-use crate::{share_policy, SharePolicy, SharePolicyError, EphemeralMessage};
+use crate::{share_policy, EphemeralMessage, SharePolicy, SharePolicyError};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::{Automerge, ChangeHash, ReadDoc};
 use core::pin::Pin;
@@ -18,8 +18,9 @@ use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::mem;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 use uuid::Uuid;
 
@@ -42,7 +43,6 @@ pub enum RepoError {
     /// Error coming from storage.
     StorageError(StorageError),
 }
-
 /// Create a new document.
 fn new_document() -> Automerge {
     Automerge::new()
@@ -76,7 +76,9 @@ enum NetworkEvent {
         to_repo_id: RepoId,
         document_id: DocumentId,
         message: EphemeralMessage,
-    }
+        session_id: EphemeralSessionId,
+        count: NonZeroU64,
+    },
 }
 
 impl std::fmt::Debug for NetworkEvent {
@@ -119,11 +121,15 @@ impl std::fmt::Debug for NetworkEvent {
                 to_repo_id,
                 document_id,
                 message: _,
+                session_id,
+                count,
             } => f
                 .debug_struct("NetworkEvent::Ephemeral")
                 .field("from_repo_id", from_repo_id)
                 .field("to_repo_id", to_repo_id)
                 .field("document_id", document_id)
+                .field("session_id", session_id)
+                .field("count", count)
                 .field("message", &"...")
                 .finish(),
         }
@@ -151,6 +157,14 @@ enum NetworkMessage {
         from_repo_id: RepoId,
         to_repo_id: RepoId,
         document_id: DocumentId,
+    },
+    Ephemeral {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: Vec<u8>,
+        count: NonZeroU64,
+        session_id: Uuid,
     },
 }
 
@@ -187,6 +201,21 @@ impl From<NetworkMessage> for RepoMessage {
                 document_id,
                 sender_id: from_repo_id,
                 target_id: to_repo_id,
+            },
+            NetworkMessage::Ephemeral {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+                count,
+                session_id,
+            } => RepoMessage::Ephemeral {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message,
+                session_id: session_id.into(),
+                count,
             },
         }
     }
@@ -304,6 +333,8 @@ pub(crate) enum RepoEvent {
     ),
     /// A document changed.
     DocChange(DocumentId),
+    /// A new ephemeral message was published
+    NewEphemeral(DocumentId),
     /// A document was closed(all doc handles dropped).
     DocClosed(DocumentId),
     /// Add a new change observer to a document, from a given change hash.
@@ -325,6 +356,10 @@ pub(crate) enum RepoEvent {
         stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
         sink: Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>,
     },
+    SubscribeEphemeralStream {
+        document_id: DocumentId,
+        resolver: RepoFutureResolver<EphemeralStream>,
+    },
     /// Stop the repo.
     Stop,
 }
@@ -335,11 +370,15 @@ impl fmt::Debug for RepoEvent {
             RepoEvent::NewDoc(_, _, _) => f.write_str("RepoEvent::NewDoc"),
             RepoEvent::RequestDoc(_, _) => f.write_str("RepoEvent::RequestDoc"),
             RepoEvent::DocChange(_) => f.write_str("RepoEvent::DocChange"),
+            RepoEvent::NewEphemeral(_) => f.write_str("RepoEvent::NewEphemeral"),
             RepoEvent::DocClosed(_) => f.write_str("RepoEvent::DocClosed"),
             RepoEvent::AddChangeObserver(_, _, _) => f.write_str("RepoEvent::AddChangeObserver"),
             RepoEvent::LoadDoc(_, _) => f.write_str("RepoEvent::LoadDoc"),
             RepoEvent::ListAllDocs(_) => f.write_str("RepoEvent::ListAllDocs"),
             RepoEvent::ConnectRemoteRepo { .. } => f.write_str("RepoEvent::ConnectRemoteRepo"),
+            RepoEvent::SubscribeEphemeralStream { .. } => {
+                f.write_str("RepoEvent::SubscribeEphemeralStream")
+            }
             RepoEvent::Stop => f.write_str("RepoEvent::Stop"),
         }
     }
@@ -619,6 +658,8 @@ pub(crate) struct DocumentInfo {
     patches_since_last_save: usize,
     /// The heads the last time we saved
     last_saved_heads: Option<Vec<ChangeHash>>,
+
+    outgoing_ephemera: Arc<Mutex<Vec<EphemeralMessage>>>,
 }
 
 /// A state machine representing a connection between a remote repo and a particular document
@@ -673,6 +714,7 @@ impl DocumentInfo {
             change_observers: Default::default(),
             patches_since_last_save: 0,
             last_saved_heads: None,
+            outgoing_ephemera: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -720,6 +762,7 @@ impl DocumentInfo {
                         self.document.clone(),
                         self.handle_count.clone(),
                         repo_id.clone(),
+                        self.outgoing_ephemera.clone(),
                     );
                     self.state.resolve_load_fut(Ok(Some(handle)));
                     self.state = DocState::Sync(vec![]);
@@ -761,6 +804,7 @@ impl DocumentInfo {
                         self.document.clone(),
                         self.handle_count.clone(),
                         repo_id.clone(),
+                        self.outgoing_ephemera.clone(),
                     );
                     self.state.resolve_bootstrap_fut(Ok(handle));
                     self.state = DocState::Sync(vec![]);
@@ -807,13 +851,13 @@ impl DocumentInfo {
         let should_compact = self.patches_since_last_save > 10;
         let storage_fut = if should_compact {
             let to_save = {
-                let mut doc = self.document.write();
+                let doc = self.document.write();
                 doc.automerge.save()
             };
             storage.compact(document_id.clone(), to_save)
         } else {
             let to_save = {
-                let mut doc = self.document.write();
+                let doc = self.document.write();
                 let to_save = doc.automerge.save_after(
                     self.last_saved_heads
                         .as_ref()
@@ -1031,6 +1075,9 @@ pub struct Repo {
     /// The Id of the repo.
     repo_id: RepoId,
 
+    /// Session ID for ephemeral messages
+    session_id: EphemeralSessionId,
+
     /// Documents managed in memory by the repo.
     documents: HashMap<DocumentId, DocumentInfo>,
 
@@ -1076,6 +1123,14 @@ pub struct Repo {
 
     /// Outstanding requests
     requests: HashMap<DocumentId, Request>,
+
+    /// outgoing ephemeral streams
+    ephemeral_streams: HashMap<DocumentId, Vec<Weak<Mutex<EphemeralStreamInner>>>>,
+
+    /// ephemeral sessions we have seen
+    ephemeral_sessions: HashMap<EphemeralSessionId, NonZeroU64>,
+
+    ephemeral_session_counter: NonZeroU64,
 }
 
 #[derive(Debug)]
@@ -1121,6 +1176,7 @@ impl Repo {
         let share_policy = Box::new(share_policy::Permissive);
         Repo {
             repo_id,
+            session_id: EphemeralSessionId::new(),
             documents: Default::default(),
             remote_repos: Default::default(),
             wake_receiver,
@@ -1139,6 +1195,9 @@ impl Repo {
             pending_share_decisions: HashMap::new(),
             share_decisions_to_poll: HashSet::new(),
             requests: HashMap::new(),
+            ephemeral_streams: HashMap::new(),
+            ephemeral_sessions: HashMap::new(),
+            ephemeral_session_counter: NonZeroU64::new(1).unwrap(),
         }
     }
 
@@ -1294,7 +1353,15 @@ impl Repo {
                                 session_id,
                                 count,
                             }) => {
-                                todo!()
+                                let event = NetworkEvent::Ephemeral {
+                                    from_repo_id: from_repo_id.clone(),
+                                    to_repo_id,
+                                    document_id,
+                                    message: EphemeralMessage::new(message, from_repo_id),
+                                    session_id,
+                                    count,
+                                };
+                                new_messages.push(event);
                             }
                             Err(e) => {
                                 tracing::error!(error = ?e, "Error on network stream.");
@@ -1426,6 +1493,7 @@ impl Repo {
                 let handle_count = Arc::new(AtomicUsize::new(1));
                 let info =
                     DocumentInfo::new(DocState::Sync(vec![]), shared.clone(), handle_count.clone());
+                let outgoing_ephemera = info.outgoing_ephemera.clone();
                 self.documents.insert(document_id.clone(), info);
                 resolver.resolve_fut(DocHandle::new(
                     self.repo_sender.clone(),
@@ -1433,6 +1501,7 @@ impl Repo {
                     shared.clone(),
                     handle_count.clone(),
                     self.repo_id.clone(),
+                    outgoing_ephemera,
                 ));
                 Self::enqueue_share_decisions(
                     self.remote_repos.keys(),
@@ -1480,6 +1549,7 @@ impl Repo {
                             info.document.clone(),
                             info.handle_count.clone(),
                             self.repo_id.clone(),
+                            info.outgoing_ephemera.clone(),
                         );
                         resolver.resolve_fut(Ok(Some(handle)));
                     }
@@ -1576,6 +1646,28 @@ impl Repo {
                     );
                 }
             }
+            RepoEvent::NewEphemeral(doc_id) => {
+                // broadcast this ephemeral message to all connect repos
+                if let Some(info) = self.documents.get_mut(&doc_id) {
+                    let mut lock = info.outgoing_ephemera.lock();
+                    for message in lock.drain(..) {
+                        for (to_repo_id, outbox) in &mut self.pending_messages {
+                            let outgoing = NetworkMessage::Ephemeral {
+                                from_repo_id: self.repo_id.clone(),
+                                to_repo_id: to_repo_id.clone(),
+                                document_id: doc_id.clone(),
+                                message: message.clone().into_bytes(),
+                                count: self.ephemeral_session_counter,
+                                session_id: self.session_id.clone().into(),
+                            };
+                            self.ephemeral_session_counter =
+                                self.ephemeral_session_counter.saturating_add(1);
+                            outbox.push_back(outgoing);
+                            self.sinks_to_poll.insert(to_repo_id.clone());
+                        }
+                    }
+                }
+            }
             RepoEvent::DocClosed(doc_id) => {
                 if let Some(doc_info) = self.documents.get_mut(&doc_id) {
                     assert_eq!(doc_info.handle_count.load(Ordering::SeqCst), 0);
@@ -1633,6 +1725,7 @@ impl Repo {
                                     info.document.clone(),
                                     info.handle_count.clone(),
                                     self.repo_id.clone(),
+                                    info.outgoing_ephemera.clone(),
                                 );
                                 resolver_clone.resolve_fut(Ok(Some(handle)));
                             }
@@ -1709,6 +1802,17 @@ impl Repo {
                 }
                 self.sinks_to_poll.insert(repo_id.clone());
                 self.streams_to_poll.insert(repo_id);
+            }
+            RepoEvent::SubscribeEphemeralStream {
+                document_id,
+                mut resolver,
+            } => {
+                let stream = EphemeralStream::new();
+                self.ephemeral_streams
+                    .entry(document_id.clone())
+                    .or_default()
+                    .push(Arc::downgrade(&stream.inner));
+                resolver.resolve_fut(stream);
             }
             RepoEvent::Stop => {
                 // Handled in the main run loop.
@@ -1887,8 +1991,66 @@ impl Repo {
                         tracing::trace!(?from_repo_id, "received unavailable for request we didnt send or are no longer tracking");
                     }
                 },
-                NetworkEvent::Ephemeral { from_repo_id, to_repo_id, document_id, message } => {
-                },
+                NetworkEvent::Ephemeral {
+                    from_repo_id,
+                    to_repo_id,
+                    document_id,
+                    message,
+                    session_id,
+                    count,
+                } => {
+                    assert_eq!(to_repo_id, self.repo_id);
+                    match self.ephemeral_sessions.entry(session_id.clone()) {
+                        Entry::Occupied(mut entry) => {
+                            if entry.get() >= &count {
+                                tracing::trace!(
+                                    ?from_repo_id,
+                                    "received duplicate ephemeral message"
+                                );
+                                continue;
+                            } else {
+                                entry.insert(count);
+                            }
+                        }
+                        Entry::Vacant(entry) => {
+                            tracing::trace!(
+                                ?from_repo_id,
+                                "received ephemeral message with unknown session id"
+                            );
+                            entry.insert(count);
+                        }
+                    };
+                    if let Some(outgoing_streams) = self.ephemeral_streams.get_mut(&document_id) {
+                        outgoing_streams.retain_mut(|stream| {
+                            if let Some(inner) = stream.upgrade() {
+                                let mut inner = inner.lock();
+                                inner.outbox.push_back(message.clone());
+                                if let Some(waker) = &inner.waker {
+                                    waker.wake_by_ref();
+                                }
+                                true
+                            } else {
+                                tracing::debug!(%document_id, "removing dead ephemeral stream");
+                                false
+                            }
+                        })
+                    }
+                    for (repo_id, pending_messages) in self.pending_messages.iter_mut() {
+                        if repo_id == &from_repo_id {
+                            continue;
+                        }
+                        let outgoing = NetworkMessage::Ephemeral {
+                            from_repo_id: self.repo_id.clone(),
+                            to_repo_id: repo_id.clone(),
+                            document_id: document_id.clone(),
+                            message: message.clone().into_bytes(),
+                            count,
+                            session_id: session_id.clone().into(),
+                        };
+                        pending_messages.push_back(outgoing);
+                        self.sinks_to_poll.insert(repo_id.clone());
+                    }
+                }
             }
         }
 
@@ -1943,6 +2105,7 @@ impl Repo {
                     info.document.clone(),
                     info.handle_count.clone(),
                     self.repo_id.clone(),
+                    info.outgoing_ephemera.clone(),
                 );
                 info.state.resolve_bootstrap_fut(Ok(handle));
                 info.state = DocState::Sync(vec![]);
@@ -2364,6 +2527,56 @@ impl Repo {
                 .or_default()
                 .push_back(outgoing);
             sinks_to_poll.insert(repo_id.clone());
+        }
+    }
+}
+
+const LAST_EPHEMERAL_STREAM_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct EphemeralStreamId(usize);
+
+impl EphemeralStreamId {
+    fn new() -> Self {
+        Self(LAST_EPHEMERAL_STREAM_ID.fetch_add(1, Ordering::SeqCst))
+    }
+}
+
+#[derive(Clone)]
+pub struct EphemeralStream {
+    id: EphemeralStreamId,
+    inner: Arc<Mutex<EphemeralStreamInner>>,
+}
+
+impl EphemeralStream {
+    fn new() -> Self {
+        Self {
+            id: EphemeralStreamId::new(),
+            inner: Arc::new(Mutex::new(EphemeralStreamInner {
+                outbox: VecDeque::new(),
+                waker: None,
+            })),
+        }
+    }
+}
+
+struct EphemeralStreamInner {
+    outbox: VecDeque<EphemeralMessage>,
+    waker: Option<std::task::Waker>,
+}
+
+impl Stream for EphemeralStream {
+    type Item = EphemeralMessage;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut inner = self.inner.lock();
+        if let Some(msg) = inner.outbox.pop_front() {
+            return Poll::Ready(Some(msg));
+        } else {
+            // store the waker for the repo to call later
+            let waker = cx.waker();
+            inner.waker = Some(waker.clone());
+            Poll::Pending
         }
     }
 }

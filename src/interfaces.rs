@@ -230,13 +230,31 @@ pub trait Storage: Send {
     ) -> BoxFuture<'static, Result<(), StorageError>>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct EphemeralSessionId(String);
+
+impl EphemeralSessionId {
+    pub(crate) fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+}
 
 impl<'a> From<&'a str> for EphemeralSessionId {
     fn from(s: &'a str) -> Self {
         Self(s.to_string())
+    }
+}
+
+impl From<EphemeralSessionId> for uuid::Uuid {
+    fn from(s: EphemeralSessionId) -> Self {
+        uuid::Uuid::parse_str(&s.0).unwrap()
+    }
+}
+
+impl From<uuid::Uuid> for EphemeralSessionId {
+    fn from(u: uuid::Uuid) -> Self {
+        Self(u.to_string())
     }
 }
 
@@ -294,20 +312,28 @@ impl AsRef<str> for ProtocolVersion {
 }
 
 #[derive(Debug, Clone, PartialEq, Hash)]
-pub struct EphemeralMessage(Vec<u8>);
-
-impl AsRef<[u8]> for EphemeralMessage {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
+pub struct EphemeralMessage {
+    from_repo_id: RepoId,
+    message: Vec<u8>,
 }
 
 impl EphemeralMessage {
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+    pub fn new(bytes: Vec<u8>, sender: RepoId) -> Self {
+        Self {
+            from_repo_id: sender,
+            message: bytes,
+        }
     }
 
-    pub fn into_inner(self) -> Vec<u8> {
-        self.0
+    pub fn sender(&self) -> &RepoId {
+        &self.from_repo_id
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.message
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.message
     }
 }
