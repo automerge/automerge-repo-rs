@@ -1,7 +1,9 @@
+use crate::EphemeralMessage;
 use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
 use automerge::{Automerge, ChangeHash};
 use crossbeam_channel::Sender;
+use futures::Stream;
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -156,5 +158,22 @@ impl DocHandle {
             ))
             .expect("Failed to send doc change event.");
         fut
+    }
+
+    pub fn ephemera(&self) -> impl Stream<Item = EphemeralMessage> {
+        futures::stream::empty()
+        //let (sender, receiver) = mpsc::unbounded_channel();
+        //let observer = EphemeralObserver::new(sender);
+        //self.repo_sender
+            //.send(RepoEvent::AddEphemeralObserver(
+                //self.document_id.clone(),
+                //observer,
+            //))
+            //.expect("Failed to send ephemeral observer event.");
+        //receiver
+    }
+
+    pub async fn broadcast_ephemeral(&self, msg: Vec<u8>) -> Result<(), RepoError> {
+        Ok(())
     }
 }

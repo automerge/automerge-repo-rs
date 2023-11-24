@@ -9,6 +9,7 @@ pub use share_policy::{SharePolicy, SharePolicyError};
 pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{
     DocumentId, Message, NetworkError, RepoId, RepoMessage, Storage, StorageError,
+    EphemeralMessage,
 };
 pub use crate::network_connect::ConnDirection;
 pub use crate::repo::{Repo, RepoError, RepoHandle};

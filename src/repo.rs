@@ -2,7 +2,7 @@ use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
-use crate::{share_policy, SharePolicy, SharePolicyError};
+use crate::{share_policy, SharePolicy, SharePolicyError, EphemeralMessage};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::{Automerge, ChangeHash, ReadDoc};
 use core::pin::Pin;
@@ -71,6 +71,12 @@ enum NetworkEvent {
         to_repo_id: RepoId,
         document_id: DocumentId,
     },
+    Ephemeral {
+        from_repo_id: RepoId,
+        to_repo_id: RepoId,
+        document_id: DocumentId,
+        message: EphemeralMessage,
+    }
 }
 
 impl std::fmt::Debug for NetworkEvent {
@@ -107,6 +113,18 @@ impl std::fmt::Debug for NetworkEvent {
                 .field("from_repo_id", from_repo_id)
                 .field("to_repo_id", to_repo_id)
                 .field("document_id", document_id)
+                .finish(),
+            NetworkEvent::Ephemeral {
+                from_repo_id,
+                to_repo_id,
+                document_id,
+                message: _,
+            } => f
+                .debug_struct("NetworkEvent::Ephemeral")
+                .field("from_repo_id", from_repo_id)
+                .field("to_repo_id", to_repo_id)
+                .field("document_id", document_id)
+                .field("message", &"...")
                 .finish(),
         }
     }
@@ -1868,6 +1886,8 @@ impl Repo {
                     Entry::Vacant(_) => {
                         tracing::trace!(?from_repo_id, "received unavailable for request we didnt send or are no longer tracking");
                     }
+                },
+                NetworkEvent::Ephemeral { from_repo_id, to_repo_id, document_id, message } => {
                 },
             }
         }

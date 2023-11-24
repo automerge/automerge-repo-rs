@@ -292,3 +292,22 @@ impl AsRef<str> for ProtocolVersion {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct EphemeralMessage(Vec<u8>);
+
+impl AsRef<[u8]> for EphemeralMessage {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl EphemeralMessage {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    pub fn into_inner(self) -> Vec<u8> {
+        self.0
+    }
+}
