@@ -137,7 +137,7 @@ impl RepoHandle {
     pub fn new_document(&self) -> DocHandle {
         let document_id = DocumentId::random();
         let document = new_document();
-        let doc_info = self.new_document_info(document, DocState::LocallyCreatedNotEdited);
+        let doc_info = self.new_document_info(document, DocState::Sync(vec![]));
         let handle = DocHandle::new(
             self.repo_sender.clone(),
             document_id.clone(),
@@ -316,11 +316,6 @@ pub(crate) enum DocState {
         resolver: RepoFutureResolver<Result<Option<DocHandle>, RepoError>>,
         storage_fut: BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>,
     },
-    /// A document that has been locally created,
-    /// and not edited yet,
-    /// should not be synced
-    /// until it has been locally edited.
-    LocallyCreatedNotEdited,
     /// The doc is syncing(can be edited locally),
     /// and polling pending storage save operations.
     Sync(Vec<BoxFuture<'static, Result<(), StorageError>>>),
@@ -341,7 +336,6 @@ impl fmt::Debug for DocState {
                 f.write_str(&input)
             }
             DocState::LoadPending { .. } => f.write_str("DocState::LoadPending"),
-            DocState::LocallyCreatedNotEdited => f.write_str("DocState::LocallyCreatedNotEdited"),
             DocState::Sync(_) => f.write_str("DocState::Sync"),
             DocState::PendingRemoval(_) => f.write_str("DocState::PendingRemoval"),
             DocState::Error => f.write_str("DocState::Error"),
@@ -655,10 +649,7 @@ impl DocumentInfo {
 
     fn start_pending_removal(&mut self) {
         self.state = match &mut self.state {
-            DocState::LocallyCreatedNotEdited
-            | DocState::Error
-            | DocState::LoadPending { .. }
-            | DocState::Bootstrap { .. } => {
+            DocState::Error | DocState::LoadPending { .. } | DocState::Bootstrap { .. } => {
                 assert_eq!(self.changes_since_last_compact, 0);
                 DocState::PendingRemoval(vec![])
             }
@@ -1387,10 +1378,6 @@ impl Repo {
                     if info.note_changes() {
                         self.documents_with_changes.push(doc_id.clone());
                     }
-                    let is_first_edit = matches!(info.state, DocState::LocallyCreatedNotEdited);
-                    if is_first_edit {
-                        info.state = DocState::Sync(vec![]);
-                    }
                     for (to_repo_id, message) in info.generate_sync_messages().into_iter() {
                         let outgoing = NetworkMessage::Sync {
                             from_repo_id: local_repo_id.clone(),
@@ -1404,18 +1391,16 @@ impl Repo {
                             .push_back(outgoing);
                         self.sinks_to_poll.insert(to_repo_id);
                     }
-                    if is_first_edit {
-                        // Send a sync message to all other repos we are connected with and with
-                        // whom we should share this document
-                        Self::enqueue_share_decisions(
-                            self.remote_repos.keys(),
-                            &mut self.pending_share_decisions,
-                            &mut self.share_decisions_to_poll,
-                            self.share_policy.as_ref(),
-                            doc_id.clone(),
-                            ShareType::Announce,
-                        );
-                    }
+                    // Send a sync message to all other repos we are connected with and with
+                    // whom we should share this document
+                    Self::enqueue_share_decisions(
+                        self.remote_repos.keys(),
+                        &mut self.pending_share_decisions,
+                        &mut self.share_decisions_to_poll,
+                        self.share_policy.as_ref(),
+                        doc_id.clone(),
+                        ShareType::Announce,
+                    );
                 }
             }
             RepoEvent::DocClosed(doc_id) => {
