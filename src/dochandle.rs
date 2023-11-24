@@ -1,7 +1,9 @@
 use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
+use crate::EphemeralMessage;
 use automerge::{Automerge, ChangeHash};
 use crossbeam_channel::Sender;
+use futures::Stream;
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -30,6 +32,7 @@ pub struct DocHandle {
     /// that doesn't require a mutabale reference to the handle.
     /// Note: the mutex is not shared between clones of the same handle.
     last_heads: Mutex<Vec<ChangeHash>>,
+    outgoing_ephemera: Arc<Mutex<Vec<EphemeralMessage>>>,
 }
 
 impl Clone for DocHandle {
@@ -42,6 +45,7 @@ impl Clone for DocHandle {
             self.shared_document.clone(),
             self.handle_count.clone(),
             self.local_repo_id.clone(),
+            self.outgoing_ephemera.clone(),
         )
     }
 }
@@ -67,6 +71,7 @@ impl DocHandle {
         shared_document: Arc<RwLock<SharedDocument>>,
         handle_count: Arc<AtomicUsize>,
         local_repo_id: RepoId,
+        ephemera: Arc<Mutex<Vec<EphemeralMessage>>>,
     ) -> Self {
         let last_heads = {
             let state = shared_document.read();
@@ -79,6 +84,7 @@ impl DocHandle {
             handle_count,
             local_repo_id,
             last_heads: Mutex::new(last_heads),
+            outgoing_ephemera: ephemera,
         }
     }
 
@@ -156,5 +162,25 @@ impl DocHandle {
             ))
             .expect("Failed to send doc change event.");
         fut
+    }
+
+    pub async fn ephemera(&self) -> impl Stream<Item = EphemeralMessage> + Clone {
+        let (fut, resolver) = new_repo_future_with_resolver();
+        self.repo_sender
+            .send(RepoEvent::SubscribeEphemeralStream {
+                document_id: self.document_id.clone(),
+                resolver,
+            })
+            .expect("Failed to send ephemeral observer event.");
+        fut.await
+    }
+
+    pub fn broadcast_ephemeral(&self, msg: Vec<u8>) -> Result<(), RepoError> {
+        let mut outgoing_ephemera = self.outgoing_ephemera.lock();
+        outgoing_ephemera.push(EphemeralMessage::new(msg, self.local_repo_id.clone()));
+        self.repo_sender
+            .send(RepoEvent::NewEphemeral(self.document_id.clone()))
+            .expect("failed to send new ephemeral event");
+        Ok(())
     }
 }
