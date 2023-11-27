@@ -166,7 +166,7 @@ enum NetworkMessage {
         document_id: DocumentId,
         message: Vec<u8>,
         count: NonZeroU64,
-        session_id: Uuid,
+        session_id: String,
     },
 }
 
@@ -216,7 +216,7 @@ impl From<NetworkMessage> for RepoMessage {
                 to_repo_id,
                 document_id,
                 message,
-                session_id: session_id.into(),
+                session_id: EphemeralSessionId::from(session_id.as_str()),
                 count,
             },
         }
@@ -1685,7 +1685,7 @@ impl Repo {
                                 document_id: doc_id.clone(),
                                 message: message.clone().into_bytes(),
                                 count: self.ephemeral_session_counter,
-                                session_id: self.session_id.clone().into(),
+                                session_id: self.session_id.as_ref().into(),
                             };
                             self.ephemeral_session_counter =
                                 self.ephemeral_session_counter.saturating_add(1);
@@ -2033,7 +2033,7 @@ impl Repo {
                             document_id: document_id.clone(),
                             message: message.clone().into_bytes(),
                             count,
-                            session_id: session_id.clone().into(),
+                            session_id: session_id.as_ref().into(),
                         };
                         pending_messages.push_back(outgoing);
                         self.sinks_to_poll.insert(repo_id.clone());

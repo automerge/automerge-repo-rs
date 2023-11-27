@@ -33,7 +33,7 @@ class Server {
     })
 
     this.#server = app.listen(PORT, () => {
-      console.log(`Listening on port ${PORT}`)
+      console.log(`Listening on port ${this.#server.address().port}`)
     })
 
     this.#server.on("upgrade", (request, socket, head) => {
