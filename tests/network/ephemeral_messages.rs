@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use automerge_repo::{Repo, RepoError};
+use futures::StreamExt;
 use test_log::test;
 use test_utils::storage_utils::SimpleStorage;
-use tokio_stream::StreamExt;
 
 use crate::tincans::connect_repos;
 
@@ -116,26 +116,22 @@ async fn forwarded_messages_do_not_loop() {
     .unwrap();
 
     let mut ephemera = doc_1_repo_3.ephemera().await;
-    let mut ephemera2 = doc_1_repo_3.ephemera().await;
+    let ephemera2 = doc_1_repo_3.ephemera().await;
 
     let msg_on_repo_3 = tokio::spawn(async move { ephemera.next().await });
 
     doc_1_repo_1.broadcast_ephemeral(vec![1, 2, 3]).unwrap();
 
-    let msg_on_repo_3 = tokio::time::timeout(Duration::from_millis(100), msg_on_repo_3)
+    let _msg_on_repo_3 = tokio::time::timeout(Duration::from_millis(100), msg_on_repo_3)
         .await
         .expect("first message should not be none");
 
-    let first_message = ephemera2.next().await;
-    assert!(first_message.is_some());
+    // receive all messages for 100ms
+    let messages = ephemera2.take_until(tokio::time::sleep(Duration::from_millis(100))).collect::<Vec<_>>().await;
 
-    // wait for a bit to make sure there are no more messages
-    let next_message =
-        tokio::time::timeout(Duration::from_millis(100), async { ephemera2.next().await })
-            .await
-            .ok();
+    // there should be either 1 or 2 messages depending on which route the message took
+    assert!(messages.len() == 1 || messages.len() == 2);
 
-    assert!(next_message.is_none());
 
     tokio::task::spawn_blocking(move || {
         repo_handle_1.stop()?;

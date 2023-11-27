@@ -246,18 +246,6 @@ impl<'a> From<&'a str> for EphemeralSessionId {
     }
 }
 
-impl From<EphemeralSessionId> for uuid::Uuid {
-    fn from(s: EphemeralSessionId) -> Self {
-        uuid::Uuid::parse_str(&s.0).unwrap()
-    }
-}
-
-impl From<uuid::Uuid> for EphemeralSessionId {
-    fn from(u: uuid::Uuid) -> Self {
-        Self(u.to_string())
-    }
-}
-
 impl AsRef<str> for EphemeralSessionId {
     fn as_ref(&self) -> &str {
         self.0.as_ref()

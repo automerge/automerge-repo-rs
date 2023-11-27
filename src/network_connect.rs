@@ -1,4 +1,4 @@
-use crate::interfaces::{Message, NetworkError, ProtocolVersion, RepoId, RepoMessage};
+use crate::interfaces::{Message, NetworkError, ProtocolVersion, RepoId};
 use crate::repo::RepoHandle;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 

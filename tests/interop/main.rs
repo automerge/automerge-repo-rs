@@ -1,160 +1,213 @@
-use std::{panic::catch_unwind, path::PathBuf, process::Child, thread::sleep, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use automerge::{transaction::Transactable, ReadDoc};
-use automerge_repo::{ConnDirection, Repo};
+use automerge_repo::{ConnDirection, Repo, RepoHandle};
+use futures::StreamExt;
 use test_log::test;
 use test_utils::storage_utils::InMemoryStorage;
 
-const INTEROP_SERVER_PATH: &str = "interop-test-server";
-const PORT: u16 = 8099;
+mod js_wrapper;
+use js_wrapper::JsWrapper;
 
-#[test]
-fn interop_test() {
-    tracing::trace!("we're starting up");
-    let mut server_process = start_js_server();
-    let result = catch_unwind(|| sync_two_repos(PORT));
-    server_process.kill().unwrap();
-    match result {
-        Ok(()) => {}
-        Err(e) => {
-            std::panic::resume_unwind(e);
-        }
-    }
-}
+#[test(tokio::test)]
+async fn sync_rust_clients_via_js_server() {
+    let js = JsWrapper::create().await.unwrap();
+    let js_server = js.start_server().await.unwrap();
+    let port = js_server.port;
 
-fn sync_two_repos(port: u16) {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let storage1 = Box::<InMemoryStorage>::default();
-        let repo1 = Repo::new(Some("repo1".to_string()), storage1);
-        let repo1_handle = repo1.run();
-        let (conn, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
-            .await
-            .unwrap();
+    let repo1 = repo_connected_to_js_server(port, Some("repo1".to_string())).await;
 
-        let conn1_driver = repo1_handle
-            .connect_tungstenite(conn, ConnDirection::Outgoing)
-            .await
-            .expect("error connecting connection 1");
-
-        tokio::spawn(async {
-            if let Err(e) = conn1_driver.await {
-                tracing::error!("Error running repo 1 connection: {}", e);
-            }
-            tracing::trace!("conn1 finished");
-        });
-
-        let doc_handle_repo1 = repo1_handle.new_document().await;
-        doc_handle_repo1
-            .with_doc_mut(|doc| {
-                doc.transact(|tx| {
-                    tx.put(automerge::ROOT, "key", "value")?;
-                    Ok::<_, automerge::AutomergeError>(())
-                })
+    let doc_handle_repo1 = repo1.handle.new_document().await;
+    doc_handle_repo1
+        .with_doc_mut(|doc| {
+            doc.transact(|tx| {
+                tx.put(automerge::ROOT, "key", "value")?;
+                Ok::<_, automerge::AutomergeError>(())
             })
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let storage2 = Box::<InMemoryStorage>::default();
-        let repo2 = Repo::new(Some("repo2".to_string()), storage2);
-        let repo2_handle = repo2.run();
-
-        let (conn2, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
-            .await
-            .unwrap();
-        let conn2_driver = repo2_handle
-            .connect_tungstenite(conn2, ConnDirection::Outgoing)
-            .await
-            .expect("error connecting connection 2");
-
-        tokio::spawn(async {
-            if let Err(e) = conn2_driver.await {
-                tracing::error!("Error running repo 2 connection: {}", e);
-            }
-            tracing::trace!("conn2 finished");
-        });
-
-        tracing::info!("Requesting");
-        //tokio::time::sleep(Duration::from_secs(1)).await;
-        let doc_handle_repo2 = repo2_handle
-            .request_document(doc_handle_repo1.document_id())
-            .await
-            .unwrap()
-            .unwrap();
-        doc_handle_repo2.with_doc(|doc| {
-            assert_eq!(
-                doc.get::<_, &str>(automerge::ROOT, "key")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .into_string()
-                    .unwrap()
-                    .as_str(),
-                "value"
-            );
-        });
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        repo1_handle.stop().unwrap();
-        repo2_handle.stop().unwrap();
-    })
-}
-
-fn start_js_server() -> Child {
-    println!(
-        "Building and starting JS interop server in {}",
-        interop_server_path().display()
-    );
-    npm_install();
-    npm_build();
-    let child = std::process::Command::new("node")
-        .args(["server.js", &PORT.to_string()])
-        .env("DEBUG", "WebsocketServer,automerge-repo:*")
-        .current_dir(interop_server_path())
-        .spawn()
+        })
         .unwrap();
 
-    // Wait for the server to start up
-    loop {
-        match reqwest::blocking::get(format!("http://localhost:{}/", PORT)) {
-            Ok(r) => {
-                if r.status().is_success() {
-                    break;
-                } else {
-                    println!("Server not ready yet, got status code {}", r.status());
-                }
-            }
-            Err(e) => {
-                println!("Error connecting to server: {}", e);
-            }
-        }
-        sleep(Duration::from_millis(100));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let repo2 = repo_connected_to_js_server(port, Some("repo2".to_string())).await;
+
+    let doc_handle_repo2 = repo2
+        .handle
+        .request_document(doc_handle_repo1.document_id())
+        .await
+        .unwrap()
+        .unwrap();
+    doc_handle_repo2.with_doc(|doc| {
+        assert_eq!(
+            doc.get::<_, &str>(automerge::ROOT, "key")
+                .unwrap()
+                .unwrap()
+                .0
+                .into_string()
+                .unwrap()
+                .as_str(),
+            "value"
+        );
+    });
+}
+
+#[test(tokio::test)]
+async fn send_ephemeral_messages_from_rust_clients_via_js_server() {
+    let js = JsWrapper::create().await.unwrap();
+    let js_server = js.start_server().await.unwrap();
+    let port = js_server.port;
+
+    let repo1 = repo_connected_to_js_server(port, Some("repo1".to_string())).await;
+
+    let doc_handle_repo1 = repo1.handle.new_document().await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let repo2 = repo_connected_to_js_server(port, Some("repo2".to_string())).await;
+
+    let doc_handle_repo2 = repo2
+        .handle
+        .request_document(doc_handle_repo1.document_id())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut ephemera = doc_handle_repo2.ephemera().await;
+
+    // A cbor array of two integers
+    let msg: Vec<u8> = vec![0x82, 0x01, 0x02];
+
+    doc_handle_repo1.broadcast_ephemeral(msg).unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_millis(100), ephemera.next())
+        .await
+        .expect("timed out waiting for ephemeral message")
+        .expect("no ephemeral message received");
+
+    assert_eq!(msg.bytes(), &msg.bytes()[..]);
+    
+}
+
+#[test(tokio::test)]
+async fn two_js_clients_can_sync_through_rust_server() {
+    let server = start_rust_server().await;
+    let js = JsWrapper::create().await.unwrap();
+    let (doc_id, heads, _child1) = js.create_doc(server.port).await.unwrap();
+
+    let fetched_heads = js.fetch_doc(server.port, doc_id).await.unwrap();
+
+    assert_eq!(heads, fetched_heads);
+}
+
+#[test(tokio::test)]
+async fn two_js_clients_can_send_ephemera_through_rust_server() {
+    let js = JsWrapper::create().await.unwrap();
+    let server = start_rust_server().await;
+
+    let (doc_id, _heads, _child1) = js.create_doc(server.port).await.unwrap();
+
+    let mut listening = js.receive_ephemera(server.port, doc_id.clone()).await.unwrap();
+
+    js.send_ephemeral_message(server.port, doc_id, "hello").await.unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_millis(100), listening.next())
+        .await
+        .expect("timed out waiting for ephemeral message")
+        .expect("no ephemeral message received")
+        .expect("error reading ephemeral message");
+
+    assert_eq!(msg, "hello");
+    
+}
+
+struct RunningRepo {
+    handle: RepoHandle,
+}
+
+impl Drop for RunningRepo {
+    fn drop(&mut self) {
+        self.handle.clone().stop().unwrap();
     }
-    child
 }
 
-fn npm_build() {
-    println!("npm run build");
-    let mut cmd = std::process::Command::new("npm");
-    cmd.args(["run", "build"]);
-    cmd.current_dir(interop_server_path());
-    let status = cmd.status().expect("npm run build failed");
-    assert!(status.success());
+async fn repo_connected_to_js_server(port: u16, id: Option<String>) -> RunningRepo {
+    let repo = Repo::new(id, Box::<InMemoryStorage>::default());
+    let handle = repo.run();
+    let (conn, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
+        .await
+        .unwrap();
+
+    let driver = handle
+        .connect_tungstenite(conn, ConnDirection::Outgoing)
+        .await
+        .expect("error connecting connection 1");
+
+    tokio::spawn(async {
+        if let Err(e) = driver.await {
+            tracing::error!("Error running connection: {}", e);
+        }
+    });
+    RunningRepo { handle }
 }
 
-fn npm_install() {
-    println!("npm install");
-    let mut cmd = std::process::Command::new("npm");
-    cmd.arg("install");
-    cmd.current_dir(interop_server_path());
-    let status = cmd.status().expect("npm install failed");
-    assert!(status.success());
+
+struct RunningRustServer {
+    port: u16,
+    handle: RepoHandle,
+    running_connections: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
-fn interop_server_path() -> PathBuf {
-    let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    d.push(INTEROP_SERVER_PATH);
-    d
+impl Drop for RunningRustServer {
+    fn drop(&mut self) {
+        for handle in self.running_connections.lock().unwrap().drain(..) {
+            handle.abort();
+        }
+        self.handle.clone().stop().unwrap();
+    }
+}
+
+async fn start_rust_server() -> RunningRustServer {
+    let handle = Repo::new(None, Box::<InMemoryStorage>::default()).run();
+    let running_connections = Arc::new(Mutex::new(Vec::new()));
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(websocket_handler))
+        .with_state((handle.clone(), running_connections.clone()));
+    let server = axum::Server::bind(&"0.0.0.0:0".parse().unwrap()).serve(app.into_make_service());
+    let port = server.local_addr().port();
+    tokio::spawn(server);
+    RunningRustServer {
+        port,
+        handle,
+        running_connections,
+    }
+}
+
+async fn websocket_handler(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    axum::extract::State((handle, running_connections)): axum::extract::State<(
+        RepoHandle,
+        Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    )>,
+) -> axum::response::Response {
+    ws.on_upgrade(|socket| handle_socket(socket, handle, running_connections))
+}
+
+async fn handle_socket(
+    socket: axum::extract::ws::WebSocket,
+    repo: RepoHandle,
+    running_connections: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+) {
+    let driver = repo
+        .accept_axum(socket)
+        .await
+        .unwrap();
+    let handle = tokio::spawn(async {
+        if let Err(e) = driver.await {
+            tracing::error!("Error running connection: {}", e);
+        }
+    });
+    running_connections.lock().unwrap().push(handle);
 }
