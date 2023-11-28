@@ -19,7 +19,7 @@ required-features = ["tokio", "tungstenite"]
 
 [[test]]
 name = "network"
-required-features = ["tokio_util"]
+required-features = ["tokio", "tungstenite"]
 
 [features]
 tokio = ["dep:tokio", "dep:tokio-util"]
