@@ -7,11 +7,12 @@ use tokio_util::codec::{Decoder, Encoder};
 use crate::{repo::RepoHandle, ConnDirection};
 use crate::{Message, NetworkError};
 
-#[cfg(feature = "tungstenite")]
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use futures::StreamExt;
 
 mod fs_storage;
 pub use fs_storage::FsStorage;
+
+mod websocket;
 
 impl RepoHandle {
     /// Connect a tokio io object
@@ -31,47 +32,6 @@ impl RepoHandle {
         let (sink, stream) = framed.split();
 
         self.connect_stream(stream, sink, direction).await?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "tungstenite")]
-    pub async fn connect_tungstenite<S>(
-        &self,
-        stream: S,
-        direction: ConnDirection,
-    ) -> Result<(), CodecError>
-    where
-        S: Sink<tungstenite::Message, Error = tungstenite::Error>
-            + Stream<Item = Result<tungstenite::Message, tungstenite::Error>>
-            + Send
-            + 'static,
-    {
-        let (sink, stream) = stream.split();
-
-        let msg_stream = stream.map::<Result<Message, NetworkError>, _>(|msg| {
-            let msg =
-                msg.map_err(|e| NetworkError::Error(format!("websocket receive error: {}", e)))?;
-            match msg {
-                tungstenite::Message::Binary(data) => Message::decode(&data).map_err(|e| {
-                    tracing::error!(err=?e, msg=%hex::encode(data), "error decoding message");
-                    NetworkError::Error(format!("error decoding message: {}", e))
-                }),
-                _ => Err(NetworkError::Error(
-                    "unexpected non-binary message".to_string(),
-                )),
-            }
-        });
-
-        let sink = sink
-            .sink_map_err(|e| NetworkError::Error(format!("websocket send error: {}", e)))
-            .with(|msg: Message| {
-                futures::future::ready(Ok::<_, NetworkError>(tungstenite::Message::Binary(
-                    msg.encode(),
-                )))
-            });
-
-        self.connect_stream(msg_stream, sink, direction).await?;
 
         Ok(())
     }
