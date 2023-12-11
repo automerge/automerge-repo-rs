@@ -1829,10 +1829,11 @@ impl Repo {
                                         &self.repo_id,
                                     );
                                     if info.state.should_sync() {
+                                        let remotes = self.remote_repos.keys().filter(|k| !info.peer_connections.contains_key(k));
                                         // Send a sync message to all other repos we are connected
                                         // with and with whom we should share this document
                                         Self::enqueue_share_decisions(
-                                            self.remote_repos.keys(),
+                                            remotes,
                                             &mut self.pending_share_decisions,
                                             &mut self.share_decisions_to_poll,
                                             self.share_policy.as_ref(),
