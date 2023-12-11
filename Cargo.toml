@@ -39,7 +39,7 @@ tokio-util = { version = "0.7.8", features = ["codec", "net" ], optional = true 
 bytes = { version = "1.4.0" }
 thiserror = "1.0.38"
 minicbor = { version = "0.19.0", features = ["alloc"] }
-tungstenite = { version = "0.20.1", optional = true }
+tungstenite = { version = "0.21", optional = true }
 tracing = "0.1.37"
 ring = "0.16.20"
 hex = "0.4.3"
@@ -53,7 +53,7 @@ axum-macros = "0.3.7"
 tokio = { version = "1.27", features = ["full"] }
 tokio-stream = { version = "0.1" }
 tokio-serde = {version = "0.8.0", features = ["json"]}
-tokio-tungstenite = { version = "0.20.1", features = ["connect"] }
+tokio-tungstenite = { version = "0.21", features = ["connect"] }
 serde_json = "1.0.96"
 test_utils = { path = "test_utils" }
 test-log = { version = "0.2.12", features = ["trace"] }
