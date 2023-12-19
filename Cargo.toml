@@ -2,6 +2,9 @@
 name = "automerge_repo"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["Alex Good <alex@memoryandthought.me>", "Gregory Terzian"]
+repository = "https://github.com/automerge/automerge-repo-rs"
 
 [[example]]
 name = "tcp-example"

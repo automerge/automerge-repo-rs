@@ -1,3 +1,4 @@
 /target
 /test_utils/target
 Cargo.lock
+.vim
