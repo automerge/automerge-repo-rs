@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 authors = ["Alex Good <alex@memoryandthought.me>", "Gregory Terzian"]
 repository = "https://github.com/automerge/automerge-repo-rs"
+description = "A rust implementation of automerge-repo"
 
 [[example]]
 name = "tcp-example"
