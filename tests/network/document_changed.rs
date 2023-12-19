@@ -22,14 +22,18 @@ async fn test_document_changed_over_sync() {
     let repo_handle_2_clone = repo_handle_2.clone();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Spawn a task that awaits the requested doc handle,
     // and then edits the document.
     let doc_id = document_handle_1.document_id();
     tokio::spawn(async move {
         // Request the document.
-        let doc_handle = repo_handle_2.request_document(doc_id).await.unwrap();
+        let doc_handle = repo_handle_2
+            .request_document(doc_id)
+            .await
+            .unwrap()
+            .expect("document should be found");
         doc_handle.with_doc_mut(|doc| {
             let val = doc
                 .get(automerge::ROOT, "repo_id")
@@ -95,7 +99,7 @@ async fn test_document_changed_locally() {
     let expected_repo_id = repo_handle_1.get_repo_id().clone();
 
     // Create a document for the repo.
-    let doc_handle = repo_handle_1.new_document();
+    let doc_handle = repo_handle_1.new_document().await;
 
     // spawn a task which edits the document
     tokio::spawn({

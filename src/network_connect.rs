@@ -1,4 +1,4 @@
-use crate::interfaces::{Message, NetworkError, RepoId, RepoMessage};
+use crate::interfaces::{Message, NetworkError, ProtocolVersion, RepoId};
 use crate::repo::RepoHandle;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
@@ -22,17 +22,17 @@ impl RepoHandle {
         Str: Stream<Item = Result<Message, RecvErr>> + Send + 'static + Unpin,
     {
         let other_id = self.handshake(&mut stream, &mut sink, direction).await?;
-        tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "Handshake complete");
+        tracing::trace!(?other_id, repo_id=?self.get_repo_id(), "handshake complete");
 
         let stream = stream.map({
             let repo_id = self.get_repo_id().clone();
             move |msg| match msg {
                 Ok(Message::Repo(repo_msg)) => {
-                    tracing::trace!(?repo_msg, repo_id=?repo_id, "Received repo message");
+                    tracing::trace!(?repo_msg, repo_id=?repo_id, "received repo message");
                     Ok(repo_msg)
                 }
                 Ok(m) => {
-                    tracing::warn!(?m, repo_id=?repo_id, "Received non-repo message");
+                    tracing::warn!(?m, repo_id=?repo_id, "received non-repo message");
                     Err(NetworkError::Error(
                         "unexpected non-repo message".to_string(),
                     ))
@@ -48,12 +48,9 @@ impl RepoHandle {
         });
 
         let sink = sink
-            .with_flat_map::<RepoMessage, _, _>(|msg| match msg {
-                RepoMessage::Sync { .. } => futures::stream::iter(vec![Ok(Message::Repo(msg))]),
-                _ => futures::stream::iter(vec![]),
-            })
+            .with::<_, _, _, SendErr>(move |msg| futures::future::ready(Ok(Message::Repo(msg))))
             .sink_map_err(|e| {
-                tracing::error!(?e, "Error sending repo message");
+                tracing::error!(?e, "error sending repo message");
                 NetworkError::Error(format!("error sending repo message: {}", e))
             });
 
@@ -78,7 +75,9 @@ impl RepoHandle {
             ConnDirection::Incoming => {
                 if let Some(msg) = stream.next().await {
                     let other_id = match msg {
-                        Ok(Message::Join(other_id)) => other_id,
+                        Ok(Message::Join {
+                            sender: other_id, ..
+                        }) => other_id,
                         Ok(other) => {
                             return Err(NetworkError::Error(format!(
                                 "unexpected message (expecting join): {:?}",
@@ -89,7 +88,10 @@ impl RepoHandle {
                             return Err(NetworkError::Error(format!("error reciving: {}", e)))
                         }
                     };
-                    let msg = Message::Peer(self.get_repo_id().clone());
+                    let msg = Message::Peer {
+                        sender: self.get_repo_id().clone(),
+                        selected_protocol_version: ProtocolVersion::V1,
+                    };
                     sink.send(msg)
                         .await
                         .map_err(|e| NetworkError::Error(format!("error sending: {}", e)))?;
@@ -101,13 +103,16 @@ impl RepoHandle {
                 }
             }
             ConnDirection::Outgoing => {
-                let msg = Message::Join(self.get_repo_id().clone());
+                let msg = Message::Join {
+                    sender: self.get_repo_id().clone(),
+                    supported_protocol_versions: vec![ProtocolVersion::V1],
+                };
                 sink.send(msg)
                     .await
                     .map_err(|e| NetworkError::Error(format!("send error: {}", e)))?;
                 let msg = stream.next().await;
                 match msg {
-                    Some(Ok(Message::Peer(sender))) => Ok(sender),
+                    Some(Ok(Message::Peer { sender, .. })) => Ok(sender),
                     Some(Ok(other)) => Err(NetworkError::Error(format!(
                         "unexpected message (expecting peer): {:?}",
                         other

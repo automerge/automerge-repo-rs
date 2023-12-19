@@ -399,7 +399,7 @@ async fn main() {
         }
 
         // The initial document.
-        let doc_handle = repo_handle.new_document();
+        let doc_handle = repo_handle.new_document().await;
         doc_handle.with_doc_mut(|doc| {
             let mut tx = doc.transaction();
             reconcile(&mut tx, &bakery).unwrap();
@@ -426,7 +426,11 @@ async fn main() {
         }
         assert!(doc_id.is_some());
         // Get the document.
-        repo_handle.request_document(doc_id.unwrap()).await.unwrap()
+        repo_handle
+            .request_document(doc_id.unwrap())
+            .await
+            .unwrap()
+            .expect("document not found")
     };
 
     // Shutdown signals for background tasks.

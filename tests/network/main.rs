@@ -42,7 +42,7 @@ async fn test_simple_sync() {
         let repo_handle = repo.run();
 
         // Create a document.
-        let doc_handle = repo_handle.new_document();
+        let doc_handle = repo_handle.new_document().await;
         doc_handle.with_doc_mut(|doc| {
             let mut tx = doc.transaction();
             tx.put(
@@ -104,7 +104,7 @@ async fn test_sinks_closed_on_shutdown() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -142,7 +142,11 @@ async fn test_sinks_closed_on_shutdown() {
     // Request the document.
     let doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
 
-    let id = doc_handle_future.await.unwrap().document_id();
+    let id = doc_handle_future
+        .await
+        .unwrap()
+        .expect("document should be found")
+        .document_id();
     assert_eq!(id, document_handle_1.document_id());
 
     // Stop the repos.
@@ -176,7 +180,7 @@ async fn test_sinks_closed_on_replacement() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -213,7 +217,11 @@ async fn test_sinks_closed_on_replacement() {
 
     // Request the document.
     let doc_handle_future = repo_handle_2.request_document(document_handle_1.document_id());
-    let doc_id = doc_handle_future.await.unwrap().document_id();
+    let doc_id = doc_handle_future
+        .await
+        .unwrap()
+        .expect("document should be found")
+        .document_id();
     assert_eq!(doc_id, document_handle_1.document_id());
 
     // Replace the peers.
@@ -263,7 +271,7 @@ async fn test_streams_chained_on_replacement() {
     let repo_handle_2 = repo_2.run();
 
     // Create a document for one repo.
-    let document_handle_1 = repo_handle_1.new_document();
+    let document_handle_1 = repo_handle_1.new_document().await;
 
     // Edit the document.
     document_handle_1.with_doc_mut(|doc| {
@@ -321,7 +329,12 @@ async fn test_streams_chained_on_replacement() {
         right_sink,
     );
 
-    let doc_id = doc_handle_future.await.unwrap().unwrap().document_id();
+    let doc_id = doc_handle_future
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("document should be found")
+        .document_id();
     assert_eq!(doc_id, document_handle_1.document_id());
 
     // Stop the repos.
@@ -355,7 +368,7 @@ async fn sync_with_unauthorized_peer_never_occurs() {
     connect_repos(&repo_handle_1, &repo_handle_2);
     connect_repos(&repo_handle_1, &repo_handle_3);
 
-    let doc_handle_1 = repo_handle_1.new_document();
+    let doc_handle_1 = repo_handle_1.new_document().await;
     doc_handle_1.with_doc_mut(|doc| {
         let mut tx = doc.transaction();
         tx.put(
