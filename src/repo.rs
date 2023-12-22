@@ -3,8 +3,8 @@ use crate::interfaces::{DocumentId, EphemeralSessionId, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
 use crate::{share_policy, EphemeralMessage, SharePolicy, SharePolicyError};
-use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
-use automerge::{Automerge, ChangeHash, ReadDoc};
+use automerge::sync::{Message as SyncMessage, State as SyncState};
+use automerge::ChangeHash;
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use futures::future::{BoxFuture, Future};
@@ -45,10 +45,18 @@ pub enum RepoError {
     /// Error coming from storage.
     StorageError(StorageError),
 }
-/// Create a new document.
-fn new_document() -> Automerge {
-    Automerge::new()
+
+impl std::fmt::Display for RepoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RepoError::Shutdown => f.write_str("RepoError::Shutdown"),
+            RepoError::Incorrect(s) => write!(f, "RepoError::Incorrect({})", s),
+            RepoError::StorageError(e) => write!(f, "RepoError::StorageError({:?})", e),
+        }
+    }
 }
+
+impl std::error::Error for RepoError {}
 
 /// Incoming event from the network.
 #[derive(Clone)]
@@ -267,14 +275,11 @@ impl RepoHandle {
     /// Create a new document.
     pub fn new_document(&self) -> impl Future<Output = DocHandle> {
         let document_id = DocumentId::random();
-        let document = new_document();
         let (future, resolver) = new_repo_future_with_resolver();
         self.repo_sender
             .send(RepoEvent::NewDoc(
                 document_id,
-                SharedDocument {
-                    automerge: document,
-                },
+                SharedDocument::new(),
                 resolver,
             ))
             .expect("Failed to send repo event.");
@@ -291,6 +296,14 @@ impl RepoHandle {
             .send(RepoEvent::RequestDoc(document_id, resolver))
             .expect("Failed to send repo event.");
         fut
+    }
+
+    pub async fn find(&self, document_id: DocumentId) -> Result<Option<DocHandle>, RepoError> {
+        if let Some(doc) = self.load(document_id.clone()).await? {
+            return Ok(Some(doc));
+        } else {
+            self.request_document(document_id.clone()).await
+        }
     }
 
     /// Attempt to load the document given by `id` from storage
@@ -685,7 +698,7 @@ impl PeerConnection {
         }
     }
 
-    fn up_to_date(&self, doc: &Automerge) -> bool {
+    fn up_to_date(&self, doc: &SharedDocument) -> bool {
         if let Self::Accepted(SyncState {
             their_heads: Some(their_heads),
             ..
@@ -723,7 +736,7 @@ impl DocumentInfo {
     ) -> Self {
         let last_heads = {
             let doc = document.read();
-            doc.automerge.get_heads()
+            doc.get_heads()
         };
         DocumentInfo {
             state,
@@ -763,7 +776,7 @@ impl DocumentInfo {
                     {
                         let res = {
                             let mut doc = self.document.write();
-                            doc.automerge.load_incremental(&val)
+                            doc.load_incremental(&val)
                         };
                         if let Err(e) = res {
                             self.state
@@ -805,7 +818,7 @@ impl DocumentInfo {
                     {
                         let res = {
                             let mut doc = self.document.write();
-                            doc.automerge.load_incremental(&val)
+                            doc.load_incremental(&val)
                         };
                         if let Err(e) = res {
                             self.state
@@ -854,10 +867,10 @@ impl DocumentInfo {
         // we store `last_heads_since_note` we can get a bool out of this.
         let count = {
             let doc = self.document.read();
-            let changes = doc.automerge.get_changes(&self.last_heads);
+            let changes = doc.get_changes(&self.last_heads);
             tracing::trace!(
                 last_heads=?self.last_heads,
-                current_heads=?doc.automerge.get_heads(),
+                current_heads=?doc.get_heads(),
                 "checking for changes since last save"
             );
             changes.len()
@@ -887,7 +900,7 @@ impl DocumentInfo {
         let (storage_fut, new_heads) = if should_compact {
             let (to_save, new_heads) = {
                 let doc = self.document.read();
-                (doc.automerge.save(), doc.automerge.get_heads())
+                (doc.save(), doc.get_heads())
             };
             self.changes_since_last_compact = 0;
             (storage.compact(document_id.clone(), to_save), new_heads)
@@ -895,8 +908,8 @@ impl DocumentInfo {
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (
-                    doc.automerge.save_after(&self.last_heads),
-                    doc.automerge.get_heads(),
+                    doc.save_after(&self.last_heads),
+                    doc.get_heads(),
                 )
             };
             (storage.append(document_id.clone(), to_save), new_heads)
@@ -949,11 +962,10 @@ impl DocumentInfo {
                 PeerConnection::Accepted(ref mut sync_state) => {
                     for message in messages {
                         document
-                            .automerge
                             .receive_sync_message(sync_state, message)
                             .expect("Failed to receive sync message.");
                     }
-                    if let Some(msg) = document.automerge.generate_sync_message(sync_state) {
+                    if let Some(msg) = document.generate_sync_message(sync_state) {
                         commands.push(PeerConnCommand::SendSyncMessage {
                             message: msg,
                             to: repo_id.clone(),
@@ -972,7 +984,7 @@ impl DocumentInfo {
             .iter_mut()
             .filter_map(|(repo_id, conn)| {
                 if let PeerConnection::Accepted(ref mut sync_state) = conn {
-                    let message = document.automerge.generate_sync_message(sync_state);
+                    let message = document.generate_sync_message(sync_state);
                     message.map(|msg| (repo_id.clone(), msg))
                 } else {
                     None
@@ -994,7 +1006,7 @@ impl DocumentInfo {
                         return BeginRequest::AlreadySyncing;
                     }
                     let document = self.document.read();
-                    let message = document.automerge.generate_sync_message(sync_state);
+                    let message = document.generate_sync_message(sync_state);
                     if let Some(msg) = message {
                         BeginRequest::Request(msg)
                     } else {
@@ -1033,18 +1045,17 @@ impl DocumentInfo {
             let mut doc = self.document.write();
             let mut sync_state = SyncState::new();
             for msg in received_messages {
-                doc.automerge
-                    .receive_sync_message(&mut sync_state, msg)
+                doc.receive_sync_message(&mut sync_state, msg)
                     .expect("Failed to receive sync message.");
             }
-            let msg = doc.automerge.generate_sync_message(&mut sync_state);
+            let msg = doc.generate_sync_message(&mut sync_state);
             self.peer_connections
                 .insert(remote.clone(), PeerConnection::Accepted(sync_state));
             msg
         } else if !self.peer_connections.contains_key(remote) {
             let mut sync_state = SyncState::new();
             let doc = self.document.write();
-            let msg = doc.automerge.generate_sync_message(&mut sync_state);
+            let msg = doc.generate_sync_message(&mut sync_state);
             self.peer_connections
                 .insert(remote.clone(), PeerConnection::Accepted(sync_state));
             msg
@@ -1058,7 +1069,7 @@ impl DocumentInfo {
         let doc = self.document.read();
         self.peer_connections
             .iter()
-            .any(|(_, conn)| conn.up_to_date(&doc.automerge))
+            .any(|(_, conn)| conn.up_to_date(&doc))
     }
 }
 
@@ -1594,9 +1605,7 @@ impl Repo {
                                 resolvers: vec![],
                                 storage_fut: Some(storage_fut),
                             },
-                            Arc::new(RwLock::new(SharedDocument {
-                                automerge: new_document(),
-                            })),
+                            Arc::new(RwLock::new(SharedDocument::new())),
                             handle_count.clone(),
                         );
                         info.poll_storage_operation(
@@ -1762,9 +1771,7 @@ impl Repo {
                     }
                     Entry::Vacant(entry) => {
                         let storage_fut = self.storage.get(doc_id.clone());
-                        let shared_document = SharedDocument {
-                            automerge: new_document(),
-                        };
+                        let shared_document = SharedDocument::new();
                         let state = DocState::LoadPending {
                             storage_fut,
                             resolvers: vec![resolver_clone],
@@ -1788,7 +1795,7 @@ impl Repo {
                 if let Some(info) = self.documents.get_mut(&doc_id) {
                     let current_heads = {
                         let state = info.document.read();
-                        state.automerge.get_heads()
+                        state.get_heads()
                     };
                     tracing::trace!(
                         ?current_heads,
@@ -1856,9 +1863,7 @@ impl Repo {
         // Note: since the handle count is zero,
         // the document will not be removed from memory until shutdown.
         // Perhaps remove this and rely on `request_document` calls.
-        let shared_document = SharedDocument {
-            automerge: new_document(),
-        };
+        let shared_document = SharedDocument::new();
         let state = DocState::Bootstrap {
             resolvers: vec![],
             storage_fut: None,
