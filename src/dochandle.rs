@@ -1,17 +1,86 @@
 use crate::interfaces::{DocumentId, RepoId};
 use crate::repo::{new_repo_future_with_resolver, RepoError, RepoEvent, RepoFuture};
 use crate::EphemeralMessage;
-use automerge::{Automerge, ChangeHash};
+use am::ReadDoc;
+use am::sync::SyncDoc;
+use automerge::{self as am, Automerge, ChangeHash};
 use crossbeam_channel::Sender;
 use futures::Stream;
 use parking_lot::{Mutex, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// A wrapper around a document shared between a handle and the repo.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedDocument {
-    pub automerge: Automerge,
+    automerge: Automerge,
+    last_local_change_time: Option<Instant>,
+    last_remote_change_time: Option<Instant>,
+}
+
+impl SharedDocument {
+    pub fn new() -> Self {
+        SharedDocument {
+            automerge: Automerge::new(),
+            last_local_change_time: None,
+            last_remote_change_time: None,
+        }
+    }
+
+    pub(crate) fn get_heads(&self) -> Vec<am::ChangeHash> {
+        self.automerge.get_heads()
+    }
+
+    pub(crate) fn load_incremental(&mut self, bytes: &[u8]) -> Result<(), am::AutomergeError> {
+        let heads_before = self.automerge.get_heads();
+        self.automerge
+            .load_incremental(bytes)?;
+        let heads_after = self.automerge.get_heads();
+        if heads_before != heads_after {
+            self.last_local_change_time = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn get_changes(&self, have_deps: &[am::ChangeHash]) -> Vec<&am::Change> {
+        self.automerge.get_changes(have_deps)
+    }
+
+    pub(crate) fn save(&self) -> Vec<u8> {
+        self.automerge.save()
+    }
+
+    pub(crate) fn save_after(&self, have_deps: &[am::ChangeHash]) -> Vec<u8> {
+        self.automerge.save_after(have_deps)
+    }
+
+    pub(crate) fn receive_sync_message(&mut self, sync_state: &mut am::sync::State, msg: am::sync::Message) -> Result<(), am::AutomergeError> {
+        let heads_before = self.automerge.get_heads();
+        self.automerge.receive_sync_message(sync_state, msg)?;
+        let heads_after = self.automerge.get_heads();
+        if heads_before != heads_after {
+            self.last_remote_change_time = Some(Instant::now());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn generate_sync_message(&self, sync_state: &mut am::sync::State) -> Option<am::sync::Message> {
+        self.automerge.generate_sync_message(sync_state)
+    }
+
+    pub(crate) fn get_change_by_hash(&self, hash: &am::ChangeHash) -> Option<&am::Change> {
+        self.automerge.get_change_by_hash(hash)
+    }
+
+    pub(crate) fn last_local_change_time(&self) -> Option<Instant> {
+        self.last_local_change_time
+    }
+
+    pub(crate) fn last_remote_change_time(&self) -> Option<Instant> {
+        self.last_remote_change_time
+    }
+
 }
 
 #[derive(Debug)]
@@ -182,5 +251,27 @@ impl DocHandle {
             .send(RepoEvent::NewEphemeral(self.document_id.clone()))
             .expect("failed to send new ephemeral event");
         Ok(())
+    }
+
+    pub fn last_local_change_time(&self) -> Option<Instant> {
+        let state = self.shared_document.read();
+        state.last_local_change_time()
+    }
+
+    pub fn last_remote_change_time(&self) -> Option<Instant> {
+        let state = self.shared_document.read();
+        state.last_remote_change_time()
+    }
+
+    pub fn last_change_time(&self) -> Option<Instant> {
+        let state = self.shared_document.read();
+        let local = state.last_local_change_time();
+        let remote = state.last_remote_change_time();
+        match (local, remote) {
+            (Some(l), Some(r)) => Some(l.max(r)),
+            (Some(l), None) => Some(l),
+            (None, Some(r)) => Some(r),
+            (None, None) => None,
+        }
     }
 }
