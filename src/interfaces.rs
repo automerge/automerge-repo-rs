@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Display, Formatter},
     str::FromStr,
+    time::Instant,
 };
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
@@ -192,4 +193,16 @@ pub trait Storage: Send {
         _id: DocumentId,
         _full_doc: Vec<u8>,
     ) -> BoxFuture<'static, Result<(), StorageError>>;
+}
+
+/// The state of sycnhronization of a document with a remote peer obtained via [`RepoHandle::peer_state`](crate::RepoHandle::peer_state)
+pub struct PeerState {
+    /// When we last received a message from this peer
+    pub last_received: Option<Instant>,
+    /// When we last sent a message to this peer
+    pub last_sent: Option<Instant>,
+    /// The heads of the document when we last sent a message
+    pub last_sent_heads: Option<Vec<automerge::ChangeHash>>,
+    /// The last heads of the document that the peer said they had
+    pub last_acked_heads: Option<Vec<automerge::ChangeHash>>,
 }
