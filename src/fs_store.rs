@@ -16,7 +16,7 @@ use error::ErrorKind;
 /// data directory without coordination.
 ///
 /// > Note that this does not implement [`crate::Storage`] directly but rather is
-/// intended to be wrapped in async runtime specific implementations.
+/// > intended to be wrapped in async runtime specific implementations.
 ///
 /// ## Storage layout
 ///
