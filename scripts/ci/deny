@@ -7,7 +7,7 @@ THIS_SCRIPT="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 cd $THIS_SCRIPT/../../
 
 cargo deny --version
-cargo deny check advisories
-cargo deny check licenses
-cargo deny check bans
-cargo deny check sources
+cargo deny --all-features check advisories
+cargo deny --all-features check licenses
+cargo deny --all-features check bans
+cargo deny --all-features check sources
