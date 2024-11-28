@@ -1885,6 +1885,9 @@ impl Repo {
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
                 self.gc_docs();
+                if !self.pending_events.is_empty() || !self.share_decisions_to_poll.is_empty() {
+                    continue;
+                }
                 select! {
                     recv(self.repo_receiver) -> repo_event => {
                         if let Ok(event) = repo_event {
