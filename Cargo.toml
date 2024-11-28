@@ -6,6 +6,8 @@ license = "MIT"
 authors = ["Alex Good <alex@memoryandthought.me>", "Gregory Terzian"]
 repository = "https://github.com/automerge/automerge-repo-rs"
 description = "A rust implementation of automerge-repo"
+# For some reason the .gitignore in the interop-test-server directory is ignored
+exclude = ["interop-test-server/node_modules", "interop-test-server/server.js"]
 
 [[example]]
 name = "tcp-example"
