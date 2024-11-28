@@ -21,6 +21,7 @@ fn interop_test() {
             std::panic::resume_unwind(e);
         }
     }
+    server_process.wait().unwrap();
 }
 
 fn sync_two_repos(port: u16) {
