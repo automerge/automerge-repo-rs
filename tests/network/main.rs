@@ -9,6 +9,7 @@ use test_utils::storage_utils::SimpleStorage;
 mod tincans;
 use tincans::{tincan_to_nowhere, tincans, TinCan, TinCans};
 mod document_changed;
+mod document_create_then_change;
 mod document_list;
 mod document_load;
 mod document_request;
