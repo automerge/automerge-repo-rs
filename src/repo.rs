@@ -532,7 +532,8 @@ impl DocState {
                         let pinned = Pin::new(&mut storage_fut);
                         match pinned.poll(&mut Context::from_waker(&waker)) {
                             Poll::Ready(Ok(_)) => None,
-                            Poll::Ready(Err(_)) => {
+                            Poll::Ready(Err(e)) => {
+                                tracing::error!(err=?e, "error in save operation");
                                 // TODO: propagate error to doc handle.
                                 // `with_doc_mut` could return a future for this.
                                 None
@@ -555,7 +556,8 @@ impl DocState {
                         let pinned = Pin::new(&mut storage_fut);
                         let res = match pinned.poll(&mut Context::from_waker(&waker)) {
                             Poll::Ready(Ok(_)) => None,
-                            Poll::Ready(Err(_)) => {
+                            Poll::Ready(Err(e)) => {
+                                tracing::error!(err=?e, "error in storage operation");
                                 // TODO: propagate error to doc handle.
                                 // `with_doc_mut` could return a future for this.
                                 None
@@ -880,6 +882,9 @@ impl DocumentInfo {
             changes.len()
         };
         let has_patches = count > 0;
+        if has_patches {
+            tracing::debug!("doc has changed");
+        }
         self.changes_since_last_compact = self.changes_since_last_compact.saturating_add(count);
         has_patches
     }
@@ -902,6 +907,7 @@ impl DocumentInfo {
         let should_compact =
             self.changes_since_last_compact > self.allowable_changes_until_compaction;
         let (storage_fut, new_heads) = if should_compact {
+            tracing::trace!(%document_id, "compacting document");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (doc.automerge.save(), doc.automerge.get_heads())
@@ -909,6 +915,7 @@ impl DocumentInfo {
             self.changes_since_last_compact = 0;
             (storage.compact(document_id.clone(), to_save), new_heads)
         } else {
+            tracing::trace!(%document_id, "writing incremental chunk");
             let (to_save, new_heads) = {
                 let doc = self.document.read();
                 (
