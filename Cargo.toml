@@ -1,6 +1,6 @@
 [package]
 name = "automerge_repo"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 authors = ["Alex Good <alex@memoryandthought.me>", "Gregory Terzian"]
@@ -35,13 +35,13 @@ tungstenite = ["dep:tungstenite"]
 [dependencies]
 automerge = { version = "0.6.0" }
 axum = { version = "0.6.18", features = ["ws"], optional = true }
-uuid = { version = "1.2.2"}
+uuid = { version = "1.2.2" }
 crossbeam-channel = { version = "0.5.8" }
 parking_lot = { version = "0.12.1" }
 futures = { version = "0.3.28" }
-serde = { version = "1.0.160", features = ["derive"]}
+serde = { version = "1.0.160", features = ["derive"] }
 tokio = { version = "1.27", features = ["rt"], optional = true }
-tokio-util = { version = "0.7.8", features = ["codec", "net" ], optional = true }
+tokio-util = { version = "0.7.8", features = ["codec", "net"], optional = true }
 bytes = { version = "1.4.0" }
 thiserror = "1.0.38"
 minicbor = { version = "0.19.0", features = ["alloc"] }
@@ -54,12 +54,15 @@ bs58 = { version = "0.5.0", features = ["check"] }
 
 [dev-dependencies]
 clap = { version = "4.2.5", features = ["derive"] }
-reqwest = { version = "0.11.17", features = ["json", "blocking"], default-features = false }
+reqwest = { version = "0.11.17", features = [
+    "json",
+    "blocking",
+], default-features = false }
 axum = { version = "0.6.18", features = ["ws"] }
 axum-macros = "0.3.7"
 tokio = { version = "1.27", features = ["full"] }
 tokio-stream = { version = "0.1" }
-tokio-serde = {version = "0.8.0", features = ["json"]}
+tokio-serde = { version = "0.8.0", features = ["json"] }
 tokio-tungstenite = { version = "0.21", features = ["connect"] }
 serde_json = "1.0.96"
 test_utils = { path = "test_utils" }
