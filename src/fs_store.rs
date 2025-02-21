@@ -164,7 +164,9 @@ impl FsStore {
         Ok(result.into_iter().collect())
     }
 
+    #[tracing::instrument(skip(self, changes))]
     pub fn append(&self, id: &DocumentId, changes: &[u8]) -> Result<(), Error> {
+        tracing::debug!("writing incremental change");
         let paths = DocIdPaths::from(id);
         std::fs::create_dir_all(paths.level2_path(&self.root)).map_err(|e| {
             Error(ErrorKind::CreateLevel2Path(
@@ -179,7 +181,9 @@ impl FsStore {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, full_doc))]
     pub fn compact(&self, id: &DocumentId, full_doc: &[u8]) -> Result<(), Error> {
+        tracing::debug!("compacting document");
         let paths = DocIdPaths::from(id);
 
         // Load all the data we have into a doc
@@ -211,11 +215,8 @@ impl FsStore {
                     let path = paths.chunk_path(&self.root, snapshot);
 
                     if path == just_wrote {
-                        tracing::error!(
-                            ?path,
-                            "Somehow trying to delete the same path we just wrote to. Not today \
-                            Satan"
-                        );
+                        // This can happen if for some reason `compact` is called when the only thing
+                        // on disk is a snapshot containing the changes we are being asked to compact
                         continue;
                     }
 
@@ -415,7 +416,7 @@ impl Chunks {
     fn load(root: &Path, doc_id: &DocumentId) -> Result<Option<Self>, Error> {
         let doc_id_hash = DocIdPaths::from(doc_id);
         let level2_path = doc_id_hash.level2_path(root);
-        tracing::debug!(
+        tracing::trace!(
             root=%root.display(),
             doc_id=?doc_id,
             doc_path=%level2_path.display(),
@@ -459,7 +460,7 @@ impl Chunks {
                 tracing::warn!(bad_file=%path.display(), "unexpected non-chunk file in level2 path");
                 continue;
             };
-            tracing::debug!(chunk_path=%path.display(), "reading chunk file");
+            tracing::trace!(chunk_path=%path.display(), "reading chunk file");
             let contents = match std::fs::read(&path) {
                 Ok(c) => c,
                 Err(e) => {
