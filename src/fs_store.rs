@@ -186,11 +186,14 @@ impl FsStore {
         tracing::debug!("compacting document");
         let paths = DocIdPaths::from(id);
 
+        let mut doc = automerge::Automerge::load(full_doc)
+            .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
+
         // Load all the data we have into a doc
         match Chunks::load(&self.root, id) {
             Ok(Some(chunks)) => {
-                let doc = chunks
-                    .to_doc()
+                chunks
+                    .add_to_doc(&mut doc)
                     .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
 
                 // Write the snapshot
@@ -225,11 +228,6 @@ impl FsStore {
                 }
             }
             Ok(None) => {
-                // The chunks are missing in storage for whatever reason
-                // Try to recreate the document from full_doc if possible
-                let doc = automerge::Automerge::load(full_doc)
-                    .map_err(|e| Error(ErrorKind::LoadDocToCompact(e)))?;
-
                 std::fs::create_dir_all(paths.level2_path(&self.root)).map_err(|e| {
                     Error(ErrorKind::CreateLevel2Path(
                         paths.level2_path(&self.root),
@@ -492,7 +490,7 @@ impl Chunks {
         }))
     }
 
-    fn to_doc(&self) -> Result<automerge::Automerge, automerge::AutomergeError> {
+    fn add_to_doc(&self, doc: &mut automerge::Automerge) -> Result<(), automerge::AutomergeError> {
         let mut bytes = Vec::new();
         for chunk in self.snapshots.values() {
             bytes.extend(chunk);
@@ -500,7 +498,8 @@ impl Chunks {
         for chunk in self.incrementals.values() {
             bytes.extend(chunk);
         }
-        automerge::Automerge::load(&bytes)
+        doc.load_incremental(&bytes)?;
+        Ok(())
     }
 }
 
@@ -555,5 +554,45 @@ mod error {
         RenameTempFile(PathBuf, PathBuf, std::io::Error),
         #[error("error deleting chunk {0}: {1}")]
         DeleteChunk(PathBuf, std::io::Error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use automerge::{transaction::Transactable, AutoCommit, ReadDoc};
+    use tempfile::tempdir;
+
+    use crate::DocumentId;
+
+    use super::FsStore;
+
+    #[test]
+    fn compac_adds_new_changes_to_fs() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "foo", "bar").unwrap();
+
+        let data_dir = tempdir().unwrap();
+
+        let doc_id = DocumentId::random();
+        let fs = FsStore::open(&data_dir).unwrap();
+        let change = doc
+            .get_changes(&[])
+            .into_iter()
+            .flat_map(|c| c.raw_bytes().to_vec())
+            .collect::<Vec<_>>();
+
+        fs.append(&doc_id, &change).unwrap();
+
+        doc.put(automerge::ROOT, "foo", "baz").unwrap();
+        let compacted = doc.save();
+
+        fs.compact(&doc_id, &compacted).unwrap();
+
+        let reloaded_raw = fs.get(&doc_id).unwrap().unwrap();
+        let reloaded = AutoCommit::load(&reloaded_raw).unwrap();
+        assert_eq!(
+            reloaded.get(&automerge::ROOT, "foo").unwrap().unwrap().0,
+            "baz".into()
+        );
     }
 }
