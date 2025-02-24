@@ -1,3 +1,10 @@
+## 0.2.2 - 2025-02-24
+
+### Fixed
+
+* Fix an issue where loading a document whilst it is concurrently being synced
+by another peer would cause the document to resolve as empty (`e8c4ba79`)
+
 ## 0.2.1 - 2025-02-21
 
 ### Added
