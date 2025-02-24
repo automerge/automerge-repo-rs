@@ -50,6 +50,12 @@ impl InMemoryStorage {
     pub fn contains_document(&self, doc_id: DocumentId) -> bool {
         self.documents.lock().contains_key(&doc_id)
     }
+
+    pub fn fork(&self) -> Self {
+        Self {
+            documents: Arc::new(Mutex::new(self.documents.lock().clone())),
+        }
+    }
 }
 
 impl Storage for InMemoryStorage {
