@@ -1668,7 +1668,18 @@ impl Repo {
                             };
                             let document = Arc::new(RwLock::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
-                            DocumentInfo::new(state, document, handle_count)
+                            let mut info = DocumentInfo::new(state, document, handle_count);
+
+                            let storage_fut = self.storage.get(document_id.clone());
+                            info.state.add_boostrap_storage_fut(storage_fut);
+                            info.poll_storage_operation(
+                                document_id.clone(),
+                                &self.wake_sender,
+                                &self.repo_sender,
+                                &self.repo_id,
+                            );
+
+                            info
                         });
 
                     if !info.state.should_sync() {
