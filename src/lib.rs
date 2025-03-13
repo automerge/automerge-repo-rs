@@ -5,6 +5,8 @@ mod network_connect;
 mod repo;
 pub mod share_policy;
 pub use share_policy::{SharePolicy, SharePolicyError};
+mod peer_connection_info;
+pub use peer_connection_info::PeerConnectionInfo;
 
 pub use crate::dochandle::DocHandle;
 pub use crate::interfaces::{

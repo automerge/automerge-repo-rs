@@ -2,11 +2,12 @@ use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, PeerDocState, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
-use crate::{share_policy, SharePolicy, SharePolicyError};
+use crate::{share_policy, PeerConnectionInfo, SharePolicy, SharePolicyError};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::{Automerge, ChangeHash};
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
+use futures::channel::mpsc;
 use futures::future::{BoxFuture, Future};
 use futures::stream::Stream;
 use futures::task::ArcWake;
@@ -227,6 +228,20 @@ impl RepoHandle {
             .expect("failed to send repo event");
         fut
     }
+
+    pub fn peer_conn_info_changes(
+        &self,
+        remote_id: RepoId,
+    ) -> impl Stream<Item = PeerConnectionInfo> {
+        let (tx, rx) = mpsc::channel(10);
+        self.repo_sender
+            .send(RepoEvent::ListenToPeerState {
+                remote_repo_id: remote_id,
+                reply: tx,
+            })
+            .expect("failed to send repo event");
+        rx
+    }
 }
 
 /// Events sent by repo or doc handles to the repo.
@@ -261,6 +276,10 @@ pub(crate) enum RepoEvent {
         document_id: DocumentId,
         reply: RepoFutureResolver<Option<PeerDocState>>,
     },
+    ListenToPeerState {
+        remote_repo_id: RepoId,
+        reply: mpsc::Sender<PeerConnectionInfo>,
+    },
     /// Stop the repo.
     Stop,
 }
@@ -276,6 +295,7 @@ impl fmt::Debug for RepoEvent {
             RepoEvent::ListAllDocs(_) => f.write_str("RepoEvent::ListAllDocs"),
             RepoEvent::ConnectRemoteRepo { .. } => f.write_str("RepoEvent::ConnectRemoteRepo"),
             RepoEvent::GetPeerState { .. } => f.write_str("RepoEvent::GetPeerState"),
+            RepoEvent::ListenToPeerState { .. } => f.write_str("RepoEvent::ListenToPeerState"),
             RepoEvent::Stop => f.write_str("RepoEvent::Stop"),
         }
     }
@@ -1128,6 +1148,9 @@ pub struct Repo {
 
     /// Pending share policy futures
     pending_share_decisions: HashMap<RepoId, Vec<PendingShareDecision>>,
+
+    // Peer listeners
+    peer_listeners: Vec<PeerInfoListenerState>,
 }
 
 impl Repo {
@@ -1156,6 +1179,7 @@ impl Repo {
             share_policy,
             pending_share_decisions: HashMap::new(),
             share_decisions_to_poll: HashSet::new(),
+            peer_listeners: Vec::new(),
         }
     }
 
@@ -1625,6 +1649,22 @@ impl Repo {
                         .and_then(|info| info.get_peer_doc_state(&remote_repo_id)),
                 );
             }
+            RepoEvent::ListenToPeerState {
+                remote_repo_id,
+                mut reply,
+            } => {
+                let state = Self::peer_conn_info(&remote_repo_id, &self.documents);
+                let do_send = reply.try_send(state.clone());
+                if do_send.is_err_and(|e| e.is_disconnected()) {
+                    // The listener has already been dropped, doing nothing
+                } else {
+                    self.peer_listeners.push(PeerInfoListenerState {
+                        remote: remote_repo_id,
+                        last_sent: state,
+                        sender: reply,
+                    })
+                }
+            }
             RepoEvent::Stop => {
                 // Handled in the main run loop.
             }
@@ -1903,6 +1943,7 @@ impl Repo {
                 self.remove_unused_sync_states();
                 self.remove_unused_pending_messages();
                 self.gc_docs();
+                self.notify_listeners();
                 if !self.pending_events.is_empty() || !self.share_decisions_to_poll.is_empty() {
                     continue;
                 }
@@ -2093,5 +2134,53 @@ impl Repo {
                 });
             share_decisions_to_poll.insert(repo_id.clone());
         }
+    }
+
+    fn peer_conn_info(
+        peer: &RepoId,
+        documents: &HashMap<DocumentId, DocumentInfo>,
+    ) -> PeerConnectionInfo {
+        let mut last_received = None;
+        let mut last_sent = None;
+        let mut doc_states = HashMap::new();
+        for (doc_id, doc) in documents {
+            if let Some(state) = doc.get_peer_doc_state(peer) {
+                last_received = last_received.max(state.last_received);
+                last_sent = last_sent.max(state.last_sent);
+                doc_states.insert(doc_id.clone(), state);
+            }
+        }
+        PeerConnectionInfo {
+            last_received,
+            last_sent,
+            docs: doc_states,
+        }
+    }
+
+    fn notify_listeners(&mut self) {
+        self.peer_listeners.retain_mut(|listener| {
+            let peer_info = Self::peer_conn_info(&listener.remote, &self.documents);
+            listener.send(peer_info)
+        });
+    }
+}
+
+struct PeerInfoListenerState {
+    remote: RepoId,
+    last_sent: PeerConnectionInfo,
+    sender: mpsc::Sender<PeerConnectionInfo>,
+}
+
+impl PeerInfoListenerState {
+    /// Returns false if the listener should be dropped due to a disconnected sender
+    fn send(&mut self, new_state: PeerConnectionInfo) -> bool {
+        if self.last_sent == new_state {
+            return true;
+        }
+        self.last_sent = new_state.clone();
+        !self
+            .sender
+            .try_send(new_state)
+            .is_err_and(|e| e.is_disconnected())
     }
 }
