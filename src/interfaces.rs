@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Display, Formatter},
     str::FromStr,
-    time::Instant,
+    time::SystemTime,
 };
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone)]
@@ -199,9 +199,9 @@ pub trait Storage: Send {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
 pub struct PeerDocState {
     /// When we last received a message from this peer
-    pub last_received: Option<Instant>,
+    pub last_received: Option<SystemTime>,
     /// When we last sent a message to this peer
-    pub last_sent: Option<Instant>,
+    pub last_sent: Option<SystemTime>,
     /// The heads of the document when we last sent a message
     pub last_sent_heads: Option<Vec<automerge::ChangeHash>>,
     /// The last heads of the document that the peer said they had
