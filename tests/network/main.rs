@@ -14,7 +14,7 @@ mod document_list;
 mod document_load;
 mod document_request;
 mod document_save;
-mod peer_state;
+mod peer_doc_state;
 
 use test_log::test;
 
