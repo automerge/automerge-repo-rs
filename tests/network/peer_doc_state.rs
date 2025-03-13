@@ -69,7 +69,7 @@ async fn test_read_peer_state() {
 
     let peer_state = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_1.peer_state(repo_handle_2.get_repo_id().clone(), document_id),
+        repo_handle_1.peer_doc_state(repo_handle_2.get_repo_id().clone(), document_id),
     )
     .await
     .expect("timed out getting peer state");
@@ -87,7 +87,7 @@ async fn test_peer_state_last_send() {
 
     let peer_state = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_1.peer_state(
+        repo_handle_1.peer_doc_state(
             repo_handle_2.get_repo_id().clone(),
             document_handle_1.document_id(),
         ),
@@ -109,7 +109,7 @@ async fn test_peer_state_last_send() {
 
     let peer_state_after = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_1.peer_state(
+        repo_handle_1.peer_doc_state(
             repo_handle_2.get_repo_id().clone(),
             document_handle_1.document_id(),
         ),
@@ -137,7 +137,7 @@ async fn test_peer_state_last_recv() {
     // Get the peer state on repo 2
     let peer_state = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_2.peer_state(repo_handle_1.get_repo_id().clone(), document_id.clone()),
+        repo_handle_2.peer_doc_state(repo_handle_1.get_repo_id().clone(), document_id.clone()),
     )
     .await
     .expect("timed out getting peer state")
@@ -158,7 +158,7 @@ async fn test_peer_state_last_recv() {
 
     let peer_state_after = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_2.peer_state(repo_handle_1.get_repo_id().clone(), document_id),
+        repo_handle_2.peer_doc_state(repo_handle_1.get_repo_id().clone(), document_id),
     )
     .await
     .expect("timed out getting peer state")
@@ -185,7 +185,7 @@ async fn test_peer_state_last_sent_heads() {
     // Get the peer state on repo 1
     let peer_state = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_1.peer_state(
+        repo_handle_1.peer_doc_state(
             repo_handle_2.get_repo_id().clone(),
             document_handle_1.document_id(),
         ),
@@ -211,7 +211,7 @@ async fn test_peer_state_last_sent_heads() {
 
     let peer_state_after = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_1.peer_state(repo_handle_2.get_repo_id().clone(), document_id),
+        repo_handle_1.peer_doc_state(repo_handle_2.get_repo_id().clone(), document_id),
     )
     .await
     .expect("timed out getting peer state")
@@ -241,7 +241,7 @@ async fn test_last_acked_heads() {
     // Get the peer state on repo 1
     let peer_state = tokio::time::timeout(
         Duration::from_millis(100),
-        repo_handle_1.peer_state(repo_handle_2.get_repo_id().clone(), document_id),
+        repo_handle_1.peer_doc_state(repo_handle_2.get_repo_id().clone(), document_id),
     )
     .await
     .expect("timed out getting peer state")
