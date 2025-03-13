@@ -195,8 +195,9 @@ pub trait Storage: Send {
     ) -> BoxFuture<'static, Result<(), StorageError>>;
 }
 
-/// The state of sycnhronization of a document with a remote peer obtained via [`RepoHandle::peer_state`](crate::RepoHandle::peer_state)
-pub struct PeerState {
+/// The state of sycnhronization of a document with a remote peer obtained via [`RepoHandle::peer_doc_state`](crate::RepoHandle::peer_doc_state)
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
+pub struct PeerDocState {
     /// When we last received a message from this peer
     pub last_received: Option<Instant>,
     /// When we last sent a message to this peer

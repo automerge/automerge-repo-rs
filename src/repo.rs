@@ -1,5 +1,5 @@
 use crate::dochandle::{DocHandle, SharedDocument};
-use crate::interfaces::{DocumentId, PeerState, RepoId};
+use crate::interfaces::{DocumentId, PeerDocState, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
 use crate::{share_policy, SharePolicy, SharePolicyError};
@@ -212,11 +212,11 @@ impl RepoHandle {
             .expect("Failed to send repo event.");
     }
 
-    pub fn peer_state(
+    pub fn peer_doc_state(
         &self,
         remote_id: RepoId,
         document: DocumentId,
-    ) -> RepoFuture<Option<PeerState>> {
+    ) -> RepoFuture<Option<PeerDocState>> {
         let (fut, resolver) = new_repo_future_with_resolver();
         self.repo_sender
             .send(RepoEvent::GetPeerState {
@@ -259,7 +259,7 @@ pub(crate) enum RepoEvent {
     GetPeerState {
         remote_repo_id: RepoId,
         document_id: DocumentId,
-        reply: RepoFutureResolver<Option<PeerState>>,
+        reply: RepoFutureResolver<Option<PeerDocState>>,
     },
     /// Stop the repo.
     Stop,
@@ -692,7 +692,7 @@ impl PeerConnection {
     }
 
     /// Get the state of synchronization with a remote peer and document
-    fn peer_state(&self) -> PeerState {
+    fn peer_state(&self) -> PeerDocState {
         let last_sent_heads = match &self.state {
             PeerConnectionState::Accepted(sync_state) => Some(sync_state.last_sent_heads.clone()),
             PeerConnectionState::PendingAuth {
@@ -705,7 +705,7 @@ impl PeerConnection {
                 received_messages: _,
             } => None,
         };
-        PeerState {
+        PeerDocState {
             last_received: self.last_recv,
             last_sent: self.last_send,
             last_sent_heads,
@@ -1005,7 +1005,7 @@ impl DocumentInfo {
             .collect()
     }
 
-    fn get_peer_state(&self, peer: &RepoId) -> Option<PeerState> {
+    fn get_peer_doc_state(&self, peer: &RepoId) -> Option<PeerDocState> {
         self.peer_connections.get(peer).map(|p| p.peer_state())
     }
 }
@@ -1622,7 +1622,7 @@ impl Repo {
                 reply.resolve_fut(
                     self.documents
                         .get(&document_id)
-                        .and_then(|info| info.get_peer_state(&remote_repo_id)),
+                        .and_then(|info| info.get_peer_doc_state(&remote_repo_id)),
                 );
             }
             RepoEvent::Stop => {
