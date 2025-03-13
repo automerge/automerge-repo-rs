@@ -21,7 +21,7 @@ use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::SystemTime;
 use uuid::Uuid;
 
 /// Front-end of the repo.
@@ -601,8 +601,8 @@ pub(crate) struct DocumentInfo {
 #[derive(Debug)]
 struct PeerConnection {
     repo_id: RepoId,
-    last_recv: Option<Instant>,
-    last_send: Option<Instant>,
+    last_recv: Option<SystemTime>,
+    last_send: Option<SystemTime>,
     state: PeerConnectionState,
 }
 
@@ -632,7 +632,7 @@ impl PeerConnection {
         doc: &mut Automerge,
         msg: SyncMessage,
     ) -> Result<(), automerge::AutomergeError> {
-        self.last_recv = Some(Instant::now());
+        self.last_recv = Some(SystemTime::now());
         match &mut self.state {
             PeerConnectionState::Accepted(sync_state) => doc.receive_sync_message(sync_state, msg),
             PeerConnectionState::PendingAuth { received_messages } => {
@@ -661,7 +661,7 @@ impl PeerConnection {
             PeerConnectionState::Accepted(sync_state) => document.generate_sync_message(sync_state),
         };
         if msg.is_some() {
-            self.last_send = Some(Instant::now());
+            self.last_send = Some(SystemTime::now());
         }
         msg
     }
@@ -672,7 +672,7 @@ impl PeerConnection {
             PeerConnectionState::PendingAuth { .. } => None,
         };
         if msg.is_some() {
-            self.last_send = Some(Instant::now());
+            self.last_send = Some(SystemTime::now());
         }
         msg
     }
@@ -682,7 +682,7 @@ impl PeerConnection {
             let result = std::mem::take(received_messages);
             self.state = PeerConnectionState::Accepted(SyncState::new());
             if !result.is_empty() {
-                self.last_send = Some(Instant::now());
+                self.last_send = Some(SystemTime::now());
             }
             Some(result)
         } else {
