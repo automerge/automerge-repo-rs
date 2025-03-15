@@ -21,7 +21,7 @@ impl<'a> From<&'a str> for RepoId {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Deserialize, Serialize)]
 pub struct DocumentId([u8; 16]);
 
 impl DocumentId {

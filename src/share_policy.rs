@@ -176,6 +176,7 @@ where
 }
 
 /// A share policy which always shares documents with all peers
+#[derive(Debug, Clone, Copy)]
 pub struct Permissive;
 
 impl SharePolicy for Permissive {
