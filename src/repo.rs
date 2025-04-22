@@ -2,12 +2,15 @@ use crate::dochandle::{DocHandle, SharedDocument};
 use crate::interfaces::{DocumentId, PeerDocState, RepoId};
 use crate::interfaces::{NetworkError, RepoMessage, Storage, StorageError};
 use crate::share_policy::ShareDecision;
-use crate::{share_policy, PeerConnectionInfo, SharePolicy, SharePolicyError};
+use crate::{
+    share_policy, ConnComplete, ConnFinishedReason, PeerConnectionInfo, SharePolicy,
+    SharePolicyError,
+};
 use automerge::sync::{Message as SyncMessage, State as SyncState, SyncDoc};
 use automerge::{Automerge, ChangeHash};
 use core::pin::Pin;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use futures::future::{BoxFuture, Future};
 use futures::stream::Stream;
 use futures::task::ArcWake;
@@ -203,14 +206,17 @@ impl RepoHandle {
         repo_id: RepoId,
         stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
         sink: Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>,
-    ) {
+    ) -> ConnComplete {
+        let (tx, rx) = oneshot::channel();
         self.repo_sender
             .send(RepoEvent::ConnectRemoteRepo {
                 repo_id,
                 stream,
                 sink,
+                on_close: tx,
             })
             .expect("Failed to send repo event.");
+        ConnComplete::new(rx)
     }
 
     pub fn peer_doc_state(
@@ -270,6 +276,7 @@ pub(crate) enum RepoEvent {
         repo_id: RepoId,
         stream: Box<dyn Send + Unpin + Stream<Item = Result<RepoMessage, NetworkError>>>,
         sink: Box<dyn Send + Unpin + Sink<RepoMessage, Error = NetworkError>>,
+        on_close: oneshot::Sender<ConnFinishedReason>,
     },
     GetPeerState {
         remote_repo_id: RepoId,
@@ -1151,6 +1158,9 @@ pub struct Repo {
 
     // Peer listeners
     peer_listeners: Vec<PeerInfoListenerState>,
+
+    // Connection closed listeners
+    conn_closed_listeners: HashMap<RepoId, oneshot::Sender<ConnFinishedReason>>,
 }
 
 impl Repo {
@@ -1180,6 +1190,7 @@ impl Repo {
             pending_share_decisions: HashMap::new(),
             share_decisions_to_poll: HashSet::new(),
             peer_listeners: Vec::new(),
+            conn_closed_listeners: HashMap::new(),
         }
     }
 
@@ -1262,7 +1273,7 @@ impl Repo {
         let to_poll = mem::take(&mut self.streams_to_poll);
         for repo_id in to_poll {
             let mut new_messages = Vec::new();
-            let should_be_removed = if let Some(remote_repo) = self.remote_repos.get_mut(&repo_id) {
+            let fin_reason = if let Some(remote_repo) = self.remote_repos.get_mut(&repo_id) {
                 // Collect as many events as possible.
                 loop {
                     let stream_waker =
@@ -1272,7 +1283,7 @@ impl Repo {
                     let result = pinned_stream.poll_next(&mut Context::from_waker(&waker));
                     match result {
                         Poll::Pending => {
-                            break false;
+                            break None;
                         }
                         Poll::Ready(Some(repo_message)) => match repo_message {
                             Ok(RepoMessage::Sync {
@@ -1292,7 +1303,9 @@ impl Repo {
                                 }
                                 Err(e) => {
                                     tracing::error!(error = ?e, "Error decoding sync message.");
-                                    break true;
+                                    let msg =
+                                        format!("error decoding received sync message: {}", e);
+                                    break Some(ConnFinishedReason::ErrorReceiving(msg));
                                 }
                             },
                             Ok(RepoMessage::Ephemeral { .. }) => {
@@ -1300,20 +1313,20 @@ impl Repo {
                             }
                             Err(e) => {
                                 tracing::error!(error = ?e, "Error on network stream.");
-                                break true;
+                                break Some(ConnFinishedReason::ErrorReceiving(e.to_string()));
                             }
                         },
                         Poll::Ready(None) => {
                             tracing::info!(remote_repo_id=?repo_id, "remote stream closed, removing");
-                            break true;
+                            break Some(ConnFinishedReason::TheyDisconnected);
                         }
                     }
                 }
             } else {
                 continue;
             };
-            if should_be_removed {
-                self.remove_sink(&repo_id);
+            if let Some(fin_reason) = fin_reason {
+                self.remove_sink(&repo_id, fin_reason);
             } else {
                 self.pending_events.extend(new_messages.into_iter());
             }
@@ -1352,10 +1365,10 @@ impl Repo {
         // discarding sinks that error.
         let to_poll = mem::take(&mut self.sinks_to_poll);
         for repo_id in to_poll {
-            let should_be_removed = if let Some(remote_repo) = self.remote_repos.get_mut(&repo_id) {
+            let discard_reason = if let Some(remote_repo) = self.remote_repos.get_mut(&repo_id) {
                 // Send as many messages as possible.
                 let mut needs_flush = false;
-                let mut discard = false;
+                let mut discard_reason = None;
                 loop {
                     let pending_messages =
                         self.pending_messages.entry(repo_id.clone()).or_default();
@@ -1388,14 +1401,15 @@ impl Repo {
                             let result = pinned_sink.start_send(outgoing);
                             if let Err(e) = result {
                                 tracing::error!(error = ?e, "Error on network sink.");
-                                discard = true;
+                                discard_reason =
+                                    Some(ConnFinishedReason::ErrorSending(e.to_string()));
                                 needs_flush = false;
                                 break;
                             }
                             needs_flush = true;
                         }
-                        Poll::Ready(Err(_)) => {
-                            discard = true;
+                        Poll::Ready(Err(e)) => {
+                            discard_reason = Some(ConnFinishedReason::ErrorSending(e.to_string()));
                             needs_flush = false;
                             break;
                         }
@@ -1408,18 +1422,18 @@ impl Repo {
                         Arc::new(RepoWaker::Sink(self.wake_sender.clone(), repo_id.clone()));
                     let waker = waker_ref(&sink_waker);
                     let pinned_sink = Pin::new(&mut remote_repo.sink);
-                    if let Poll::Ready(Err(_)) =
+                    if let Poll::Ready(Err(e)) =
                         pinned_sink.poll_flush(&mut Context::from_waker(&waker))
                     {
-                        discard = true;
+                        discard_reason = Some(ConnFinishedReason::ErrorSending(e.to_string()));
                     }
                 }
-                discard
+                discard_reason
             } else {
                 continue;
             };
-            if should_be_removed {
-                self.remove_sink(&repo_id);
+            if let Some(discard_reason) = discard_reason {
+                self.remove_sink(&repo_id, discard_reason);
             }
         }
     }
@@ -1610,8 +1624,9 @@ impl Repo {
                 repo_id,
                 stream,
                 sink,
+                on_close,
             } => {
-                if self.remove_sink(&repo_id) {
+                if self.remove_sink(&repo_id, ConnFinishedReason::DuplicateConnection) {
                     tracing::debug!(remote_repo=?repo_id, "replacing existing remote repo with new connection");
                     // Reset the sync state.
                     self.remove_unused_sync_states();
@@ -1636,7 +1651,8 @@ impl Repo {
                     }
                 }
                 self.sinks_to_poll.insert(repo_id.clone());
-                self.streams_to_poll.insert(repo_id);
+                self.streams_to_poll.insert(repo_id.clone());
+                self.conn_closed_listeners.insert(repo_id, on_close);
             }
             RepoEvent::GetPeerState {
                 remote_repo_id,
@@ -2087,11 +2103,14 @@ impl Repo {
     ///
     /// ## Returns
     /// `true` if there was a sink to remove, `false` otherwise
-    fn remove_sink(&mut self, repo_id: &RepoId) -> bool {
+    fn remove_sink(&mut self, repo_id: &RepoId, fin_reason: ConnFinishedReason) -> bool {
         if let Some(RemoteRepo { sink, .. }) = self.remote_repos.remove(repo_id) {
             let pending_sinks = self.pending_close_sinks.entry(repo_id.clone()).or_default();
             pending_sinks.push(sink);
             self.poll_close_sinks(repo_id.clone());
+            if let Some(tx) = self.conn_closed_listeners.remove(repo_id) {
+                let _ = tx.send(fin_reason);
+            }
             true
         } else {
             false

@@ -1,3 +1,5 @@
+mod conn_complete;
+pub use conn_complete::{ConnComplete, ConnFinishedReason};
 mod dochandle;
 mod interfaces;
 mod message;

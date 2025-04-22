@@ -98,7 +98,9 @@ pub enum NetworkError {
 
 impl Display for NetworkError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NetworkError")
+        match self {
+            NetworkError::Error(e) => write!(f, "NetworkError: {}", e),
+        }
     }
 }
 
