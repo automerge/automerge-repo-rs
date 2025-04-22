@@ -40,9 +40,8 @@ fn sync_two_repos(port: u16) {
             .expect("error connecting connection 1");
         tracing::trace!("connecting conn1");
         tokio::spawn(async {
-            if let Err(e) = conn1_driver.await {
-                tracing::error!("Error running repo 1 connection: {}", e);
-            }
+            let finished = conn1_driver.await;
+            tracing::info!("repo 1 connection finished: {}", finished);
         });
         tracing::trace!("connected conn1");
 
@@ -69,9 +68,8 @@ fn sync_two_repos(port: u16) {
             .expect("error connecting connection 2");
 
         tokio::spawn(async {
-            if let Err(e) = conn2_driver.await {
-                tracing::error!("Error running repo 2 connection: {}", e);
-            }
+            let finished = conn2_driver.await;
+            tracing::info!("repo 2 connection finished: {}", finished);
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;

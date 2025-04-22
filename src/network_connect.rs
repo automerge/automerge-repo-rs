@@ -1,3 +1,4 @@
+use crate::conn_complete::ConnComplete;
 use crate::interfaces::{Message, NetworkError, RepoId, RepoMessage};
 use crate::repo::RepoHandle;
 use futures::{Sink, SinkExt, Stream, StreamExt};
@@ -14,7 +15,7 @@ impl RepoHandle {
         mut stream: Str,
         mut sink: Snk,
         direction: ConnDirection,
-    ) -> Result<(), NetworkError>
+    ) -> Result<ConnComplete, NetworkError>
     where
         SendErr: std::error::Error + Send + Sync + 'static,
         RecvErr: std::error::Error + Send + Sync + 'static,
@@ -57,9 +58,7 @@ impl RepoHandle {
                 NetworkError::Error(format!("error sending repo message: {}", e))
             });
 
-        self.new_remote_repo(other_id, Box::new(stream), Box::new(sink));
-
-        Ok(())
+        Ok(self.new_remote_repo(other_id, Box::new(stream), Box::new(sink)))
     }
 
     async fn handshake<Str, Snk, SendErr, RecvErr>(

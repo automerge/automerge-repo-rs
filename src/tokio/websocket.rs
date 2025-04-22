@@ -1,7 +1,7 @@
 use futures::{Future, FutureExt, Sink, SinkExt, Stream, StreamExt};
 use tokio_util::sync::PollSender;
 
-use crate::{ConnDirection, Message, NetworkError, RepoHandle};
+use crate::{ConnDirection, ConnFinishedReason, Message, NetworkError, RepoHandle};
 
 /// A copy of tungstenite::Message
 ///
@@ -90,9 +90,8 @@ impl RepoHandle {
     ///    let (conn, _) = tokio_tungstenite::connect_async("ws://localhost:8080").await.unwrap();
     ///    let conn_driver = handle.connect_tungstenite(conn, ConnDirection::Outgoing).await.unwrap();
     ///    tokio::spawn(async move {
-    ///        if let Err(e) = conn_driver.await {
-    ///            eprintln!("Error running repo connection: {}", e);
-    ///        }
+    ///        let finished_reason = conn_driver.await;
+    ///        eprintln!("Repo connection finished: {}", finished_reason);
     ///    });
     ///    // ...
     /// }
@@ -102,7 +101,7 @@ impl RepoHandle {
         &self,
         stream: S,
         direction: ConnDirection,
-    ) -> Result<impl Future<Output = Result<(), NetworkError>>, NetworkError>
+    ) -> Result<impl Future<Output = ConnFinishedReason>, NetworkError>
     where
         S: Sink<tungstenite::Message, Error = tungstenite::Error>
             + Stream<Item = Result<tungstenite::Message, tungstenite::Error>>
@@ -157,9 +156,8 @@ impl RepoHandle {
     ///         .await
     ///         .unwrap();
     ///     tokio::spawn(async {
-    ///         if let Err(e) = driver.await {
-    ///             tracing::error!("Error running connection: {}", e);
-    ///         }
+    ///         let finished_reason = driver.await;
+    ///         eprintln!("Repo connection finished: {}", finished_reason);
     ///     });
     /// }
     /// ```
@@ -167,7 +165,7 @@ impl RepoHandle {
     pub async fn accept_axum<S>(
         &self,
         stream: S,
-    ) -> Result<impl Future<Output = Result<(), NetworkError>>, NetworkError>
+    ) -> Result<impl Future<Output = ConnFinishedReason>, NetworkError>
     where
         S: Sink<axum::extract::ws::Message, Error = axum::Error>
             + Stream<Item = Result<axum::extract::ws::Message, axum::Error>>
@@ -189,7 +187,7 @@ impl RepoHandle {
         &self,
         stream: S,
         direction: ConnDirection,
-    ) -> Result<impl Future<Output = Result<(), NetworkError>>, NetworkError>
+    ) -> Result<impl Future<Output = ConnFinishedReason>, NetworkError>
     where
         M: Into<WsMessage> + From<WsMessage> + Send + 'static,
         S: Sink<M, Error = NetworkError> + Stream<Item = Result<M, NetworkError>> + Send + 'static,
@@ -270,9 +268,9 @@ impl RepoHandle {
             .fuse(),
         );
 
-        futures::select! {
+        let complete = futures::select! {
             res = connecting.fuse() => {
-                res?;
+                res?
             },
             res = do_send => {
                 match res {
@@ -286,8 +284,17 @@ impl RepoHandle {
                     }
                 }
             },
-        }
+        };
 
-        Ok(do_send)
+        Ok(async move {
+            use futures::future::Either;
+            match futures::future::select(complete, do_send).await {
+                Either::Left((reason, _)) => reason,
+                Either::Right((_, complete)) => {
+                    // Assume that the error will be reported by the complete future
+                    complete.await
+                }
+            }
+        })
     }
 }
