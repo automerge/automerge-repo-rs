@@ -1,6 +1,6 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
-use automerge_repo::{NetworkError, RepoHandle, RepoMessage};
+use automerge_repo::{ConnComplete, NetworkError, RepoHandle, RepoMessage};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
@@ -96,7 +96,12 @@ pub(crate) fn tincan_to_nowhere() -> TinCan {
     }
 }
 
-pub(crate) fn connect_repos(left: &RepoHandle, right: &RepoHandle) {
+pub(crate) struct Connected {
+    pub(crate) left_complete: ConnComplete,
+    pub(crate) right_complete: ConnComplete,
+}
+
+pub(crate) fn connect_repos(left: &RepoHandle, right: &RepoHandle) -> Connected {
     let TinCans {
         left:
             TinCan {
@@ -111,8 +116,12 @@ pub(crate) fn connect_repos(left: &RepoHandle, right: &RepoHandle) {
                 ..
             },
     } = tincans();
-    left.new_remote_repo(right.get_repo_id().clone(), left_recv, left_send);
-    right.new_remote_repo(left.get_repo_id().clone(), right_recv, right_send);
+    let left_complete = left.new_remote_repo(right.get_repo_id().clone(), left_recv, left_send);
+    let right_complete = right.new_remote_repo(left.get_repo_id().clone(), right_recv, right_send);
+    Connected {
+        left_complete,
+        right_complete,
+    }
 }
 
 /// A wrapper around a `Sink` which records whether `poll_close` has ever been called

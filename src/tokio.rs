@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{repo::RepoHandle, ConnDirection};
-use crate::{Message, NetworkError};
+use crate::{ConnComplete, Message, NetworkError};
 
 use futures::StreamExt;
 
@@ -21,7 +21,7 @@ impl RepoHandle {
         _source: Source,
         io: Io,
         direction: ConnDirection,
-    ) -> Result<(), CodecError>
+    ) -> Result<ConnComplete, CodecError>
     where
         Io: AsyncRead + AsyncWrite + Send + 'static,
         Source: Debug,
@@ -31,9 +31,7 @@ impl RepoHandle {
 
         let (sink, stream) = framed.split();
 
-        self.connect_stream(stream, sink, direction).await?;
-
-        Ok(())
+        Ok(self.connect_stream(stream, sink, direction).await?)
     }
 }
 
