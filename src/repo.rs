@@ -169,6 +169,7 @@ impl RepoHandle {
             DocState::Bootstrap {
                 resolvers: vec![resolver],
                 storage_fut: None,
+                received_messages: Vec::new(),
             },
         );
         self.repo_sender
@@ -354,12 +355,13 @@ impl<T> Future for RepoFuture<T> {
 type BootstrapStorageFut = Option<BoxFuture<'static, Result<Option<Vec<u8>>, StorageError>>>;
 
 /// The doc info state machine.
-pub(crate) enum DocState {
+enum DocState {
     /// Bootstrapping will resolve into a future doc handle,
     /// the optional storage fut represents first checking storage before the network.
     Bootstrap {
         resolvers: Vec<RepoFutureResolver<Result<DocHandle, RepoError>>>,
         storage_fut: BootstrapStorageFut,
+        received_messages: Vec<NetworkEvent>,
     },
     /// Pending a load from storage, not attempting to sync over network.
     LoadPending {
@@ -487,6 +489,7 @@ impl DocState {
             DocState::Bootstrap {
                 resolvers: _,
                 storage_fut: Some(storage_fut),
+                received_messages: _,
             } => {
                 let waker = waker_ref(&waker);
                 let pinned = Pin::new(storage_fut);
@@ -503,6 +506,7 @@ impl DocState {
             DocState::Bootstrap {
                 resolvers: _,
                 ref mut storage_fut,
+                received_messages: _,
             } => {
                 *storage_fut = None;
             }
@@ -520,6 +524,7 @@ impl DocState {
             DocState::Bootstrap {
                 resolvers: _,
                 ref mut storage_fut,
+                received_messages: _,
             } => {
                 assert!(storage_fut.is_none());
                 *storage_fut = Some(fut);
@@ -803,7 +808,7 @@ impl DocumentInfo {
         wake_sender: &Sender<WakeSignal>,
         repo_sender: &Sender<RepoEvent>,
         repo_id: &RepoId,
-    ) {
+    ) -> Option<Vec<NetworkEvent>> {
         let waker = Arc::new(RepoWaker::Storage(wake_sender.clone(), document_id.clone()));
         if matches!(self.state, DocState::LoadPending { .. }) {
             match self.state.poll_pending_load(waker) {
@@ -820,7 +825,7 @@ impl DocumentInfo {
                                     e
                                 ))));
                             self.state = DocState::Error;
-                            return;
+                            return None;
                         }
                     }
                     self.handle_count.fetch_add(1, Ordering::SeqCst);
@@ -831,26 +836,42 @@ impl DocumentInfo {
                         self.handle_count.clone(),
                         repo_id.clone(),
                     );
+                    let pending_evts = match &mut self.state {
+                        DocState::Bootstrap {
+                            received_messages, ..
+                        } => {
+                            tracing::trace!(
+                                "load complete, reprocessing {} messages",
+                                received_messages.len()
+                            );
+                            Some(std::mem::take(received_messages))
+                        }
+                        _ => None,
+                    };
                     self.state.resolve_load_fut(Ok(Some(handle)));
                     self.state = DocState::Sync(vec![]);
+                    pending_evts
                     // TODO: send sync messages?
                 }
                 Poll::Ready(Ok(None)) => {
                     self.state.resolve_load_fut(Ok(None));
                     self.state = DocState::Error;
+                    None
                 }
                 Poll::Ready(Err(err)) => {
                     self.state
                         .resolve_load_fut(Err(RepoError::StorageError(err)));
                     self.state = DocState::Error;
+                    None
                 }
-                Poll::Pending => {}
+                Poll::Pending => None,
             }
         } else if matches!(self.state, DocState::Bootstrap { .. }) {
             match self.state.poll_pending_load(waker) {
                 Poll::Ready(Ok(Some(val))) => {
                     {
                         let res = {
+                            tracing::trace!(%document_id, "load complete");
                             let mut doc = self.document.write();
                             doc.automerge.load_incremental(&val)
                         };
@@ -861,7 +882,7 @@ impl DocumentInfo {
                                     e
                                 ))));
                             self.state = DocState::Error;
-                            return;
+                            return None;
                         }
                     }
                     self.handle_count.fetch_add(1, Ordering::SeqCst);
@@ -873,22 +894,38 @@ impl DocumentInfo {
                         repo_id.clone(),
                     );
                     self.state.resolve_bootstrap_fut(Ok(handle));
+                    let pending_evts = match &mut self.state {
+                        DocState::Bootstrap {
+                            received_messages, ..
+                        } => {
+                            tracing::trace!(
+                                "load complete, reprocessing {} messages",
+                                received_messages.len()
+                            );
+                            Some(std::mem::take(received_messages))
+                        }
+                        _ => None,
+                    };
                     self.state = DocState::Sync(vec![]);
                     // TODO: send sync messages?
+                    pending_evts
                 }
                 Poll::Ready(Ok(None)) => {
                     // Switch to a network request.
                     self.state.remove_bootstrap_storage_fut();
+                    None
                 }
                 Poll::Ready(Err(err)) => {
                     self.state
                         .resolve_bootstrap_fut(Err(RepoError::StorageError(err)));
                     self.state = DocState::Error;
+                    None
                 }
-                Poll::Pending => {}
+                Poll::Pending => None,
             }
         } else {
             self.state.poll_pending_save(waker);
+            None
         }
     }
 
@@ -976,6 +1013,7 @@ impl DocumentInfo {
     fn receive_sync_message(
         &mut self,
         per_remote: HashMap<RepoId, VecDeque<SyncMessage>>,
+        doc_id: &DocumentId,
     ) -> (bool, Vec<PeerConnCommand>) {
         let mut commands = Vec::new();
         let (start_heads, new_heads) = {
@@ -991,6 +1029,7 @@ impl DocumentInfo {
                     Entry::Occupied(entry) => entry.into_mut(),
                 };
                 for message in messages {
+                    tracing::trace!(?message, %doc_id, "receiving sync message");
                     conn.receive_sync_message(&mut document.automerge, message)
                         .expect("Failed to receive sync message.");
                 }
@@ -1392,6 +1431,7 @@ impl Repo {
                             } = pending_messages
                                 .pop_front()
                                 .expect("Empty pending messages.");
+                            tracing::trace!(%document_id, %to_repo_id, ?message, "sending sync message");
                             let outgoing = RepoMessage::Sync {
                                 from_repo_id,
                                 to_repo_id,
@@ -1446,13 +1486,16 @@ impl Repo {
             // `NewDoc` could be broken-up into two events: `RequestDoc` and `NewDoc`,
             // the doc info could be created here.
             RepoEvent::NewDoc(document_id, mut info) => {
+                tracing::trace!(%document_id, "NewDoc event");
                 if info.is_boostrapping() {
                     tracing::trace!("adding bootstrapping document");
                     if let Some(existing_info) = self.documents.get_mut(&document_id) {
                         if matches!(existing_info.state, DocState::Bootstrap { .. }) {
+                            tracing::trace!(%document_id, "doc is already loading, adding to bootstrap resolvers for it");
                             let mut resolvers = info.state.get_bootstrap_resolvers();
                             existing_info.state.add_boostrap_resolvers(&mut resolvers);
                         } else if matches!(existing_info.state, DocState::Sync(_)) {
+                            tracing::trace!(%document_id, "doc is already available, resolving immediately");
                             existing_info.handle_count.fetch_add(1, Ordering::SeqCst);
                             let handle = DocHandle::new(
                                 self.repo_sender.clone(),
@@ -1470,12 +1513,14 @@ impl Repo {
                     } else {
                         let storage_fut = self.storage.get(document_id.clone());
                         info.state.add_boostrap_storage_fut(storage_fut);
-                        info.poll_storage_operation(
+                        if let Some(evts) = info.poll_storage_operation(
                             document_id.clone(),
                             &self.wake_sender,
                             &self.repo_sender,
                             &self.repo_id,
-                        );
+                        ) {
+                            self.pending_events.extend(evts);
+                        }
 
                         let share_type = if info.is_boostrapping() {
                             Some(ShareType::Request)
@@ -1594,12 +1639,14 @@ impl Repo {
                     )));
                     return;
                 }
-                info.poll_storage_operation(
+                if let Some(evts) = info.poll_storage_operation(
                     doc_id,
                     &self.wake_sender,
                     &self.repo_sender,
                     &self.repo_id,
-                );
+                ) {
+                    self.pending_events.extend(evts);
+                }
             }
             RepoEvent::AddChangeObserver(doc_id, last_heads, mut observer) => {
                 if let Some(info) = self.documents.get_mut(&doc_id) {
@@ -1721,6 +1768,7 @@ impl Repo {
                             let state = DocState::Bootstrap {
                                 resolvers: vec![],
                                 storage_fut: None,
+                                received_messages: Vec::new(),
                             };
                             let document = Arc::new(RwLock::new(shared_document));
                             let handle_count = Arc::new(AtomicUsize::new(0));
@@ -1728,18 +1776,41 @@ impl Repo {
 
                             let storage_fut = self.storage.get(document_id.clone());
                             info.state.add_boostrap_storage_fut(storage_fut);
-                            info.poll_storage_operation(
+                            if let Some(evts) = info.poll_storage_operation(
                                 document_id.clone(),
                                 &self.wake_sender,
                                 &self.repo_sender,
                                 &self.repo_id,
-                            );
+                            ) {
+                                self.pending_events.extend(evts);
+                            }
 
                             info
                         });
 
-                    if !info.state.should_sync() {
-                        continue;
+                    match &mut info.state {
+                        DocState::Sync(_) => {}
+                        DocState::Bootstrap {
+                            storage_fut,
+                            received_messages,
+                            ..
+                        } => {
+                            // This is ugly. If the document is bootstrapping we hang on to the messages to process later
+                            // once it's loaded. But only if we're waiting to load from storage. Otherwise we want to just
+                            // get on with sync.
+                            if storage_fut.is_some() {
+                                received_messages.push(NetworkEvent::Sync {
+                                    from_repo_id,
+                                    to_repo_id,
+                                    document_id,
+                                    message,
+                                });
+                                continue;
+                            }
+                        }
+                        _ => {
+                            continue;
+                        }
                     }
 
                     let per_doc = per_doc_messages.entry(document_id).or_default();
@@ -1755,7 +1826,8 @@ impl Repo {
                 .get_mut(&document_id)
                 .expect("Doc should have an info by now.");
 
-            let (has_changes, peer_conn_commands) = info.receive_sync_message(per_remote);
+            let (has_changes, peer_conn_commands) =
+                info.receive_sync_message(per_remote, &document_id);
             if has_changes && info.note_changes() {
                 self.documents_with_changes.push(document_id.clone());
             }
@@ -1992,12 +2064,14 @@ impl Repo {
                             }
                             WakeSignal::Storage(doc_id) => {
                                 if let Some(info) = self.documents.get_mut(&doc_id) {
-                                    info.poll_storage_operation(
+                                    if let Some(evts) = info.poll_storage_operation(
                                         doc_id.clone(),
                                         &self.wake_sender,
                                         &self.repo_sender,
                                         &self.repo_id,
-                                    );
+                                    ) {
+                                        self.pending_events.extend(evts);
+                                    };
                                     if info.state.should_sync() {
                                         let remotes = self.remote_repos.keys().filter(|k| !info.peer_connections.contains_key(k));
                                         // Send a sync message to all other repos we are connected
@@ -2078,12 +2152,14 @@ impl Repo {
                     WakeSignal::PendingCloseSink(repo_id) => self.poll_close_sinks(repo_id),
                     WakeSignal::Storage(doc_id) => {
                         if let Some(info) = self.documents.get_mut(&doc_id) {
-                            info.poll_storage_operation(
+                            if let Some(evts) = info.poll_storage_operation(
                                 doc_id.clone(),
                                 &self.wake_sender,
                                 &self.repo_sender,
                                 &self.repo_id,
-                            );
+                            ) {
+                                self.pending_events.extend(evts);
+                            };
                         }
                     }
                     WakeSignal::ShareDecision(_) => {}
