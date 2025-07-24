@@ -52,7 +52,7 @@ impl TryFrom<Vec<u8>> for DocumentId {
     fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
         match uuid::Uuid::from_slice(v.as_slice()) {
             Ok(id) => Ok(Self(id.into_bytes())),
-            Err(e) => Err(BadDocumentId(format!("invalid uuid: {}", e))),
+            Err(e) => Err(BadDocumentId(format!("invalid uuid: {e}"))),
         }
     }
 }
@@ -79,14 +79,14 @@ impl FromStr for DocumentId {
 impl std::fmt::Debug for DocumentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let as_string = bs58::encode(&self.0).with_check().into_string();
-        write!(f, "{}", as_string)
+        write!(f, "{as_string}")
     }
 }
 
 impl Display for DocumentId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let as_string = bs58::encode(&self.0).with_check().into_string();
-        write!(f, "{}", as_string)
+        write!(f, "{as_string}")
     }
 }
 
@@ -99,7 +99,7 @@ pub enum NetworkError {
 impl Display for NetworkError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            NetworkError::Error(e) => write!(f, "NetworkError: {}", e),
+            NetworkError::Error(e) => write!(f, "NetworkError: {e}"),
         }
     }
 }
@@ -132,8 +132,7 @@ impl std::fmt::Debug for RepoMessage {
                 message: _,
             } => write!(
                 f,
-                "Sync {{ from_repo_id: {:?}, to_repo_id: {:?}, document_id: {:?} }}",
-                from_repo_id, to_repo_id, document_id
+                "Sync {{ from_repo_id: {from_repo_id:?}, to_repo_id: {to_repo_id:?}, document_id: {document_id:?} }}"
             ),
             RepoMessage::Ephemeral {
                 from_repo_id,
@@ -142,8 +141,7 @@ impl std::fmt::Debug for RepoMessage {
                 message: _,
             } => write!(
                 f,
-                "Ephemeral {{ from_repo_id: {:?}, to_repo_id: {:?}, document_id: {:?} }}",
-                from_repo_id, to_repo_id, document_id
+                "Ephemeral {{ from_repo_id: {from_repo_id:?}, to_repo_id: {to_repo_id:?}, document_id: {document_id:?} }}"
             ),
         }
     }

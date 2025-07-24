@@ -41,7 +41,7 @@ async fn test_simple_sync() {
 
     for i in 1..10 {
         // Create the repo.
-        let repo_id = format!("repo{}", i);
+        let repo_id = format!("repo{i}");
         let repo = Repo::new(Some(repo_id), Box::new(SimpleStorage));
         let repo_handle = repo.run();
 

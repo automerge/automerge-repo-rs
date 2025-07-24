@@ -41,8 +41,7 @@ impl RepoHandle {
                 Err(e) => {
                     tracing::error!(?e, repo_id=?repo_id, "Error receiving repo message");
                     Err(NetworkError::Error(format!(
-                        "error receiving repo message: {}",
-                        e
+                        "error receiving repo message: {e}"
                     )))
                 }
             }
@@ -55,7 +54,7 @@ impl RepoHandle {
             })
             .sink_map_err(|e| {
                 tracing::error!(?e, "Error sending repo message");
-                NetworkError::Error(format!("error sending repo message: {}", e))
+                NetworkError::Error(format!("error sending repo message: {e}"))
             });
 
         Ok(self.new_remote_repo(other_id, Box::new(stream), Box::new(sink)))
@@ -80,18 +79,15 @@ impl RepoHandle {
                         Ok(Message::Join(other_id)) => other_id,
                         Ok(other) => {
                             return Err(NetworkError::Error(format!(
-                                "unexpected message (expecting join): {:?}",
-                                other
+                                "unexpected message (expecting join): {other:?}"
                             )))
                         }
-                        Err(e) => {
-                            return Err(NetworkError::Error(format!("error reciving: {}", e)))
-                        }
+                        Err(e) => return Err(NetworkError::Error(format!("error reciving: {e}"))),
                     };
                     let msg = Message::Peer(self.get_repo_id().clone());
                     sink.send(msg)
                         .await
-                        .map_err(|e| NetworkError::Error(format!("error sending: {}", e)))?;
+                        .map_err(|e| NetworkError::Error(format!("error sending: {e}")))?;
                     Ok(other_id)
                 } else {
                     Err(NetworkError::Error(
@@ -103,15 +99,14 @@ impl RepoHandle {
                 let msg = Message::Join(self.get_repo_id().clone());
                 sink.send(msg)
                     .await
-                    .map_err(|e| NetworkError::Error(format!("send error: {}", e)))?;
+                    .map_err(|e| NetworkError::Error(format!("send error: {e}")))?;
                 let msg = stream.next().await;
                 match msg {
                     Some(Ok(Message::Peer(sender))) => Ok(sender),
                     Some(Ok(other)) => Err(NetworkError::Error(format!(
-                        "unexpected message (expecting peer): {:?}",
-                        other
+                        "unexpected message (expecting peer): {other:?}"
                     ))),
-                    Some(Err(e)) => Err(NetworkError::Error(format!("error sending: {}", e))),
+                    Some(Err(e)) => Err(NetworkError::Error(format!("error sending: {e}"))),
                     None => Err(NetworkError::Error(
                         "unexpected end of receive stream".to_string(),
                     )),

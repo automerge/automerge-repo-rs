@@ -58,8 +58,7 @@ pub(crate) fn tincans() -> TinCans {
             send: Box::new(RecordCloseSink::new(
                 PollSender::new(left_send).sink_map_err(|e| {
                     NetworkError::Error(format!(
-                        "unexpected failure to send on blocking channel: {:?}",
-                        e
+                        "unexpected failure to send on blocking channel: {e:?}"
                     ))
                 }),
                 left_sink_closed.clone(),
@@ -71,8 +70,7 @@ pub(crate) fn tincans() -> TinCans {
             send: Box::new(RecordCloseSink::new(
                 PollSender::new(right_send).sink_map_err(|e| {
                     NetworkError::Error(format!(
-                        "unexpected failure to send on blocking channel: {:?}",
-                        e
+                        "unexpected failure to send on blocking channel: {e:?}"
                     ))
                 }),
                 right_sink_closed.clone(),

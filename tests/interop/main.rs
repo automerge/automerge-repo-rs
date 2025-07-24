@@ -30,7 +30,7 @@ fn sync_two_repos(port: u16) {
         let storage1 = Box::<InMemoryStorage>::default();
         let repo1 = Repo::new(None, storage1);
         let repo1_handle = repo1.run();
-        let (conn, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
+        let (conn, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{port}"))
             .await
             .unwrap();
 
@@ -59,7 +59,7 @@ fn sync_two_repos(port: u16) {
         let repo2 = Repo::new(None, storage2);
         let repo2_handle = repo2.run();
 
-        let (conn2, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{}", port))
+        let (conn2, _) = tokio_tungstenite::connect_async(format!("ws://localhost:{port}"))
             .await
             .unwrap();
         let conn2_driver = repo2_handle
@@ -116,7 +116,7 @@ fn start_js_server() -> Child {
 
     // Wait for the server to start up
     loop {
-        match reqwest::blocking::get(format!("http://localhost:{}/", PORT)) {
+        match reqwest::blocking::get(format!("http://localhost:{PORT}/")) {
             Ok(r) => {
                 if r.status().is_success() {
                     break;
@@ -125,7 +125,7 @@ fn start_js_server() -> Child {
                 }
             }
             Err(e) => {
-                println!("Error connecting to server: {}", e);
+                println!("Error connecting to server: {e}");
             }
         }
         sleep(Duration::from_millis(100));

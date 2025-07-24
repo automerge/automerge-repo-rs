@@ -111,10 +111,8 @@ impl RepoHandle {
         use futures::TryStreamExt;
 
         let stream = stream
-            .map_err(|e| NetworkError::Error(format!("error receiving websocket message: {}", e)))
-            .sink_map_err(|e| {
-                NetworkError::Error(format!("error sending websocket message: {}", e))
-            });
+            .map_err(|e| NetworkError::Error(format!("error receiving websocket message: {e}")))
+            .sink_map_err(|e| NetworkError::Error(format!("error sending websocket message: {e}")));
         self.connect_tokio_websocket(stream, direction).await
     }
 
@@ -175,10 +173,8 @@ impl RepoHandle {
         use futures::TryStreamExt;
 
         let stream = stream
-            .map_err(|e| NetworkError::Error(format!("error receiving websocket message: {}", e)))
-            .sink_map_err(|e| {
-                NetworkError::Error(format!("error sending websocket message: {}", e))
-            });
+            .map_err(|e| NetworkError::Error(format!("error receiving websocket message: {e}")))
+            .sink_map_err(|e| NetworkError::Error(format!("error sending websocket message: {e}")));
         self.connect_tokio_websocket(stream, ConnDirection::Incoming)
             .await
     }
@@ -219,15 +215,14 @@ impl RepoHandle {
                             Ok(m) => m,
                             Err(e) => {
                                 return Some(Err(NetworkError::Error(format!(
-                                    "websocket receive error: {}",
-                                    e
+                                    "websocket receive error: {e}"
                                 ))));
                             }
                         };
                         match msg.into() {
                             WsMessage::Binary(data) => Some(Message::decode(&data).map_err(|e| {
                                 tracing::error!(err=?e, msg=%hex::encode(data), "error decoding message");
-                                NetworkError::Error(format!("error decoding message: {}", e))
+                                NetworkError::Error(format!("error decoding message: {e}"))
                             })),
                             WsMessage::Close => {
                                 tracing::debug!("websocket closing");
@@ -248,7 +243,7 @@ impl RepoHandle {
             }).boxed();
 
         let msg_sink = PollSender::new(tx.clone())
-            .sink_map_err(|e| NetworkError::Error(format!("websocket send error: {}", e)))
+            .sink_map_err(|e| NetworkError::Error(format!("websocket send error: {e}")))
             .with(|msg: Message| {
                 futures::future::ready(Ok::<_, NetworkError>(WsMessage::Binary(msg.encode())))
             });
@@ -260,7 +255,7 @@ impl RepoHandle {
                 while let Some(msg) = rx.recv().await {
                     if let Err(e) = sink.send(msg.into()).await {
                         tracing::error!(err=?e, "error sending message");
-                        return Err(NetworkError::Error(format!("error sending message: {}", e)));
+                        return Err(NetworkError::Error(format!("error sending message: {e}")));
                     }
                 }
                 Ok(())
@@ -276,7 +271,7 @@ impl RepoHandle {
                 match res {
                     Err(e) => {
                         tracing::error!(err=?e, "error sending message");
-                        return Err(NetworkError::Error(format!("error sending message: {}", e)));
+                        return Err(NetworkError::Error(format!("error sending message: {e}")));
                     }
                     Ok(()) => {
                         tracing::error!("websocket send loop unexpectedly stopped");

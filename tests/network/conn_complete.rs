@@ -70,6 +70,6 @@ async fn conn_complete_future_resolves_on_duplicate_connection() {
         (ConnFinishedReason::DuplicateConnection, ConnFinishedReason::TheyDisconnected) => {}
         (ConnFinishedReason::TheyDisconnected, ConnFinishedReason::DuplicateConnection) => {}
         (ConnFinishedReason::DuplicateConnection, ConnFinishedReason::DuplicateConnection) => {}
-        (left, right) => panic!("Unexpected result, left: {:?}, right: {:?}", left, right),
+        (left, right) => panic!("Unexpected result, left: {left:?}, right: {right:?}"),
     }
 }

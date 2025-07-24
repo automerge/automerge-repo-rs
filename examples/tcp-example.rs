@@ -47,7 +47,7 @@ async fn new_doc(State(state): State<Arc<AppState>>) -> Json<DocumentId> {
     let our_id = state.repo_handle.get_repo_id();
     doc_handle.with_doc_mut(|doc| {
         let mut tx = doc.transaction();
-        tx.put(automerge::ROOT, "repo_id", format!("{}", our_id))
+        tx.put(automerge::ROOT, "repo_id", format!("{our_id}"))
             .expect("Failed to change the document.");
         tx.commit();
     });
@@ -194,7 +194,7 @@ async fn main() {
                             .await
                             .unwrap();
                     }
-                    Err(e) => println!("couldn't get client: {:?}", e),
+                    Err(e) => println!("couldn't get client: {e:?}"),
                 }
             }
         });
@@ -231,7 +231,7 @@ async fn main() {
                         .expect("Failed to read the document.")
                         .unwrap();
                     let val = val.0.to_str().unwrap();
-                    println!("Synced: {:?} to {:?}", doc_id, val);
+                    println!("Synced: {doc_id:?} to {val:?}");
                 });
             }
             Handle::current()
