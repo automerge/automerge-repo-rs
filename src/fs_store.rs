@@ -393,8 +393,8 @@ impl SavedChunkName {
     fn filename(&self) -> String {
         let hash = hex::encode(&self.hash);
         match self.chunk_type {
-            ChunkType::Incremental => format!("{}.incremental", hash),
-            ChunkType::Snapshot => format!("{}.snapshot", hash),
+            ChunkType::Incremental => format!("{hash}.incremental"),
+            ChunkType::Snapshot => format!("{hash}.snapshot"),
         }
     }
 }

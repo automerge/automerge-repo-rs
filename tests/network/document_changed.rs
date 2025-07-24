@@ -58,7 +58,7 @@ async fn test_document_changed_over_sync() {
             // Edit the document.
             document_handle_1.with_doc_mut(|doc| {
                 let mut tx = doc.transaction();
-                tx.put(automerge::ROOT, "repo_id", format!("{}", repo_id))
+                tx.put(automerge::ROOT, "repo_id", format!("{repo_id}"))
                     .expect("Failed to change the document.");
                 tx.commit();
             });

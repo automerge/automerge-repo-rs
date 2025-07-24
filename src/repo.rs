@@ -821,8 +821,7 @@ impl DocumentInfo {
                         if let Err(e) = res {
                             self.state
                                 .resolve_load_fut(Err(RepoError::Incorrect(format!(
-                                    "error loading document: {:?}",
-                                    e
+                                    "error loading document: {e:?}"
                                 ))));
                             self.state = DocState::Error;
                             return None;
@@ -878,8 +877,7 @@ impl DocumentInfo {
                         if let Err(e) = res {
                             self.state
                                 .resolve_bootstrap_fut(Err(RepoError::Incorrect(format!(
-                                    "error loading document: {:?}",
-                                    e
+                                    "error loading document: {e:?}"
                                 ))));
                             self.state = DocState::Error;
                             return None;
@@ -1342,8 +1340,7 @@ impl Repo {
                                 }
                                 Err(e) => {
                                     tracing::error!(error = ?e, "Error decoding sync message.");
-                                    let msg =
-                                        format!("error decoding received sync message: {}", e);
+                                    let msg = format!("error decoding received sync message: {e}");
                                     break Some(ConnFinishedReason::ErrorReceiving(msg));
                                 }
                             },

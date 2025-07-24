@@ -32,8 +32,8 @@ impl std::fmt::Display for ConnFinishedReason {
             ConnFinishedReason::RepoShutdown => write!(f, "Repository shutdown"),
             ConnFinishedReason::DuplicateConnection => write!(f, "Duplicate connection"),
             ConnFinishedReason::TheyDisconnected => write!(f, "They disconnected"),
-            ConnFinishedReason::ErrorReceiving(msg) => write!(f, "Error receiving: {}", msg),
-            ConnFinishedReason::ErrorSending(msg) => write!(f, "Error sending: {}", msg),
+            ConnFinishedReason::ErrorReceiving(msg) => write!(f, "Error receiving: {msg}"),
+            ConnFinishedReason::ErrorSending(msg) => write!(f, "Error sending: {msg}"),
         }
     }
 }

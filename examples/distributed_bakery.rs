@@ -32,7 +32,7 @@ async fn increment(State(state): State<Arc<AppState>>) -> Result<Json<u32>, ()> 
 
     // Increment the output
     if let Ok(output) = increment_output(&state.doc_handle).await {
-        println!("Incremented output to {:?}.", output);
+        println!("Incremented output to {output:?}.");
 
         // Exit the critical section.
         start_outside_the_bakery(&state.doc_handle, &state.customer_id).await;
@@ -236,10 +236,10 @@ async fn request_increment(
     loop {
         sleep(Duration::from_millis(1000)).await;
         for addr in http_addrs.iter() {
-            let url = format!("http://{}/increment", addr);
+            let url = format!("http://{addr}/increment");
             if let Ok(new) = client.get(url).send().await {
                 if let Ok(new) = new.json().await {
-                    println!("Got new increment: {:?}, versus old one: {:?}", new, last);
+                    println!("Got new increment: {new:?}, versus old one: {last:?}");
                     assert!(new > last);
                     last = new;
                 }
@@ -331,17 +331,17 @@ async fn main() {
     let http_addrs: Vec<String> = customers
         .iter()
         .filter(|id| id != &&args.customer_id)
-        .map(|id| format!("0.0.0.0:300{}", id))
+        .map(|id| format!("0.0.0.0:300{id}"))
         .collect();
     let tcp_addrs: Vec<String> = customers
         .iter()
         .filter(|id| id != &&args.customer_id)
-        .map(|id| format!("127.0.0.1:234{}", id))
+        .map(|id| format!("127.0.0.1:234{id}"))
         .collect();
 
     // Our addrs
-    let our_http_addr = format!("0.0.0.0:300{}", customer_id);
-    let our_tcp_addr = format!("127.0.0.1:234{}", customer_id);
+    let our_http_addr = format!("0.0.0.0:300{customer_id}");
+    let our_tcp_addr = format!("127.0.0.1:234{customer_id}");
 
     // Create a repo.
     let repo = Repo::new(None, Box::new(NoStorage));
@@ -359,7 +359,7 @@ async fn main() {
                         .await
                         .unwrap();
                 }
-                Err(e) => println!("couldn't get client: {:?}", e),
+                Err(e) => println!("couldn't get client: {e:?}"),
             }
         }
     });
@@ -412,7 +412,7 @@ async fn main() {
         let client = reqwest::Client::new();
         let mut doc_id = None;
         for addr in http_addrs.iter() {
-            let url = format!("http://{}/get_doc_id", addr);
+            let url = format!("http://{addr}/get_doc_id");
             let res = client.get(url).send().await;
             if res.is_err() {
                 continue;
