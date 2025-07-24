@@ -15,6 +15,7 @@ mod document_list;
 mod document_load;
 mod document_request;
 mod document_save;
+mod erroring_sinks_crash_repo_loop;
 mod listen_to_peer_conn_info;
 mod peer_doc_state;
 
