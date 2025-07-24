@@ -66,8 +66,9 @@ tokio-serde = { version = "0.8.0", features = ["json"] }
 tokio-tungstenite = { version = "0.21", features = ["connect"] }
 serde_json = "1.0.96"
 test_utils = { path = "test_utils" }
-test-log = { version = "0.2.12", features = ["trace"] }
+test-log = { version = "0.2.18", features = ["trace"] }
 env_logger = "0.10.0"
 tracing-subscriber = { version = "0.3.17", features = ["fmt", "env-filter"] }
 itertools = "0.11.0"
 autosurgeon = "0.8.0"
+pin-project = "1.1.10"

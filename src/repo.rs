@@ -1896,7 +1896,7 @@ impl Repo {
                     tracing::trace!(remote_repo=?repo_id, "sink not ready to close");
                     entry.get_mut().push(sink);
                 } else {
-                    tracing::trace!(remote_repo=?repo_id, "sink closed");
+                    tracing::trace!(remote_repo=?repo_id, ?result, "sink closed");
                 }
             }
             if entry.get().is_empty() {
@@ -2178,9 +2178,17 @@ impl Repo {
     /// `true` if there was a sink to remove, `false` otherwise
     fn remove_sink(&mut self, repo_id: &RepoId, fin_reason: ConnFinishedReason) -> bool {
         if let Some(RemoteRepo { sink, .. }) = self.remote_repos.remove(repo_id) {
-            let pending_sinks = self.pending_close_sinks.entry(repo_id.clone()).or_default();
-            pending_sinks.push(sink);
-            self.poll_close_sinks(repo_id.clone());
+            match fin_reason {
+                ConnFinishedReason::ErrorSending(_) => {
+                    // don't poll sinks which closed due to some kind of error
+                }
+                _ => {
+                    let pending_sinks =
+                        self.pending_close_sinks.entry(repo_id.clone()).or_default();
+                    pending_sinks.push(sink);
+                    self.poll_close_sinks(repo_id.clone());
+                }
+            }
             if let Some(tx) = self.conn_closed_listeners.remove(repo_id) {
                 let _ = tx.send(fin_reason);
             }
