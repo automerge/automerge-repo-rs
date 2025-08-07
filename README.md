@@ -2,9 +2,19 @@
 
 Project goal: add an integration layer between [Automerge](https://github.com/automerge/automerge) and client code, compatible with any Rust async runtime.
 
+## Compatibility Note
+
+The filesystem disk layout and WebSocket sync protocol implemented in this crate
+are not compatible with those of [the JavaScript automerge-repo
+implementation][amjs]. An **experimental** Rust implementation that aims for
+compatibility with the JS tools is being developed in the [alexjg/samod] repo.
+
+[amjs]: https://github.com/automerge/automerge-repo
+[samod]: https://github.com/alexjg/samod
+
 ## Examples 
 
-### Multipe TCP clients, one server with hardcoded IP, in memory storage.
+### Multiple TCP clients, one server with hardcoded IP, in memory storage.
 
 1. Start the server:
    - `cargo run --example tcp-example --features="tokio" -- --tcp-run-ip 127.0.0.1:2345 --http-run-ip 0.0.0.0:3001`
