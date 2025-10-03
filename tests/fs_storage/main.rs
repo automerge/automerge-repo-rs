@@ -42,7 +42,7 @@ fn fs_store_crud() {
 
     // check that list is working
     let result = store.list().unwrap();
-    let expected = &[doc_id.clone()];
+    let expected = std::slice::from_ref(&doc_id);
     assert_eq!(&result, expected);
 
     let result = store.get(&doc_id).unwrap().unwrap();
