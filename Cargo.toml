@@ -1,6 +1,6 @@
 [package]
 name = "automerge_repo"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 authors = ["Alex Good <alex@memoryandthought.me>", "Gregory Terzian"]
